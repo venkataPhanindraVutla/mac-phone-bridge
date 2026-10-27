@@ -48,6 +48,7 @@ public final class MacPairingFlow: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if now.timeIntervalSince(openedAt) > lifetime { burned = true }
         if burned { return .rejected(.pairingExpired) }
+        guard case .open = state else { return .rejected(.pairingExpired) }
         guard request.protocolVersion == Handshake.protocolVersion else {
             return .rejected(.protocolMismatch)
         }
@@ -86,6 +87,7 @@ public final class MacPairingFlow: @unchecked Sendable {
         case .open:
             // No verified phone, so there is nothing to confirm.
             state = .cancelled
+            burned = true
             return .cancelled
         case let .verified(at, local, remote):
             if now.timeIntervalSince(at) > Self.confirmationTimeout {

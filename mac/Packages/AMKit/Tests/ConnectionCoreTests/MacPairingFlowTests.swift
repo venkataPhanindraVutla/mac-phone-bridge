@@ -58,7 +58,7 @@ private func verified(_ flow: MacPairingFlow, at now: Date = t0) -> PairingVerdi
 @Test func threeBadProofsBurnTheSecret() {
     let flow = makeFlow()
     for _ in 0..<3 {
-        #expect(flow.verify(request(flow, good: false), phoneFingerprint: phoneFP, now: t0) != .verified(code: ""))
+        #expect(flow.verify(request(flow, good: false), phoneFingerprint: phoneFP, now: t0) == .rejected(.badPairingSecret))
     }
     #expect(verified(flow) == .rejected(.pairingExpired))
 }
@@ -140,4 +140,13 @@ private func verified(_ flow: MacPairingFlow, at now: Date = t0) -> PairingVerdi
     _ = verified(flow)
     #expect(flow.localDecision(true, now: t0.addingTimeInterval(10)) == .waiting)
     #expect(flow.remoteDecision(true, now: t0.addingTimeInterval(61)) == .timedOut)
+}
+
+@Test func cancelBeforeVerifyIsFinal() {
+    for accepted in [false, true] {
+        let flow = makeFlow()
+        #expect(flow.localDecision(accepted, now: t0) == .cancelled)
+        #expect(verified(flow) == .rejected(.pairingExpired))
+        #expect(flow.remoteDecision(true, now: t0) == .cancelled)
+    }
 }
