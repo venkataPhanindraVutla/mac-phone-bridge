@@ -14,6 +14,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMajor(from: "1.29.0")),
         .package(url: "https://github.com/apple/swift-certificates.git", .upToNextMajor(from: "1.6.0")),
+        .package(url: "https://github.com/apple/swift-asn1.git", .upToNextMajor(from: "1.0.0")),
     ],
     targets: [
         .target(
@@ -24,17 +25,28 @@ let package = Package(
             name: "ConnectionCore",
             dependencies: [
                 "AMProtocol",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
         ),
         .target(name: "FeatureStatus", dependencies: ["AMProtocol"]),
         .target(name: "FeatureFind", dependencies: ["AMProtocol"]),
-        .executableTarget(name: "am-mac-sim", dependencies: ["AMProtocol", "ConnectionCore"]),
+        .executableTarget(
+            name: "am-mac-sim",
+            dependencies: [
+                "AMProtocol", "ConnectionCore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
+        ),
         .testTarget(
             name: "AMProtocolTests",
             dependencies: ["AMProtocol"]
         ),
-        .testTarget(name: "ConnectionCoreTests", dependencies: ["ConnectionCore"]),
+        .testTarget(
+            name: "ConnectionCoreTests",
+            dependencies: ["ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
         .testTarget(name: "FeatureStatusTests", dependencies: ["FeatureStatus"]),
         .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind"]),
     ]
