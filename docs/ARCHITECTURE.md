@@ -154,7 +154,7 @@ This document describes how the PRD gets built. Items marked **(builder's choice
 | F-07 Media | `MediaSessionManager.getActiveSessions()` (allowed through notification access); `MediaController` transport controls | same as above |
 | F-06 Calls | `TelephonyCallback` for call state; `TelecomManager.acceptRingingCall()` / `endCall()`; mute through the call's notification actions or `AudioManager` | `READ_PHONE_STATE`, `ANSWER_PHONE_CALLS`, `READ_CALL_LOG` (for the number) |
 | F-14 Contacts | `ContactsContract`, with incremental sync | `READ_CONTACTS` |
-| F-02 Status | `BatteryManager`, `TelephonyManager` signal strength, `ConnectivityManager` | `READ_PHONE_STATE` |
+| F-02 Status | `BatteryManager`, `TelephonyManager` signal strength, `ConnectivityManager` | `ACCESS_NETWORK_STATE` only |
 | F-08 Find phone | Play on the alarm stream at full volume; override DND | Notification-policy access |
 | F-11 DND sync | `NotificationManager.setInterruptionFilter()` and a listener for changes | Notification-policy access |
 | F-12 Screenshots | `ContentObserver` on MediaStore, filtered to the screenshots folder | `READ_MEDIA_IMAGES` (13+) / `READ_EXTERNAL_STORAGE` (≤12) |

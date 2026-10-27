@@ -1,0 +1,39 @@
+package io.github.anmirror.phone.service
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import io.github.anmirror.phone.AppGraph
+import io.github.anmirror.phone.TAG
+import kotlinx.coroutines.launch
+
+/** Whether to bring the connection service up at boot (or after an app update). */
+object BootDecision {
+    fun shouldStartService(pairedCount: Int): Boolean = pairedCount > 0
+}
+
+/**
+ * Starts [ConnectionService] after a reboot or an app update, but only if a Mac is paired, so
+ * the phone reconnects with no user action. Both broadcasts may start a `connectedDevice`
+ * foreground service from the background.
+ */
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        val pending = goAsync()
+        val graph = AppGraph.get(context)
+        graph.scope.launch {
+            try {
+                val count = graph.store.all().size
+                val start = BootDecision.shouldStartService(count)
+                Log.i(TAG, "boot: ${intent.action}, paired=$count, start=$start")
+                if (start) ConnectionService.start(context.applicationContext)
+            } catch (e: Exception) {
+                Log.e(TAG, "boot: cannot start the service", e)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+}

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Android Mirroring</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Use your phone from your Mac</string>
+    <string name="onboarding_body">Android Mirroring connects this phone to your Mac over your Wi-Fi, so your Mac can see its battery and make it ring.</string>
+    <string name="onboarding_privacy">Nothing leaves the two devices. There is no cloud, no account and no tracking.</string>
+    <string name="onboarding_pair">Pair with your Mac</string>
+
+    <!-- Pairing -->
+    <string name="pair_title">Pair with your Mac</string>
+    <string name="pair_instructions">On your Mac, open Android Mirroring and choose Pair a Phone. Then scan the code it shows.</string>
+    <string name="pair_scan">Scan the code</string>
+    <string name="pair_scan_prompt">Point your camera at the code on your Mac</string>
+    <string name="pair_permission_notifications">Android Mirroring shows a notification while it is connected to your Mac.</string>
+    <string name="pair_permission_camera">Android Mirroring needs the camera to scan the code on your Mac.</string>
+    <string name="pair_permission_local_network">Android Mirroring needs access to your local network to find your Mac.</string>
+    <string name="pair_camera_denied">Without the camera, the code can\'t be scanned. Allow camera access in Settings, then try again.</string>
+    <string name="pair_bad_code">That isn\'t an Android Mirroring code. Scan the code on your Mac.</string>
+    <string name="pair_connecting">Connecting to %1$s…</string>
+    <string name="pair_code_title">Does your Mac show this code?</string>
+    <string name="pair_code_description">Pairing code %1$s</string>
+    <string name="pair_code_hint">Confirm only if the code on your Mac is the same.</string>
+    <string name="pair_confirm">Confirm</string>
+    <string name="pair_cancel">Cancel</string>
+    <string name="pair_waiting_for_mac">Waiting for your Mac…</string>
+    <string name="pair_done">Paired with %1$s</string>
+    <string name="pair_continue">Done</string>
+    <string name="pair_try_again">Try again</string>
+
+    <!-- Pairing failures (PairingFailure) -->
+    <string name="pair_failure_unreachable">Can\'t reach your Mac. Are both on the same Wi-Fi? Is a VPN on?</string>
+    <string name="pair_failure_expired">This code has expired. Show a new code on your Mac.</string>
+    <string name="pair_failure_bad_secret">That code didn\'t work. Show a new code on your Mac.</string>
+    <string name="pair_failure_rejected">Pairing was cancelled.</string>
+    <string name="pair_failure_timed_out">Pairing timed out. Try again.</string>
+    <string name="pair_failure_protocol_mismatch">Update Android Mirroring on both devices.</string>
+
+    <!-- Home: connection states (PhoneConnectionState) -->
+    <string name="home_title">Your Mac</string>
+    <string name="state_connected">Connected to %1$s</string>
+    <string name="state_looking">Looking for %1$s…</string>
+    <string name="state_looking_unnamed">Looking for your Mac…</string>
+    <string name="state_not_recognized">Your Mac doesn\'t recognise this phone any more. Pair again.</string>
+    <string name="state_busy">Your Mac is connected to another phone.</string>
+    <string name="state_incompatible">Update Android Mirroring on both devices.</string>
+    <string name="state_stopped">Not running.</string>
+    <string name="home_retry">Try now</string>
+    <string name="home_forget">Forget this Mac</string>
+    <string name="home_forget_title">Forget %1$s?</string>
+    <string name="home_forget_body">Your Mac will forget this phone too. To use them together again, pair again.</string>
+    <string name="home_forget_confirm">Forget</string>
+
+    <!-- Service notification -->
+    <string name="channel_connection">Connection</string>
+    <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>
+</resources>

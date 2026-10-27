@@ -16,6 +16,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "android-mirroring"
 
+include(":app")
 include(":core:protocol")
 include(":core:connection")
 include(":tools:phone-sim")
