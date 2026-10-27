@@ -79,7 +79,9 @@ class NsdMacDiscovery(context: Context, scope: CoroutineScope) : MacDiscovery {
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
+                // Also when the system stops the browse: end this one so the loop starts another.
                 Log.d(TAG, "nsd: stopped")
+                channel.close()
             }
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -96,7 +98,10 @@ class NsdMacDiscovery(context: Context, scope: CoroutineScope) : MacDiscovery {
                 if (useServiceInfoCallback()) {
                     synchronized(lock) {
                         if (callbacks.containsKey(name)) return
-                        val cb = infoCallback(name, ::put, ::drop)
+                        val cb = infoCallback(name, ::put, ::drop) {
+                            // Registration failed: forget it, so the next onServiceFound retries.
+                            synchronized(lock) { callbacks.remove(name) }
+                        }
                         callbacks[name] = cb
                         try {
                             nsd.registerServiceInfoCallback(info, DirectExecutor, cb)
@@ -120,9 +125,14 @@ class NsdMacDiscovery(context: Context, scope: CoroutineScope) : MacDiscovery {
             }
         }
 
-        // Some Wi-Fi drivers drop multicast unless an app holds this lock while browsing.
-        val multicast = app.getSystemService(WifiManager::class.java)?.createMulticastLock("anmirror-nsd")
-            ?.apply { setReferenceCounted(false) }
+        // Before API 34 some Wi-Fi drivers drop multicast unless an app holds this lock while
+        // browsing. From 34 the system's mDNS stack handles it.
+        val multicast = if (useServiceInfoCallback()) {
+            null
+        } else {
+            app.getSystemService(WifiManager::class.java)?.createMulticastLock("anmirror-nsd")
+                ?.apply { setReferenceCounted(false) }
+        }
         multicast?.acquire()
         try {
             nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
@@ -143,9 +153,11 @@ class NsdMacDiscovery(context: Context, scope: CoroutineScope) : MacDiscovery {
         name: String,
         put: (String, NsdServiceInfo) -> Unit,
         drop: (String) -> Unit,
+        failed: () -> Unit,
     ) = object : NsdManager.ServiceInfoCallback {
         override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
             Log.w(TAG, "nsd: resolve failed ($errorCode)")
+            failed()
         }
 
         override fun onServiceUpdated(info: NsdServiceInfo) = put(name, info)

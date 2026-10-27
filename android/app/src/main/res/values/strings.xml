@@ -25,6 +25,10 @@
     <string name="pair_confirm">Confirm</string>
     <string name="pair_cancel">Cancel</string>
     <string name="pair_waiting_for_mac">Waiting for your Mac…</string>
+    <string name="pair_link_title">Pair with %1$s?</string>
+    <string name="pair_link_body">A link wants to pair this phone with a Mac called %1$s. Continue only if you just chose Pair a Phone on your Mac.</string>
+    <string name="pair_link_continue">Continue</string>
+    <string name="pair_replaces">This replaces %1$s.</string>
     <string name="pair_done">Paired with %1$s</string>
     <string name="pair_continue">Done</string>
     <string name="pair_try_again">Try again</string>
@@ -47,6 +51,9 @@
     <string name="state_incompatible">Update Android Mirroring on both devices.</string>
     <string name="state_stopped">Not running.</string>
     <string name="home_retry">Try now</string>
+    <string name="home_pair_again">Pair again</string>
+    <string name="home_pair_again_title">Pair again with your Mac?</string>
+    <string name="home_pair_again_body">This phone forgets %1$s. Then scan the new code your Mac shows.</string>
     <string name="home_forget">Forget this Mac</string>
     <string name="home_forget_title">Forget %1$s?</string>
     <string name="home_forget_body">Your Mac will forget this phone too. To use them together again, pair again.</string>

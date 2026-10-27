@@ -27,27 +27,31 @@ import io.github.anmirror.phone.service.BootDecision
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
 import io.github.anmirror.phone.ui.HomeScreen
+import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var graph: AppGraph
-
-    /** An `anmirror://pair?...` link waiting for its permissions before pairing starts. */
-    private val linked = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         graph = AppGraph.get(this)
         if (savedInstanceState == null) takeLink(intent)
-        // Bring the service up if a Mac is paired (after a force stop, say).
+        setContent { AppTheme { AppRoot(graph) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
+        // when a start from the background was refused).
         graph.scope.launch {
-            if (BootDecision.shouldStartService(graph.store.all().size)) runOnUiThread { ConnectionService.start(this@MainActivity) }
+            if (!ConnectionService.running && BootDecision.shouldStartService(graph.store.all().size)) {
+                runOnUiThread { ConnectionService.start(this@MainActivity) }
+            }
         }
-        setContent { AppTheme { AppRoot(graph, linked) } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -55,38 +59,52 @@ class MainActivity : ComponentActivity() {
         takeLink(intent)
     }
 
+    /** An `anmirror://pair` link only offers pairing; nothing is dialed before Continue. */
     private fun takeLink(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_VIEW) return
-        val data = intent.dataString ?: return
-        if (intent.data?.scheme == "anmirror") linked.value = data
+        if (intent?.action != Intent.ACTION_VIEW || intent.data?.scheme != "anmirror") return
+        intent.dataString?.let(graph.pairing::offerLink)
     }
 }
 
 private enum class Screen { Main, Scan }
 
 @Composable
-private fun AppRoot(graph: AppGraph, linked: MutableStateFlow<String?>) {
+private fun AppRoot(graph: AppGraph) {
     val macs by graph.store.macs.collectAsStateWithLifecycle()
     val pairing by graph.pairing.state.collectAsStateWithLifecycle()
     val connection by graph.manager.state.collectAsStateWithLifecycle()
-    val link by linked.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        when {
-            // A link pairs without the camera, but still asks for notifications and local network.
-            link != null -> ScanScreen(
-                needsCamera = false,
-                onCode = { code ->
-                    linked.value = null
-                    graph.pairing.pair(code)
-                },
-                onBack = { linked.value = null },
-                autoStart = true,
-                initialCode = link,
+        when (val p = pairing) {
+            is PairingState.LinkOffer -> LinkOfferScreen(
+                offer = p,
+                onContinue = graph.pairing::acceptLink,
+                onCancel = graph.pairing::cancel,
             )
-            pairing != PairingState.Idle -> ConfirmCodeScreen(
-                state = pairing,
+            PairingState.Idle -> when {
+                screen == Screen.Scan -> {
+                    BackHandler { screen = Screen.Main }
+                    ScanScreen(onCode = graph.pairing::pair, onBack = { screen = Screen.Main })
+                }
+                macs == null -> Unit // the store is loading; a blank frame, no flash of onboarding
+                macs.orEmpty().isEmpty() -> OnboardingScreen(onPair = { screen = Screen.Scan })
+                else -> {
+                    val mac = macs.orEmpty().maxBy { it.lastConnectedAt }
+                    HomeScreen(
+                        mac = mac,
+                        state = connection,
+                        onRetry = graph.manager::kick,
+                        onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
+                        onPairAgain = {
+                            graph.scope.launch { graph.manager.forget(mac.id) }
+                            screen = Screen.Scan
+                        },
+                    )
+                }
+            }
+            else -> ConfirmCodeScreen(
+                state = p,
                 onConfirm = graph.pairing::confirm,
                 onCancel = graph.pairing::cancel,
                 onDone = {
@@ -98,25 +116,6 @@ private fun AppRoot(graph: AppGraph, linked: MutableStateFlow<String?>) {
                     screen = Screen.Scan
                 },
             )
-            screen == Screen.Scan -> {
-                BackHandler { screen = Screen.Main }
-                ScanScreen(
-                    needsCamera = true,
-                    onCode = { code -> graph.pairing.pair(code) },
-                    onBack = { screen = Screen.Main },
-                )
-            }
-            macs == null -> Unit // the store is loading; a blank frame, no flash of onboarding
-            macs.orEmpty().isEmpty() -> OnboardingScreen(onPair = { screen = Screen.Scan })
-            else -> {
-                val mac = macs.orEmpty().maxBy { it.lastConnectedAt }
-                HomeScreen(
-                    mac = mac,
-                    state = connection,
-                    onRetry = graph.manager::kick,
-                    onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
-                )
-            }
         }
     }
 }

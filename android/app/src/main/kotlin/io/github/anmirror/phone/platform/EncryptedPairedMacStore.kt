@@ -9,10 +9,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.FileNotFoundException
 import java.security.GeneralSecurityException
+import java.security.ProviderException
 
 /**
  * The paired Macs as one JSON list, encrypted as a single blob with [cipher] and written
@@ -45,11 +47,22 @@ class EncryptedPairedMacStore(
         try {
             json.decodeFromString(serializer, cipher.decrypt(blob).decodeToString())
         } catch (e: GeneralSecurityException) {
-            // The Keystore key is gone (data restored to another device, Keystore reset): the
-            // pairings cannot be read. Treat as none; the next save replaces the file.
-            Log.e(TAG, "paired Macs unreadable; treating as none", e)
-            emptyList()
+            unreadable(e)
+        } catch (e: ProviderException) {
+            // Keystore failures often surface as ProviderException (e.g. KeyStoreException).
+            unreadable(e)
+        } catch (e: SerializationException) {
+            unreadable(e)
         }
+    }
+
+    /**
+     * The Keystore key is gone (data restored elsewhere, Keystore reset) or the blob is damaged:
+     * the pairings cannot be read. Treated as none; the next save replaces the file.
+     */
+    private fun unreadable(e: Exception): List<PairedMac> {
+        Log.w(TAG, "paired Macs unreadable (${e.javaClass.simpleName}); treating as none")
+        return emptyList()
     }
 
     private suspend fun store(macs: List<PairedMac>) = withContext(Dispatchers.IO) {

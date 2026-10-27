@@ -20,6 +20,7 @@ import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.MainActivity
+import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
 import io.github.anmirror.phone.copyNamesMac
@@ -42,6 +43,7 @@ class ConnectionService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         graph = AppGraph.get(this)
         createChannel()
         goForeground(getString(R.string.state_looking_unnamed))
@@ -49,9 +51,11 @@ class ConnectionService : LifecycleService() {
         network.start()
         graph.manager.start()
         lifecycleScope.launch {
-            combine(graph.manager.state, graph.store.macs) { state, macs -> state to macs }
+            combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
+                Triple(state, macs, pairing.isUnderWay())
+            }
                 .distinctUntilChanged()
-                .collect { (state, macs) -> onState(state, macs) }
+                .collect { (state, macs, pairing) -> onState(state, macs, pairing) }
         }
         Log.i(TAG, "service: created")
     }
@@ -65,15 +69,18 @@ class ConnectionService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        running = false
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
         super.onDestroy()
     }
 
-    private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?) {
+    private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?, pairing: Boolean) {
         Log.i(TAG, "state: ${state.describe()}")
         if (state == PhoneConnectionState.NotPaired) {
+            // Started at Confirm, before the pairing saves the Mac: wait for it to finish.
+            if (pairing) return
             // The manager starts in NotPaired before it reads the store; only stop once the store
             // agrees no Mac is paired.
             lifecycleScope.launch {
@@ -144,11 +151,31 @@ class ConnectionService : LifecycleService() {
         const val CHANNEL_ID = "connection"
         private const val NOTIFICATION_ID = 1
 
-        fun start(context: Context) {
+        /** True between onCreate and onDestroy. */
+        @Volatile var running = false
+            private set
+
+        /**
+         * Starts the service. Android refuses a foreground service started from the background
+         * (ForegroundServiceStartNotAllowedException, an IllegalStateException): that is logged,
+         * and MainActivity starts it on its next resume. Returns whether the start was accepted.
+         */
+        fun start(context: Context): Boolean = try {
             ContextCompat.startForegroundService(context, Intent(context, ConnectionService::class.java))
+            true
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "service: start refused (${e.javaClass.simpleName})")
+            false
+        } catch (e: SecurityException) {
+            Log.w(TAG, "service: start refused (${e.javaClass.simpleName})")
+            false
         }
     }
 }
+
+/** Pairing is between Continue/scan and its result: the service must not stop meanwhile. */
+private fun PairingState.isUnderWay(): Boolean =
+    this is PairingState.Connecting || this is PairingState.ShowCode || this is PairingState.WaitingForMac
 
 /** For logs: no discovery key, no addresses. */
 private fun PhoneConnectionState.describe(): String = when (this) {

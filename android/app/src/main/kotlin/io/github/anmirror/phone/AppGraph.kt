@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import android.util.AtomicFile
+import android.util.Log
 import io.github.anmirror.connection.ConnectionManager
 import io.github.anmirror.connection.PROTOCOL_VERSION
 import io.github.anmirror.connection.PairedMac
@@ -19,6 +20,7 @@ import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.protocol.v1.Hello
 import io.github.anmirror.protocol.v1.SetupLevel
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +41,10 @@ class AppGraph private constructor(context: Context) {
     private val app = context.applicationContext
 
     /** Lives as long as the process. */
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "uncaught in app scope", e) },
+    )
 
     /** Created on first use (a Keystore key generation is slow), never on the main thread. */
     val identity: TlsIdentity = object : TlsIdentity {
@@ -67,7 +72,7 @@ class AppGraph private constructor(context: Context) {
         client = PhonePairingClient(connector, identity, deviceName(), deviceModel()),
         store = store,
         manager = manager,
-        onPaired = { ConnectionService.start(app) },
+        startService = { ConnectionService.start(app) },
     )
 
     init {

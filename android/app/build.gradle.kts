@@ -41,6 +41,11 @@ android {
         targetCompatibility = jvmTarget
     }
 
+    testOptions {
+        // android.util.Log in plain JVM unit tests: return defaults instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -70,4 +75,5 @@ dependencies {
 
     testImplementation(libs.kotlin.test.junit)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

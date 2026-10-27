@@ -38,8 +38,10 @@ fun HomeScreen(
     state: PhoneConnectionState,
     onRetry: () -> Unit,
     onForget: () -> Unit,
+    onPairAgain: () -> Unit,
 ) {
     var confirmForget by rememberSaveable { mutableStateOf(false) }
+    var confirmPairAgain by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -59,13 +61,34 @@ fun HomeScreen(
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         )
-        if (state !is PhoneConnectionState.Connected) {
+        if (state is PhoneConnectionState.NotRecognized) {
+            // The Mac forgot this phone: the way back is a new pairing.
+            Button(onClick = { confirmPairAgain = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_pair_again))
+            }
+        } else if (state !is PhoneConnectionState.Connected) {
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.home_forget))
         }
+    }
+    if (confirmPairAgain) {
+        AlertDialog(
+            onDismissRequest = { confirmPairAgain = false },
+            title = { Text(stringResource(R.string.home_pair_again_title)) },
+            text = { Text(stringResource(R.string.home_pair_again_body, mac.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmPairAgain = false
+                    onPairAgain()
+                }) { Text(stringResource(R.string.home_pair_again)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmPairAgain = false }) { Text(stringResource(R.string.pair_cancel)) }
+            },
+        )
     }
     if (confirmForget) {
         AlertDialog(
