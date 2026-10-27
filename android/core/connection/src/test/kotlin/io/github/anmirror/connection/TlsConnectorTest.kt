@@ -3,9 +3,12 @@ package io.github.anmirror.connection
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.Pong
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.net.InetAddress
 import java.net.ServerSocket
+import org.junit.Assume
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -102,13 +105,69 @@ class TlsConnectorTest {
                         (exchangeHello(channel, phoneHello()) as HelloResult.Failed).reason
                     } catch (e: UnreachableException) {
                         assertTrue(e.refusedByPeer, "pin matched, so this is a refusal: $e")
-                        assertEquals(listOf("127.0.0.1"), e.tried, "stops at the Mac that refused")
+                        assertEquals(listOf("127.0.0.1", "localhost"), e.tried, "every host is still tried")
                         HelloFailure.NOT_PAIRED
                     }
                 }
                 assertEquals(HelloFailure.NOT_PAIRED, outcome)
             }
         }
+    }
+
+    @Test
+    fun triesRemainingHostsAfterRefusal() = runBlocking {
+        // The first address has the pinned certificate but fails the handshake after the pin
+        // matched (what a refusing Mac looks like); the second is the Mac that knows us.
+        val good = try {
+            TestMacServer(bind = InetAddress.getByName("::1")) { c -> c.answerHello() }
+        } catch (e: java.io.IOException) {
+            Assume.assumeTrue("no IPv6 loopback", false)
+            return@runBlocking
+        }
+        good.use {
+            val refusing = try {
+                TestMacServer(identity = Identities.macCertWrongKey, bind = InetAddress.getByName("127.0.0.1"), port = good.port) { _ -> }
+            } catch (e: java.io.IOException) {
+                Assume.assumeTrue("port ${good.port} busy on IPv4", false)
+                return@runBlocking
+            }
+            refusing.use {
+                val channel = withTimeout(10_000) {
+                    TlsConnector(Identities.phone).connect(listOf("127.0.0.1", "::1"), good.port, Identities.MAC_FP)
+                }
+                assertEquals("::1", channel.host)
+                assertIs<HelloResult.Ok>(exchangeHello(channel, phoneHello()))
+                channel.close()
+                good.join()
+            }
+        }
+    }
+
+    @Test
+    fun refusalOnEveryHostIsReportedAfterTryingAll() = runBlocking {
+        TestMacServer(identity = Identities.macCertWrongKey) { _ -> }.use { server ->
+            val e = assertFailsWith<UnreachableException> {
+                withTimeout(10_000) {
+                    TlsConnector(Identities.phone).connect(listOf("127.0.0.1", "localhost"), server.port, Identities.MAC_FP)
+                }
+            }
+            assertTrue(e.refusedByPeer)
+            assertEquals(listOf("127.0.0.1", "localhost"), e.tried)
+            assertEquals(2, e.causes.size)
+        }
+    }
+
+    @Test
+    fun exchangeHelloClosesChannelWhenCancelled() = runBlocking {
+        val (phoneSide, macSide) = MemoryWire.pair()
+        val phone = ControlChannel(phoneSide, "h", 1, Identities.MAC_FP)
+        val mac = ControlChannel(macSide, "h", 1, Identities.PHONE_FP)
+        val job = launch { exchangeHello(phone, phoneHello()) } // the Mac never answers
+        withTimeout(5_000) { assertEquals(MessageType.HELLO, mac.receive()?.type) }
+        job.cancel()
+        job.join()
+        assertTrue(phone.isClosed)
+        assertEquals(null, withTimeout(5_000) { mac.receive() }, "the Mac side sees the close")
     }
 
     @Test

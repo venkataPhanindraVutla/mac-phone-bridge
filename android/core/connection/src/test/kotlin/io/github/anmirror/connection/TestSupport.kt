@@ -15,6 +15,10 @@ import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.net.InetAddress
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.cert.X509Certificate
+import javax.net.ssl.KeyManager
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
@@ -41,6 +45,27 @@ object Identities {
     val mac: TlsIdentity by lazy { Pkcs12Identity(File(dir, "mac.p12"), "test".toCharArray()) }
     val phone: TlsIdentity by lazy { Pkcs12Identity(File(dir, "phone.p12"), "test".toCharArray()) }
     val stranger: TlsIdentity by lazy { Pkcs12Identity(File(dir, "stranger.p12"), "test".toCharArray()) }
+
+    /**
+     * Presents the Mac's certificate but signs with the stranger's key: the phone's pin
+     * matches, then the handshake fails (CertificateVerify). Deterministically exercises the
+     * "pin matched, then the handshake failed" path that a refusing Mac usually takes.
+     */
+    val macCertWrongKey: TlsIdentity by lazy {
+        fun load(name: String) = KeyStore.getInstance("PKCS12").apply {
+            File(dir, "$name.p12").inputStream().use { load(it, "test".toCharArray()) }
+        }
+        val macStore = load("mac")
+        val macAlias = macStore.aliases().toList().first { macStore.isKeyEntry(it) }
+        val chain = macStore.getCertificateChain(macAlias).map { it as X509Certificate }.toTypedArray()
+        val strangerStore = load("stranger")
+        val strangerAlias = strangerStore.aliases().toList().first { strangerStore.isKeyEntry(it) }
+        val key = strangerStore.getKey(strangerAlias, "test".toCharArray()) as PrivateKey
+        object : TlsIdentity {
+            override val certificateDer: ByteArray = chain[0].encoded
+            override fun keyManagers(): Array<KeyManager> = arrayOf(SingleIdentityKeyManager(key, chain))
+        }
+    }
 }
 
 val CAPS = listOf("find.v1", "status.v1")
@@ -71,6 +96,8 @@ fun errorOf(code: ErrorCode): ProtoError = ProtoError.newBuilder().setCode(code)
 class TestMacServer(
     identity: TlsIdentity = Identities.mac,
     allowedClients: Set<String> = setOf(Identities.PHONE_FP),
+    bind: InetAddress = InetAddress.getLoopbackAddress(),
+    port: Int = 0,
     private val script: (MacConn) -> Unit,
 ) : Closeable {
     private val server: SSLServerSocket
@@ -85,7 +112,7 @@ class TestMacServer(
     init {
         val context = SSLContext.getInstance("TLSv1.3")
         context.init(identity.keyManagers(), arrayOf(PinnedTrustManager(allowedClients)), null)
-        server = context.serverSocketFactory.createServerSocket(0, 50, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        server = context.serverSocketFactory.createServerSocket(port, 50, bind) as SSLServerSocket
         server.enabledProtocols = arrayOf("TLSv1.3")
         server.needClientAuth = true
         thread(isDaemon = true, name = "test-mac-accept") {

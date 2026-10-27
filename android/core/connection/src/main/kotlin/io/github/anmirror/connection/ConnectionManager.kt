@@ -7,25 +7,30 @@ import io.github.anmirror.protocol.v1.Envelope
 import io.github.anmirror.protocol.v1.Goodbye
 import io.github.anmirror.protocol.v1.GoodbyeReason
 import io.github.anmirror.protocol.v1.Hello
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.channels.Channel as KChannel
 
 sealed interface PhoneConnectionState {
     /** No Mac is paired. */
     data object NotPaired : PhoneConnectionState
 
-    /** The last address failed; waiting for the Mac to show up in Bonjour. */
+    /** No address to try yet (no last address, nothing matching in Bonjour); waiting for one. */
     data object Searching : PhoneConnectionState
 
     data class Connecting(val mac: PairedMac) : PhoneConnectionState
@@ -34,22 +39,33 @@ sealed interface PhoneConnectionState {
 
     data class Unreachable(val mac: PairedMac) : PhoneConnectionState
 
+    /**
+     * The Mac answered with its pinned certificate but does not know this phone: it refused our
+     * certificate at TLS on every address tried, or said `system.error NOT_PAIRED`. Likely it
+     * forgot this phone while we were away. Not retried until [ConnectionManager.kick] (or a
+     * Bonjour address not tried yet). Never forgotten automatically: the refusal is spoofable.
+     */
+    data class NotRecognized(val mac: PairedMac) : PhoneConnectionState
+
     /** Different protocol versions. Not retried until [ConnectionManager.kick]. */
     data class Incompatible(val mac: PairedMac) : PhoneConnectionState
 
-    /** The Mac is serving another phone; retried with backoff. */
+    /** The Mac is serving another phone; retried after `busyRetryMs` or on kick. */
     data class Busy(val mac: PairedMac) : PhoneConnectionState
+
+    /** [ConnectionManager.stop] was called. */
+    data object Stopped : PhoneConnectionState
 }
 
-/** Timing knobs. Defaults are the SPEC 5.2/7 values; tests inject short ones. */
+/** Timing knobs. Defaults are the SPEC 7 values plus rulings R16; tests inject their own. */
 data class ConnectionTiming(
     val pingIntervalMs: Long = 30_000,
     val pongTimeoutMs: Long = 10_000,
     val helloTimeoutMs: Long = 10_000,
-    /** How long to wait for a matching Bonjour service in one attempt. */
-    val discoveryTimeoutMs: Long = 10_000,
-    /** Delay before retry n (0-based); the last value repeats: 1, 2, 4, 5, 5, ... s. */
-    val backoffMs: List<Long> = listOf(1_000, 2_000, 4_000, 5_000),
+    /** Delay before retry n (0-based); the last value repeats: 1, 2, 4, 5, 5, 5, 30, 60, 60, ... s. */
+    val backoffMs: List<Long> = listOf(1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 30_000, 60_000),
+    /** Retry delay after `system.error BUSY`. */
+    val busyRetryMs: Long = 60_000,
 ) {
     fun backoff(attempt: Int): Long = backoffMs[attempt.coerceIn(0, backoffMs.lastIndex)]
 }
@@ -59,12 +75,18 @@ data class ConnectionTiming(
  *
  * Policy:
  * - Picks the paired Mac with the latest `lastConnectedAt`.
- * - Tries `lastHost:lastPort` first; otherwise waits (up to `discoveryTimeoutMs`) for a
- *   Bonjour service whose TXT `r` matches that Mac's rotating ID at ±1 epoch (SPEC 6).
- * - Between failed attempts waits 1, 2, 4, 5, 5, ... s; [kick] retries now and resets it.
+ * - While disconnected, keeps one Bonjour subscription for that Mac; the latest service whose
+ *   TXT `r` matches its rotating ID at ±1 epoch (SPEC 6) is its discovered address.
+ * - An attempt tries `lastHost:lastPort`, then the discovered address.
+ * - After a failed attempt waits 1, 2, 4, 5, 5, 5 s, then 30 s once, then 60 s each time.
+ *   [kick] retries now and resets that; so does a matching Bonjour event, so a Mac that wakes
+ *   and re-advertises is reached within seconds even at the 60 s cap.
+ * - `BUSY`: retry after 60 s or on [kick]. `NOT_PAIRED`/refused on every address:
+ *   [PhoneConnectionState.NotRecognized]. Protocol mismatch: `Incompatible`. Both wait for [kick].
  * - While connected: ping every 30 s, reconnect if no pong within 10 s. Discovery is not
- *   consulted while connected, so other paired Macs appearing change nothing.
- * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect.
+ *   subscribed while connected, so other paired Macs appearing change nothing.
+ * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect. The backoff
+ *   starts over after a session that lived at least one ping interval.
  * - `system.goodbye UNPAIRED` removes the Mac, then moves on to the next Mac or `NotPaired`.
  *
  * [hello] builds the phone's `system.hello`; its capabilities decide what [send] allows.
@@ -83,32 +105,48 @@ class ConnectionManager(
     val state: StateFlow<PhoneConnectionState> = _state.asStateFlow()
 
     private val handlers = ConcurrentHashMap<String, suspend (Envelope) -> Unit>()
-    private val kicks = KChannel<Unit>(KChannel.CONFLATED)
+
+    /** [kick] from the app (network changed, Mac paired, user retry). */
+    private val userKicks = KChannel<Unit>(KChannel.CONFLATED)
+
+    /** A Bonjour event matching the target Mac arrived. */
+    private val discoveryWake = KChannel<Unit>(KChannel.CONFLATED)
+
+    /** Serialises [forget] with connection setup (presence check, save, publish). */
+    private val setupLock = Mutex()
+
+    private val stateLock = Any()
     private var job: Job? = null
+    private var generation = 0
+
+    @Volatile private var found: DiscoveredService? = null
 
     private class Current(val mac: PairedMac, val session: PhoneSession)
 
     @Volatile private var current: Current? = null
 
     fun start() {
-        synchronized(this) {
+        synchronized(stateLock) {
             if (job?.isActive == true) return
-            job = scope.launch { loop() }
+            val gen = ++generation
+            job = scope.launch { loop(gen) }
         }
     }
 
-    /** Stops connecting and closes the connection (no goodbye). */
+    /** Stops connecting, closes the connection (no goodbye) and moves to `Stopped`. */
     fun stop() {
-        synchronized(this) {
+        synchronized(stateLock) {
+            generation++ // the old loop can no longer publish states
             job?.cancel()
             job = null
+            _state.value = PhoneConnectionState.Stopped
         }
         current?.session?.channel?.close()
     }
 
     /** The network changed (or a Mac was just paired): retry now and reset the backoff. */
     fun kick() {
-        kicks.trySend(Unit)
+        userKicks.trySend(Unit)
     }
 
     /** Sends to the connected Mac. False when not connected or the feature is not shared. */
@@ -135,130 +173,230 @@ class ConnectionManager(
 
     /** Unpairs: tells the Mac (`system.goodbye UNPAIRED`) if connected, and removes it. */
     suspend fun forget(macId: String) {
-        store.remove(macId)
-        val c = current
-        if (c != null && c.mac.id == macId) {
-            runCatching {
-                c.session.channel.send(
-                    Channel.CHANNEL_SYSTEM, MessageType.GOODBYE,
-                    Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_UNPAIRED).build(),
-                )
-            }
+        val c = setupLock.withLock {
+            store.remove(macId)
+            current?.takeIf { it.mac.id == macId }
+        }
+        if (c != null) {
+            runCatching { c.session.channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, unpairedGoodbye()) }
             c.session.channel.close()
         }
         kick()
     }
 
+    private fun setState(gen: Int, s: PhoneConnectionState) {
+        synchronized(stateLock) { if (gen == generation) _state.value = s }
+    }
+
     private sealed interface Attempt {
         data class Connected(val channel: ControlChannel, val shared: Set<String>) : Attempt
+        data object NothingToDial : Attempt
         data object Unreachable : Attempt
+        data class NotRecognized(val tried: Set<String>) : Attempt
         data object Busy : Attempt
         data object Incompatible : Attempt
         data object Unpaired : Attempt
     }
 
-    private suspend fun loop() {
+    /** One Bonjour subscription for the Mac being looked for (only while disconnected). */
+    private inner class DiscoveryWatch(private val scope: CoroutineScope) {
+        private var job: Job? = null
+        private var macId: String? = null
+
+        fun follow(mac: PairedMac) {
+            if (macId == mac.id) return
+            stop()
+            macId = mac.id
+            job = scope.launch {
+                try {
+                    discovery.services().collect { service ->
+                        if (matchesMac(service, mac, Math.floorDiv(clock(), 1000L))) {
+                            found = service
+                            discoveryWake.trySend(Unit)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A failing browser ends the subscription; last addresses still work.
+                }
+            }
+        }
+
+        fun stop() {
+            job?.cancel()
+            job = null
+            macId = null
+            found = null
+        }
+    }
+
+    private suspend fun loop(gen: Int) = coroutineScope {
+        val watch = DiscoveryWatch(this)
         var attempt = 0
         while (true) {
             val mac = store.all().maxByOrNull { it.lastConnectedAt }
             if (mac == null) {
-                _state.value = PhoneConnectionState.NotPaired
-                kicks.receive()
+                watch.stop()
+                setState(gen, PhoneConnectionState.NotPaired)
+                userKicks.receive()
                 attempt = 0
                 continue
             }
-            when (val result = connect(mac)) {
+            watch.follow(mac)
+            yield() // let a new subscription report what it already knows
+            // Wake-ups from before this attempt are satisfied by it.
+            userKicks.tryReceive()
+            discoveryWake.tryReceive()
+
+            when (val result = connect(gen, mac)) {
                 is Attempt.Connected -> {
-                    if (runConnected(mac, result) == SessionEnd.UNPAIRED) store.remove(mac.id)
-                    // Dropped after being connected: start the backoff over. A Mac that is no
-                    // longer paired (goodbye UNPAIRED, forget) is not retried.
-                    attempt = 0
-                    val still = store.all().firstOrNull { it.id == mac.id } ?: continue
-                    _state.value = PhoneConnectionState.Connecting(still)
+                    watch.stop()
+                    val (end, matured) = runConnected(gen, mac, result)
+                    if (end == SessionEnd.UNPAIRED) store.remove(mac.id)
+                    // A Mac no longer paired (goodbye UNPAIRED, forget) is not retried.
+                    val still = store.all().firstOrNull { it.id == mac.id }
+                    if (still == null) {
+                        attempt = 0
+                        continue
+                    }
+                    // Only a session that lived a while proves the link is good again.
+                    if (matured) attempt = 0
+                    setState(gen, PhoneConnectionState.Connecting(still))
+                    watch.follow(still)
+                    attempt = backoffWait(attempt)
                 }
                 Attempt.Unpaired -> {
                     store.remove(mac.id)
                     attempt = 0
-                    continue
                 }
                 Attempt.Incompatible -> {
-                    _state.value = PhoneConnectionState.Incompatible(mac)
-                    kicks.receive()
+                    setState(gen, PhoneConnectionState.Incompatible(mac))
+                    userKicks.receive()
                     attempt = 0
-                    continue
                 }
-                Attempt.Busy -> _state.value = PhoneConnectionState.Busy(mac)
-                Attempt.Unreachable -> _state.value = PhoneConnectionState.Unreachable(mac)
+                is Attempt.NotRecognized -> {
+                    setState(gen, PhoneConnectionState.NotRecognized(mac))
+                    awaitNotRecognizedExit(result.tried)
+                    attempt = 0
+                }
+                Attempt.Busy -> {
+                    setState(gen, PhoneConnectionState.Busy(mac))
+                    if (withTimeoutOrNull(timing.busyRetryMs) { userKicks.receive() } != null) attempt = 0
+                }
+                Attempt.Unreachable -> {
+                    setState(gen, PhoneConnectionState.Unreachable(mac))
+                    attempt = backoffWait(attempt)
+                }
+                Attempt.NothingToDial -> {
+                    setState(gen, PhoneConnectionState.Searching)
+                    attempt = backoffWait(attempt)
+                }
             }
-            val kicked = withTimeoutOrNull(timing.backoff(attempt)) { kicks.receive() } != null
-            attempt = if (kicked) 0 else attempt + 1
         }
     }
 
-    /** One attempt: the last address, then Bonjour. */
-    private suspend fun connect(mac: PairedMac): Attempt {
+    /** Waits the backoff for [attempt]; a kick or matching Bonjour event ends it early and resets. */
+    private suspend fun backoffWait(attempt: Int): Int {
+        val woke = withTimeoutOrNull(timing.backoff(attempt)) {
+            select<Unit> {
+                userKicks.onReceive {}
+                discoveryWake.onReceive {}
+            }
+        } != null
+        return if (woke) 0 else attempt + 1
+    }
+
+    /** Until [kick], or a Bonjour address for this Mac that this attempt did not try. */
+    private suspend fun awaitNotRecognizedExit(tried: Set<String>) {
+        while (true) {
+            val kicked = select<Boolean> {
+                userKicks.onReceive { true }
+                discoveryWake.onReceive { false }
+            }
+            if (kicked) return
+            val f = found
+            if (f != null && "${f.host}:${f.port}" !in tried) return
+        }
+    }
+
+    /** One attempt: the last address, then the discovered one. */
+    private suspend fun connect(gen: Int, mac: PairedMac): Attempt {
+        val tried = LinkedHashSet<String>()
+        var refused = false
+
+        suspend fun tryAt(host: String, port: Int): Attempt? {
+            if (!tried.add("$host:$port")) return null
+            setState(gen, PhoneConnectionState.Connecting(mac))
+            val channel = try {
+                connector.connect(listOf(host), port, mac.fingerprintHex)
+            } catch (e: UnreachableException) {
+                if (e.refusedByPeer) refused = true
+                return null
+            }
+            return when (val r = exchangeHello(channel, hello(), timing.helloTimeoutMs)) {
+                is HelloResult.Ok -> Attempt.Connected(channel, r.shared)
+                is HelloResult.Failed -> when (r.reason) {
+                    HelloFailure.BUSY -> Attempt.Busy
+                    HelloFailure.PROTOCOL_MISMATCH -> Attempt.Incompatible
+                    HelloFailure.UNPAIRED -> Attempt.Unpaired
+                    // system.error NOT_PAIRED, or an alert refusing our certificate on first read.
+                    HelloFailure.NOT_PAIRED -> {
+                        refused = true
+                        null
+                    }
+                    HelloFailure.TIMED_OUT, HelloFailure.CLOSED, HelloFailure.REJECTED -> null
+                }
+            }
+        }
+
         val host = mac.lastHost
         val port = mac.lastPort
-        if (host != null && port != null) {
-            _state.value = PhoneConnectionState.Connecting(mac)
-            dial(mac, host, port)?.let { return handshake(it) }
+        if (host != null && port != null) tryAt(host, port)?.let { return it }
+        found?.let { s -> tryAt(s.host, s.port)?.let { return it } }
+        return when {
+            refused -> Attempt.NotRecognized(tried)
+            tried.isEmpty() -> Attempt.NothingToDial
+            else -> Attempt.Unreachable
         }
-        _state.value = PhoneConnectionState.Searching
-        val channel = withTimeoutOrNull(timing.discoveryTimeoutMs) {
-            discovery.services()
-                .filter { matchesMac(it, mac, Math.floorDiv(clock(), 1000L)) }
-                .mapNotNull { service ->
-                    _state.value = PhoneConnectionState.Connecting(mac)
-                    dial(mac, service.host, service.port)
-                        .also { if (it == null) _state.value = PhoneConnectionState.Searching }
+    }
+
+    /** Returns how the session ended and whether it lived at least one ping interval. */
+    private suspend fun runConnected(gen: Int, mac: PairedMac, a: Attempt.Connected): Pair<SessionEnd, Boolean> {
+        val channel = a.channel
+        try {
+            val session = setupLock.withLock {
+                // Forgotten while we were dialing: do not bring it back.
+                if (store.all().none { it.id == mac.id }) return@withLock null
+                val updated = mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = clock())
+                store.save(updated)
+                PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs).also {
+                    current = Current(updated, it)
+                    setState(gen, PhoneConnectionState.Connected(updated, a.shared))
                 }
-                .firstOrNull()
-        } ?: return Attempt.Unreachable
-        return handshake(channel)
-    }
-
-    private suspend fun dial(mac: PairedMac, host: String, port: Int): ControlChannel? = try {
-        connector.connect(listOf(host), port, mac.fingerprintHex)
-    } catch (e: UnreachableException) {
-        null
-    }
-
-    private suspend fun handshake(channel: ControlChannel): Attempt =
-        when (val r = exchangeHello(channel, hello(), timing.helloTimeoutMs)) {
-            is HelloResult.Ok -> Attempt.Connected(channel, r.shared)
-            is HelloResult.Failed -> when (r.reason) {
-                HelloFailure.BUSY -> Attempt.Busy
-                HelloFailure.PROTOCOL_MISMATCH -> Attempt.Incompatible
-                HelloFailure.UNPAIRED -> Attempt.Unpaired
-                // NOT_PAIRED is not taken as proof of unpairing: a TLS refusal looks the same.
-                HelloFailure.NOT_PAIRED, HelloFailure.TIMED_OUT, HelloFailure.CLOSED, HelloFailure.REJECTED ->
-                    Attempt.Unreachable
             }
-        }
-
-    private suspend fun runConnected(mac: PairedMac, a: Attempt.Connected): SessionEnd {
-        // Forgotten while we were dialing: do not bring it back.
-        if (store.all().none { it.id == mac.id }) {
-            runCatching {
-                a.channel.send(
-                    Channel.CHANNEL_SYSTEM, MessageType.GOODBYE,
-                    Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_UNPAIRED).build(),
-                )
+            if (session == null) {
+                runCatching { channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, unpairedGoodbye()) }
+                channel.close()
+                return SessionEnd.CLOSED to false
             }
-            a.channel.close()
-            return SessionEnd.CLOSED
-        }
-        val updated = mac.copy(lastHost = a.channel.host, lastPort = a.channel.port, lastConnectedAt = clock())
-        store.save(updated)
-        val session = PhoneSession(a.channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs)
-        // A kick from before this connection is stale.
-        kicks.tryReceive()
-        current = Current(updated, session)
-        _state.value = PhoneConnectionState.Connected(updated, a.shared)
-        return try {
-            session.run(pingNow = kicks) { env -> handlers[env.type]?.invoke(env) }
+            return coroutineScope {
+                val matured = AtomicBoolean(false)
+                val timer = launch {
+                    delay(timing.pingIntervalMs)
+                    matured.set(true)
+                }
+                val end = session.run(pingNow = userKicks) { env -> handlers[env.type]?.invoke(env) }
+                timer.cancel()
+                end to matured.get()
+            }
+        } catch (t: Throwable) {
+            channel.close()
+            throw t
         } finally {
             current = null
         }
     }
+
+    private fun unpairedGoodbye(): Goodbye = Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_UNPAIRED).build()
 }

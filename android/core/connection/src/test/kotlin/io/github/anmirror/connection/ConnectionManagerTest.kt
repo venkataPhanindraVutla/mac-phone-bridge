@@ -72,8 +72,11 @@ class ConnectionManagerTest {
         assertEquals(30_000, t.pingIntervalMs)
         assertEquals(10_000, t.pongTimeoutMs)
         assertEquals(10_000, t.helloTimeoutMs)
-        assertEquals(listOf(1_000L, 2_000L, 4_000L, 5_000L), t.backoffMs)
-        assertEquals(listOf(1_000L, 2_000L, 4_000L, 5_000L, 5_000L, 5_000L), (0..5).map { t.backoff(it) })
+        assertEquals(60_000, t.busyRetryMs)
+        assertEquals(
+            listOf(1_000L, 2_000L, 4_000L, 5_000L, 5_000L, 5_000L, 30_000L, 60_000L, 60_000L, 60_000L),
+            (0..9).map { t.backoff(it) },
+        )
     }
 
     @Test
@@ -141,7 +144,8 @@ class ConnectionManagerTest {
         advanceTimeBy(5_000)
         runCurrent()
         assertEquals(emptyList(), r.connector.dials.map { it.first })
-        assertEquals(PhoneConnectionState.Unreachable(r.store.all().single()), r.manager.state.value)
+        // Nothing to dial: no last address and no matching service.
+        assertEquals(PhoneConnectionState.Searching, r.manager.state.value)
     }
 
     @Test
@@ -195,19 +199,70 @@ class ConnectionManagerTest {
     }
 
     @Test
-    fun backoffFollowsSpecSequenceAndKickResetsIt() = runTest {
+    fun backoffCapsAt60sAfterSixAttempts() = runTest {
         val r = rig(listOf(macA()))
         r.manager.start()
-        advanceTimeBy(17_001)
+        advanceTimeBy(400_001)
         runCurrent()
-        assertEquals(listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L), r.connector.dials.map { it.second })
+        // Waits 1, 2, 4, 5, 5, 5 s, then 30 s once, then 60 s.
+        assertEquals(
+            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 52_000L, 112_000L, 172_000L, 232_000L, 292_000L, 352_000L),
+            r.connector.dials.map { it.second },
+        )
         assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
 
         r.manager.kick() // network changed: retry now, and start the backoff over
         runCurrent()
-        advanceTimeBy(1_001)
+        advanceTimeBy(1_000)
         runCurrent()
-        assertEquals(listOf(17_001L, 18_001L), r.connector.dials.map { it.second }.drop(6))
+        assertEquals(listOf(400_001L, 401_001L), r.connector.dials.map { it.second }.drop(13))
+    }
+
+    @Test
+    fun matchingDiscoveryEventKicksDuringBackoff() = runTest {
+        val flow = MutableSharedFlow<DiscoveredService>(extraBufferCapacity = 16)
+        val r = rig(listOf(macA()), MacDiscovery { flow })
+        r.manager.start()
+        advanceTimeBy(200_000) // deep into the 60 s cap; last dial at 172 s, next due at 232 s
+        runCurrent()
+        assertEquals(172_000L, r.connector.dials.last().second)
+
+        // Another Mac's advertisement is not a wake-up.
+        flow.tryEmit(service("10.0.0.21", 4000, keyB))
+        runCurrent()
+        assertEquals(172_000L, r.connector.dials.last().second)
+
+        // Our Mac wakes on a new address and re-advertises: reconnect now, not at 232 s.
+        r.addMac("10.0.0.30:4000", Identities.MAC_FP, backgroundScope)
+        flow.tryEmit(service("10.0.0.30", 4000, keyA))
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals("10.0.0.30:4000" to 200_000L, r.connector.dials.last())
+        assertEquals(4000, r.store.all().single().lastPort)
+        assertEquals("10.0.0.30", r.store.all().single().lastHost)
+    }
+
+    @Test
+    fun discoveryIsOneSubscriptionWhileDisconnected() = runTest {
+        var subscriptions = 0
+        val r = rig(listOf(macA()), MacDiscovery { kotlinx.coroutines.flow.flow { subscriptions++; kotlinx.coroutines.awaitCancellation() } })
+        r.manager.start()
+        advanceTimeBy(300_000)
+        runCurrent()
+        assertTrue(r.connector.dials.size > 5)
+        assertEquals(1, subscriptions, "no fresh Bonjour poll per attempt")
+    }
+
+    @Test
+    fun shortSessionsDoNotResetBackoff() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.goodbyeAfterHello = GoodbyeReason.GOODBYE_REASON_SHUTDOWN
+        r.manager.start()
+        advanceTimeBy(7_001)
+        runCurrent()
+        // Each session dies at once, so the backoff keeps growing: 1, 2, 4 s.
+        assertEquals(listOf(0L, 1_000L, 3_000L, 7_000L), r.connector.dials.map { it.second })
     }
 
     @Test
@@ -359,17 +414,126 @@ class ConnectionManagerTest {
     }
 
     @Test
-    fun busyMacIsRetriedWithBackoff() = runTest {
+    fun busyRetriesAt60s() = runTest {
         val r = rig(listOf(macA()))
         val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
         mac.errorOnHello = ErrorCode.ERROR_CODE_BUSY
         r.manager.start()
         runCurrent()
         assertEquals(PhoneConnectionState.Busy(macA()), r.manager.state.value)
+        advanceTimeBy(59_999)
+        runCurrent()
+        assertEquals(1, mac.connects)
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(2, mac.connects)
+        assertEquals(PhoneConnectionState.Busy(macA()), r.manager.state.value)
+
         mac.errorOnHello = null
-        advanceTimeBy(1_001)
+        r.manager.kick()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals(3, mac.connects)
+    }
+
+    @Test
+    fun notPairedEntersNotRecognizedAndStopsRetrying() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.errorOnHello = ErrorCode.ERROR_CODE_NOT_PAIRED
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals(1, mac.connects, "no retry loop against a Mac that does not know us")
+        assertEquals(listOf(macA()), r.store.all(), "never forgotten automatically")
+    }
+
+    @Test
+    fun refusalOnEveryAddressEntersNotRecognized() = runTest {
+        val r = rig(listOf(macA()), StaticDiscovery(listOf(service("10.0.0.9", 4000, keyA))))
+        r.connector.refusing += "10.0.0.5:4000"
+        r.connector.refusing += "10.0.0.9:4000"
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(listOf("10.0.0.5:4000", "10.0.0.9:4000"), r.connector.dials.map { it.first })
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals(2, r.connector.dials.size)
+    }
+
+    @Test
+    fun refusalAtLastAddressStillTriesDiscoveredAddress() = runTest {
+        // Something else at the old address refuses (or a stale NAT mapping): the Mac is elsewhere.
+        val r = rig(listOf(macA()), StaticDiscovery(listOf(service("10.0.0.9", 4000, keyA))))
+        r.connector.refusing += "10.0.0.5:4000"
+        r.addMac("10.0.0.9:4000", Identities.MAC_FP, backgroundScope)
+        r.manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+    }
+
+    @Test
+    fun kickLeavesNotRecognized() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.errorOnHello = ErrorCode.ERROR_CODE_NOT_PAIRED
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        mac.errorOnHello = null // e.g. the user re-paired on the Mac side
+        r.manager.kick()
         runCurrent()
         assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
         assertEquals(2, mac.connects)
+    }
+
+    @Test
+    fun stopLeavesStoppedAndClosesConnection() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        r.manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        r.manager.stop()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Stopped, r.manager.state.value)
+        assertEquals(1, mac.disconnects)
+        advanceTimeBy(120_000)
+        runCurrent()
+        assertEquals(PhoneConnectionState.Stopped, r.manager.state.value)
+        assertEquals(1, mac.connects)
+    }
+
+    @Test
+    fun forgetDuringConnectionSetupWins() = runTest {
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        lateinit var manager: ConnectionManager
+        var hooked = false
+        // forget() lands exactly while the connect-time save is in progress.
+        val store = object : PairedMacStore by inner {
+            override suspend fun save(mac: PairedMac) {
+                if (!hooked) {
+                    hooked = true
+                    backgroundScope.launch { manager.forget(mac.id) }
+                    kotlinx.coroutines.yield()
+                }
+                inner.save(mac)
+            }
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val mac = FakeMac(Identities.MAC_FP, backgroundScope).also { connector.macs["10.0.0.5:4000"] = it }
+        manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        advanceTimeBy(120_000)
+        runCurrent()
+        assertTrue(hooked)
+        assertEquals(emptyList(), inner.all(), "the forgotten Mac is not brought back")
+        assertEquals(PhoneConnectionState.NotPaired, manager.state.value)
+        assertEquals(1, mac.received.count { it.type == MessageType.GOODBYE })
+        assertEquals(1, mac.connects)
     }
 }

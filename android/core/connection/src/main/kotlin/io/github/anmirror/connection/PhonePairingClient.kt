@@ -11,7 +11,6 @@ import io.github.anmirror.protocol.v1.ErrorCode
 import io.github.anmirror.protocol.v1.PairComplete
 import io.github.anmirror.protocol.v1.PairConfirm
 import io.github.anmirror.protocol.v1.PairRequest
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.coroutineScope
@@ -76,13 +75,14 @@ class PhonePairingClient(
         }
         val result = try {
             run(uri, macFpHex, channel, showCode)
-        } catch (e: CancellationException) {
-            channel.close()
-            throw e
         } catch (e: IOException) {
             PairingResult.Failed(PairingFailure.REJECTED)
         } catch (e: ProtocolException) {
             PairingResult.Failed(PairingFailure.REJECTED)
+        } catch (t: Throwable) {
+            // Cancellation, or showCode throwing: close the socket, then rethrow.
+            channel.close()
+            throw t
         }
         if (result is PairingResult.Failed) channel.close()
         return result

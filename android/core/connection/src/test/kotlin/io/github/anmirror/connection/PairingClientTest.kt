@@ -10,12 +10,14 @@ import io.github.anmirror.protocol.v1.PairConfirm
 import io.github.anmirror.protocol.v1.PairRequest
 import io.github.anmirror.protocol.v1.PairVerified
 import com.google.protobuf.ByteString
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -195,6 +197,37 @@ class PairingClientTest {
             val result = withTimeout(15_000) { client().pair(uri(server.port)) { true } }
             assertEquals(PairingResult.Failed(PairingFailure.UNREACHABLE), result)
             assertEquals(0, server.scriptsStarted.get())
+        }
+    }
+
+    @Test
+    fun showCodeThrowingClosesTheConnection() = runBlocking {
+        val closed = AtomicReference<Boolean>()
+        TestMacServer { c ->
+            c.verify()
+            closed.set(c.awaitEof())
+        }.use { server ->
+            assertFailsWith<IllegalStateException> {
+                withTimeout(15_000) { client().pair(uri(server.port)) { error("UI went away") } }
+            }
+            server.join()
+            assertEquals(true, closed.get(), "no socket left open")
+        }
+    }
+
+    @Test
+    fun cancellingPairClosesTheConnection() = runBlocking {
+        val closed = AtomicReference<Boolean>()
+        TestMacServer { c ->
+            c.verify()
+            closed.set(c.awaitEof())
+        }.use { server ->
+            val job = launch { client().pair(uri(server.port)) { kotlinx.coroutines.awaitCancellation() } }
+            kotlinx.coroutines.delay(500)
+            job.cancel()
+            job.join()
+            server.join()
+            assertEquals(true, closed.get())
         }
     }
 

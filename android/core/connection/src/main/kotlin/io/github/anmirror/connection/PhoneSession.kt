@@ -61,7 +61,7 @@ enum class HelloFailure {
 
 /**
  * The connect handshake (SPEC 3 "Capabilities"): the phone sends `system.hello` first and
- * waits [timeoutMs] for the Mac's. On any failure the channel is closed.
+ * waits [timeoutMs] for the Mac's. On any failure, or cancellation, the channel is closed.
  */
 suspend fun exchangeHello(channel: ControlChannel, hello: Hello, timeoutMs: Long = 10_000): HelloResult {
     val result = try {
@@ -78,6 +78,10 @@ suspend fun exchangeHello(channel: ControlChannel, hello: Hello, timeoutMs: Long
         HelloResult.Failed(HelloFailure.CLOSED)
     } catch (e: ProtocolException) {
         HelloResult.Failed(HelloFailure.CLOSED)
+    } catch (t: Throwable) {
+        // Cancellation or anything unexpected: do not leak the socket.
+        channel.close()
+        throw t
     }
     if (result is HelloResult.Failed) channel.close()
     return result

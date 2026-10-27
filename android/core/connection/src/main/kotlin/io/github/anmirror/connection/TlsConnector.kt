@@ -16,9 +16,9 @@ import javax.net.ssl.SSLSocket
 /**
  * None of [tried] gave a pinned TLS 1.3 connection. [causes] has one entry per host.
  *
- * [refusedByPeer] is true when the last host tried presented the pinned certificate but then
+ * [refusedByPeer] is true when at least one host presented the pinned certificate but then
  * ended the handshake: the right Mac, refusing this phone's certificate (it is not paired
- * and no pairing window is open). The connector stops at such a host.
+ * and no pairing window is open). Every host is still tried before this is reported.
  */
 class UnreachableException(
     val tried: List<String>,
@@ -47,7 +47,8 @@ class TlsConnector(
 
     override suspend fun connect(hosts: List<String>, port: Int, pinnedFpHex: String): ControlChannel {
         val causes = ArrayList<Throwable>()
-        for ((i, host) in hosts.withIndex()) {
+        var refused = false
+        for (host in hosts) {
             val pinMatched = AtomicBoolean(false)
             val context = SSLContext.getInstance("TLSv1.3").apply {
                 init(identity.keyManagers(), arrayOf(PinnedTrustManager(setOf(pinnedFpHex)) { pinMatched.set(true) }), null)
@@ -56,12 +57,12 @@ class TlsConnector(
                 return ControlChannel(dial(context, host, port), host)
             } catch (e: IOException) {
                 causes += e
-                // Our Mac answered and turned us away: other addresses are the same Mac.
-                // (A timeout after the pin matched is just a slow path: try the next host.)
-                if (pinMatched.get() && e !is SocketTimeoutException) throw UnreachableException(hosts.take(i + 1), causes, refusedByPeer = true)
+                // Our Mac answered and turned us away. Keep trying the other hosts; report the
+                // refusal only if none works. (A timeout after the pin matched is not a refusal.)
+                if (pinMatched.get() && e !is SocketTimeoutException) refused = true
             }
         }
-        throw UnreachableException(hosts, causes)
+        throw UnreachableException(hosts, causes, refusedByPeer = refused)
     }
 
     private suspend fun dial(context: SSLContext, host: String, port: Int): SSLSocket = coroutineScope {
@@ -76,6 +77,8 @@ class TlsConnector(
             }
         }
         try {
+            // If cancellation lands after the block finished (done = true), withContext still
+            // throws: the catch below closes the socket so it does not leak.
             withContext(Dispatchers.IO) {
                 var ssl: SSLSocket? = null
                 try {
@@ -96,6 +99,9 @@ class TlsConnector(
                     throw t
                 }
             }
+        } catch (t: Throwable) {
+            runCatching { raw.close() } // autoClose: closes the SSL layer too
+            throw t
         } finally {
             watchdog.cancel()
         }

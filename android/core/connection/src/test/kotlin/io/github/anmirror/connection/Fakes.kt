@@ -71,6 +71,13 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
     @Volatile var answerPings = true
     @Volatile var helloVersion = 1
     @Volatile var errorOnHello: ErrorCode? = null
+
+    /** Answer hello, then say goodbye with this reason right away (a session that dies at once). */
+    @Volatile var goodbyeAfterHello: GoodbyeReason? = null
+
+    /** Connections whose Mac side has ended (phone closed or Mac hung up). */
+    @Volatile var disconnects = 0
+        private set
     @Volatile var connects = 0
         private set
     val received = CopyOnWriteArrayList<Envelope>()
@@ -99,6 +106,10 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
                             mac.close()
                         } else {
                             mac.send(Channel.CHANNEL_SYSTEM, MessageType.HELLO, macHello(caps, helloVersion), e.id)
+                            goodbyeAfterHello?.let { reason ->
+                                mac.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, Goodbye.newBuilder().setReason(reason).build())
+                                mac.close()
+                            }
                         }
                     }
                     MessageType.PING -> if (answerPings) {
@@ -106,6 +117,7 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
                     }
                 }
             }
+            disconnects++
         }
         return phone
     }
@@ -122,12 +134,20 @@ class FakeConnector(private val now: () -> Long) : MacConnector {
     val macs = ConcurrentHashMap<String, FakeMac>()
     val dials = CopyOnWriteArrayList<Pair<String, Long>>()
 
+    /** "host:port" where the pinned Mac answers but refuses this phone's certificate at TLS. */
+    val refusing: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     override suspend fun connect(hosts: List<String>, port: Int, pinnedFpHex: String): ControlChannel {
+        var refused = false
         for (h in hosts) {
             dials += "$h:$port" to now()
+            if ("$h:$port" in refusing) {
+                refused = true
+                continue
+            }
             val mac = macs["$h:$port"]
             if (mac != null && mac.fpHex == pinnedFpHex) return mac.accept(h, port)
         }
-        throw UnreachableException(hosts)
+        throw UnreachableException(hosts, refusedByPeer = refused)
     }
 }
