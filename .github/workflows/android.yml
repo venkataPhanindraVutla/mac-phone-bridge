@@ -1,0 +1,25 @@
+name: android
+on:
+  push:
+  pull_request:
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Unit tests
+        run: ./gradlew test
+      - name: Lint and assemble (once the app module exists)
+        run: |
+          if [ -f app/build.gradle.kts ]; then
+            ./gradlew lint assembleOssDebug
+          else
+            echo "android/app not present yet (added by Task 9); skipping lint/assembleOssDebug"
+          fi

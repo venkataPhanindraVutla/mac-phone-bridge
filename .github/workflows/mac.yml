@@ -1,0 +1,40 @@
+name: mac
+on:
+  push:
+  pull_request:
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Install protoc 4.36.2
+        run: |
+          curl -fsSL -o protoc "https://repo1.maven.org/maven2/com/google/protobuf/protoc/4.36.2/protoc-4.36.2-osx-aarch_64.exe"
+          echo "765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb  protoc" | shasum -a 256 -c -
+          chmod +x protoc
+          mkdir -p "$HOME/.local/bin"
+          mv protoc "$HOME/.local/bin/protoc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Check generated protobuf sources
+        run: scripts/gen-proto.sh --check
+      - name: Check protocol vectors
+        run: python3 -I protocol/tools/make_vectors.py --check
+      - name: Swift tests
+        run: swift test --package-path mac/Packages/AMKit
+      - name: Generate Xcode project
+        run: |
+          if [ -f mac/project.yml ]; then
+            xcodegen --spec mac/project.yml --project mac
+          else
+            echo "mac/project.yml not present yet (added by Task 8); skipping"
+          fi
+      - name: Build app
+        run: |
+          if [ -f mac/project.yml ]; then
+            xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
+              -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
+          else
+            echo "mac app not present yet; skipping"
+          fi
