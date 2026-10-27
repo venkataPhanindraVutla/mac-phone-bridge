@@ -24,6 +24,7 @@ import kotlinx.coroutines.yield
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.channels.Channel as KChannel
 
 sealed interface PhoneConnectionState {
@@ -130,6 +131,9 @@ class ConnectionManager(
 
     @Volatile private var found: DiscoveredService? = null
 
+    /** A connection handed over by [adopt], not yet used by an attempt. */
+    private val adopted = AtomicReference<ControlChannel?>(null)
+
     private class Current(val mac: PairedMac, val session: PhoneSession)
 
     @Volatile private var current: Current? = null
@@ -156,6 +160,20 @@ class ConnectionManager(
     /** The network changed (or a Mac was just paired): retry now and reset the backoff. */
     fun kick() {
         userKicks.trySend(Unit)
+    }
+
+    /**
+     * Hands over the connection a finished pairing left open (SPEC 5.3 step 6: the phone says
+     * `system.hello` on the same connection). Save the new Mac to the store first. The next
+     * attempt for the Mac this channel is pinned to says hello on it instead of dialing; if that
+     * fails it dials as usual. A channel no attempt can use is closed. A session with another
+     * Mac is closed, so the new Mac (the latest `lastConnectedAt`) is picked next. Kicks.
+     */
+    fun adopt(channel: ControlChannel) {
+        adopted.getAndSet(channel)?.takeIf { it !== channel }?.close()
+        current?.takeIf { !it.mac.fingerprintHex.equals(channel.peerFingerprintHex, ignoreCase = true) }
+            ?.session?.channel?.close()
+        kick()
     }
 
     /** Sends to the connected Mac. False when not connected or the feature is not shared. */
@@ -375,22 +393,14 @@ class ConnectionManager(
             Wake.TIMEOUT
         } ?: Wake.TIMEOUT
 
-    /** One attempt: the last address, then the discovered one. */
+    /** One attempt: an adopted pairing connection, the last address, then the discovered one. */
     private suspend fun connect(gen: Int, mac: PairedMac): Attempt {
         val tried = LinkedHashSet<String>()
         var refused = false // heuristic: TLS-level refusal
         var notPaired = false // explicit system.error NOT_PAIRED
 
-        suspend fun tryAt(host: String, port: Int): Attempt? {
-            if (!tried.add("$host:$port")) return null
-            setState(gen, PhoneConnectionState.Connecting(mac))
-            val channel = try {
-                connector.connect(listOf(host), port, mac.fingerprintHex)
-            } catch (e: UnreachableException) {
-                if (e.refusedByPeer) refused = true
-                return null
-            }
-            return when (val r = exchangeHello(channel, hello(), timing.helloTimeoutMs)) {
+        suspend fun helloOn(channel: ControlChannel): Attempt? =
+            when (val r = exchangeHello(channel, hello(), timing.helloTimeoutMs)) {
                 is HelloResult.Ok -> Attempt.Connected(channel, r.shared)
                 is HelloResult.Failed -> when (r.reason) {
                     HelloFailure.BUSY -> Attempt.Busy
@@ -406,6 +416,28 @@ class ConnectionManager(
                     }
                     HelloFailure.TIMED_OUT, HelloFailure.CLOSED, HelloFailure.REJECTED -> null
                 }
+            }
+
+        suspend fun tryAt(host: String, port: Int): Attempt? {
+            if (!tried.add("$host:$port")) return null
+            setState(gen, PhoneConnectionState.Connecting(mac))
+            val channel = try {
+                connector.connect(listOf(host), port, mac.fingerprintHex)
+            } catch (e: UnreachableException) {
+                if (e.refusedByPeer) refused = true
+                return null
+            }
+            return helloOn(channel)
+        }
+
+        // The connection a pairing just left open, if it is this Mac's.
+        adopted.getAndSet(null)?.let { channel ->
+            if (channel.isClosed || !channel.peerFingerprintHex.equals(mac.fingerprintHex, ignoreCase = true)) {
+                channel.close()
+            } else {
+                tried.add("${channel.host}:${channel.port}")
+                setState(gen, PhoneConnectionState.Connecting(mac))
+                helloOn(channel)?.let { return it }
             }
         }
 

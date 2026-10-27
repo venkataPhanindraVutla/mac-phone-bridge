@@ -697,4 +697,54 @@ class ConnectionManagerTest {
         assertEquals(1, mac.received.count { it.type == MessageType.GOODBYE })
         assertEquals(1, mac.connects)
     }
+
+    @Test
+    fun adoptedPairingChannelSaysHelloWithoutDialing() = runTest {
+        // SPEC 5.3 step 6: after pairing.complete the phone says hello on the same connection.
+        val r = rig(emptyList())
+        val fake = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotPaired, r.manager.state.value)
+        r.store.save(macA())
+        r.manager.adopt(fake.accept("10.0.0.5", 4000))
+        runCurrent()
+        val state = assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals(Identities.MAC_FP, state.mac.id)
+        assertEquals(emptyList(), r.connector.dials, "the pairing connection is used, not a new one")
+        assertEquals(1, fake.connects)
+        assertEquals(1, fake.received.count { it.type == MessageType.HELLO })
+    }
+
+    @Test
+    fun adoptedChannelOfAnotherMacIsClosedNotUsed() = runTest {
+        val r = rig(listOf(macA()))
+        val a = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        val stranger = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        val channel = stranger.accept("10.0.0.9", 4000)
+        r.manager.adopt(channel)
+        r.manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals(1, a.connects, "Mac A is dialed as usual")
+        assertTrue(channel.isClosed, "a channel no attempt can use is closed")
+        assertEquals(0, stranger.received.count { it.type == MessageType.HELLO })
+    }
+
+    @Test
+    fun adoptedChannelThatFailsHelloFallsBackToDialing() = runTest {
+        val r = rig(emptyList())
+        val fake = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        r.manager.start()
+        runCurrent()
+        r.store.save(macA(host = "10.0.0.5", port = 4000))
+        val channel = fake.accept("10.0.0.5", 4000)
+        channel.close() // the Mac hung up after pairing.complete
+        r.manager.adopt(channel)
+        runCurrent()
+        advanceTimeBy(1_500)
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertTrue(r.connector.dials.isNotEmpty(), "redials once the adopted connection is gone")
+    }
 }
