@@ -6,6 +6,7 @@ import SwiftUI
 struct PairingWindow: View {
     let model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var hostWindow: NSWindow?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -14,9 +15,11 @@ struct PairingWindow: View {
         .padding(24)
         .frame(width: 360)
         .onDisappear { model.cancelPairing() }
-        // A close that only hides the window does not run onDisappear.
+        .background(HostWindowReader { hostWindow = $0 })
+        // A close that only hides the window does not run onDisappear. Matched by object
+        // identity with this view's own window, not by its title.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-            if let window = note.object as? NSWindow, window.title == String(localized: "Pair a phone") {
+            if let closing = note.object as? NSWindow, let hostWindow, closing === hostWindow {
                 model.cancelPairing()
             }
         }
@@ -119,5 +122,20 @@ struct PairingWindow: View {
     /// "123456" -> "1 2 3 4 5 6" so VoiceOver reads digit by digit.
     static func spoken(_ code: String) -> String {
         code.map(String.init).joined(separator: " ")
+    }
+}
+
+/// Reports the NSWindow that hosts the view it is attached to.
+private struct HostWindowReader: NSViewRepresentable {
+    let onChange: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in onChange(view?.window) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { [weak view] in onChange(view?.window) }
     }
 }
