@@ -1,0 +1,26 @@
+// Pairing channel.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message PairRequest {
+  uint32 protocol_version = 1;
+  bytes secret_proof = 2;
+  string device_name = 3;
+  string device_model = 4;
+}
+
+message PairVerified {}
+
+message PairConfirm {
+  bool accepted = 1;
+}
+
+message PairComplete {
+  bytes discovery_key = 1;
+  string mac_name = 2;
+}

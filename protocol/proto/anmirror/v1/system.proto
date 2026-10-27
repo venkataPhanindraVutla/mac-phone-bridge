@@ -1,0 +1,52 @@
+// System channel: handshake, keep-alive, errors.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum SetupLevel {
+  SETUP_LEVEL_UNSPECIFIED = 0;
+  SETUP_LEVEL_BASIC = 1;
+  SETUP_LEVEL_FULL = 2;
+}
+
+message Hello {
+  uint32 protocol_version = 1;
+  string app_version = 2;
+  repeated string capabilities = 3;
+  SetupLevel setup_level = 4;
+  string device_name = 5;
+  string device_model = 6;
+}
+
+message Ping {}
+message Pong {}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_PROTOCOL_MISMATCH = 1;
+  ERROR_CODE_NOT_PAIRED = 2;
+  ERROR_CODE_BAD_PAIRING_SECRET = 3;
+  ERROR_CODE_PAIRING_EXPIRED = 4;
+  ERROR_CODE_PAIRING_REJECTED = 5;
+  ERROR_CODE_BUSY = 6;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+enum GoodbyeReason {
+  GOODBYE_REASON_UNSPECIFIED = 0;
+  GOODBYE_REASON_UNPAIRED = 1;
+  GOODBYE_REASON_SWITCHING_MAC = 2;
+  GOODBYE_REASON_SHUTDOWN = 3;
+}
+
+message Goodbye {
+  GoodbyeReason reason = 1;
+}

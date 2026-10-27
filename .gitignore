@@ -1,0 +1,9 @@
+.build/
+*.xcodeproj/
+mac/Config/Local.xcconfig
+.gradle/
+build/
+local.properties
+DerivedData/
+.superpowers/
+.DS_Store

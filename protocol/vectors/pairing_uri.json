@@ -1,0 +1,165 @@
+{
+  "valid": [
+    {
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Office%20Mac",
+      "fields": {
+        "version": 1,
+        "fp_hex": "d72e52ca22350ec5c1cb484b283acecbde44cac5bdf08af75e0091a158332b70",
+        "secret_hex": "e595c8e480bd4714ff92fbba2fc45222118099c1675edb90309ce9099eb02258",
+        "hosts": [
+          "192.168.1.20"
+        ],
+        "port": 49152,
+        "mac_name": "Office Mac"
+      }
+    },
+    {
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20,10.0.0.7&p=51234&n=Ada%E2%80%99s%20MacBook%20Pro%20%F0%9F%8D%8E",
+      "fields": {
+        "version": 1,
+        "fp_hex": "d72e52ca22350ec5c1cb484b283acecbde44cac5bdf08af75e0091a158332b70",
+        "secret_hex": "e595c8e480bd4714ff92fbba2fc45222118099c1675edb90309ce9099eb02258",
+        "hosts": [
+          "192.168.1.20",
+          "10.0.0.7"
+        ],
+        "port": 51234,
+        "mac_name": "Ada’s MacBook Pro 🍎"
+      }
+    },
+    {
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=macbook.local,192.168.1.20&p=1&n=",
+      "fields": {
+        "version": 1,
+        "fp_hex": "d72e52ca22350ec5c1cb484b283acecbde44cac5bdf08af75e0091a158332b70",
+        "secret_hex": "e595c8e480bd4714ff92fbba2fc45222118099c1675edb90309ce9099eb02258",
+        "hosts": [
+          "macbook.local",
+          "192.168.1.20"
+        ],
+        "port": 1,
+        "mac_name": ""
+      }
+    },
+    {
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Office%20Mac&future=abc%20def&x=1",
+      "fields": {
+        "version": 1,
+        "fp_hex": "d72e52ca22350ec5c1cb484b283acecbde44cac5bdf08af75e0091a158332b70",
+        "secret_hex": "e595c8e480bd4714ff92fbba2fc45222118099c1675edb90309ce9099eb02258",
+        "hosts": [
+          "192.168.1.20"
+        ],
+        "port": 49152,
+        "mac_name": "Office Mac"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "version_2",
+      "uri": "anmirror://pair?v=2&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "unsupportedVersion"
+    },
+    {
+      "name": "version_0",
+      "uri": "anmirror://pair?v=0&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "unsupportedVersion"
+    },
+    {
+      "name": "version_2_other_fields_bad",
+      "uri": "anmirror://pair?v=2&fp=AAAA&s=BBBB&h=x&p=1",
+      "error": "unsupportedVersion"
+    },
+    {
+      "name": "version_missing",
+      "uri": "anmirror://pair?fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "version_not_numeric",
+      "uri": "anmirror://pair?v=one&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "fp_31_bytes",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzKw&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "secret_33_bytes",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlgA&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "fp_missing",
+      "uri": "anmirror://pair?v=1&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "secret_missing",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "fp_padded_base64",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A=&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "fp_standard_alphabet",
+      "uri": "anmirror://pair?v=1&fp=+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/s&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "host_missing",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "host_empty_entry",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20,&p=49152",
+      "error": "malformed"
+    },
+    {
+      "name": "port_missing",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20",
+      "error": "malformed"
+    },
+    {
+      "name": "port_zero",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=0",
+      "error": "malformed"
+    },
+    {
+      "name": "port_too_large",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=65536",
+      "error": "malformed"
+    },
+    {
+      "name": "name_bad_utf8",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%FF",
+      "error": "malformed"
+    },
+    {
+      "name": "name_truncated_escape",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%4",
+      "error": "malformed"
+    },
+    {
+      "name": "duplicate_param",
+      "uri": "anmirror://pair?v=1&v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "wrong_scheme",
+      "uri": "https://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "wrong_host",
+      "uri": "anmirror://other?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    }
+  ]
+}

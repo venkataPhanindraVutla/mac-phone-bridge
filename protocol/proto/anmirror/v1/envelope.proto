@@ -1,0 +1,24 @@
+// Envelope: every frame on the wire carries exactly one Envelope. See protocol/SPEC.md.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum Channel {
+  CHANNEL_UNSPECIFIED = 0;
+  CHANNEL_SYSTEM = 1;
+  CHANNEL_PAIRING = 2;
+  CHANNEL_STATUS = 3;
+  CHANNEL_FIND = 4;
+}
+
+message Envelope {
+  Channel channel = 1;
+  uint64 id = 2;        // counts up from 1 per sender per connection
+  uint64 reply_to = 3;  // id of the request being answered, or 0
+  string type = 4;      // e.g. "system.hello"
+  bytes payload = 5;    // serialized message named by `type`
+}

@@ -1,0 +1,16 @@
+// Find-my-phone channel.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message RingRequest {}
+message StopRingRequest {}
+
+message RingState {
+  bool ringing = 1;
+  bool may_be_silent = 2;
+}
