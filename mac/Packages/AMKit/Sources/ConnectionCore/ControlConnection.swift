@@ -25,7 +25,8 @@ public actor ControlConnection {
 
     private nonisolated let connection: NWConnection
     private nonisolated let continuation: AsyncThrowingStream<AMEnvelope, Error>.Continuation
-    private var nextID: UInt64 = 1
+    /// Next outgoing envelope ID; the lock also orders the sends.
+    private nonisolated let outgoing = LockedCounter()
 
     /// Starts `connection`, waits until TLS is up, reads the peer's certificate and begins
     /// reading frames. `timeout` bounds the wait for "ready".
@@ -87,21 +88,36 @@ public actor ControlConnection {
         FrameReader(connection: connection, continuation: continuation).receiveNext()
     }
 
-    /// Sends one message and returns the envelope ID it was given.
+    /// Sends one message and returns the envelope ID it was given, once TLS has taken it.
     @discardableResult
     public func send(_ type: MessageType, _ message: some SwiftProtobuf.Message & Sendable,
                      channel: AMChannel, replyTo: UInt64 = 0) async throws -> UInt64 {
-        let id = nextID
-        nextID += 1
-        let envelope = try AMEnvelope(channel: channel, id: id, replyTo: replyTo, type: type, payload: message)
-        let frame = try Frame.encode(envelope)
-        let connection = self.connection
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            connection.send(content: frame, completion: .contentProcessed { error in
-                if let error { c.resume(throwing: error) } else { c.resume() }
-            })
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<UInt64, Error>) in
+            do {
+                try post(type, message, channel: channel, replyTo: replyTo) { id, error in
+                    if let error { c.resume(throwing: error) } else { c.resume(returning: id) }
+                }
+            } catch {
+                c.resume(throwing: error)
+            }
         }
-        return id
+    }
+
+    /// Queues one message without waiting. Messages go out in the order `post` is called,
+    /// which lets a caller on one actor (MacServer on the main actor) keep wire order exact.
+    /// `completion` gets the envelope ID once TLS has taken the bytes (or the error).
+    @discardableResult
+    public nonisolated func post(_ type: MessageType, _ message: some SwiftProtobuf.Message,
+                                 channel: AMChannel, replyTo: UInt64 = 0,
+                                 completion: (@Sendable (UInt64, Error?) -> Void)? = nil) throws -> UInt64 {
+        try outgoing.withLock { nextID in
+            let id = nextID
+            let envelope = try AMEnvelope(channel: channel, id: id, replyTo: replyTo, type: type, payload: message)
+            let frame = try Frame.encode(envelope)
+            nextID += 1
+            connection.send(content: frame, completion: .contentProcessed { error in completion?(id, error) })
+            return id
+        }
     }
 
     /// Closes at once. Pending outgoing data may be lost.
@@ -152,6 +168,17 @@ private final class ReadyGate: @unchecked Sendable {
         lock.unlock()
         c.resume(with: result)
         return true
+    }
+}
+
+/// A lock-protected envelope ID counter starting at 1.
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 1
+
+    func withLock<T>(_ body: (inout UInt64) throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }
+        return try body(&value)
     }
 }
 
