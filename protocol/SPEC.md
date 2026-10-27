@@ -36,7 +36,8 @@ Every message is one **frame**:
 - `length == 0` is an error (`emptyFrame`).
 - `length > 1,048,576` is an error (`frameTooLarge`). The receiver MUST detect this from the
   header alone, without reading the body, and MUST close the connection.
-- `length == 1,048,576` is valid.
+- `length == 1,048,576` is valid and `1,048,577` is too large. This boundary is not in the
+  vectors because of the frame's size.
 - Either error closes the connection.
 
 Vectors: `vectors/framing.json`. `vectors` entries give the envelope fields and the exact
@@ -63,7 +64,9 @@ message Envelope {
 - `reply_to` carries the `id` of the request being answered, or 0.
 - `type` names the message in `payload`, serialized as protobuf.
 - Receivers MUST ignore messages with an unknown `type` on a known channel (forward
-  compatibility), and MUST ignore unknown protobuf fields.
+  compatibility), and MUST ignore unknown protobuf fields. Exception: section 5.4 takes precedence on an unpaired
+  connection, where the first message must be `pairing.request`, else `system.error NOT_PAIRED`
+  (an unknown `type` there is not ignored).
 
 | `type` | Direction | Payload | Channel |
 |---|---|---|---|
@@ -135,18 +138,25 @@ anmirror://pair?v=1&fp=<b64url(mac_fp)>&s=<b64url(secret)>&h=<host>,<host>&p=<po
   - The URI MUST start with `anmirror://pair?`; otherwise `malformed`.
   - Unknown extra parameters are **ignored**.
   - A repeated parameter is `malformed`.
-  - `v` missing or not a number is `malformed`; `v` other than 1 is `unsupportedVersion`.
+  - `v` and `p` MUST fully match ASCII `0|[1-9][0-9]*` (canonical decimal: no sign, no leading
+    zeros, no non-ASCII digits such as `²`); otherwise `malformed`. So `v=01` and `p=049152`
+    are `malformed`.
+  - `v` missing or not canonical is `malformed`; `v` other than 1 is `unsupportedVersion`.
     The version is checked before any other field, so a `v=2` URI is `unsupportedVersion`
     even if its other fields would not parse.
-  - `fp` or `s` missing, not valid b64url, or not decoding to exactly 32 bytes: `malformed`.
+  - b64url values must be **canonical**: re-encoding the decoded bytes must give the original
+    text, i.e. the unused trailing bits of the last character must be zero.
+  - `fp` or `s` missing, not valid (canonical) b64url, or not decoding to exactly 32 bytes: `malformed`.
   - `h` missing or containing an empty entry, `p` missing or out of range: `malformed`.
-  - `n` that is not valid percent-encoding or not valid UTF-8: `malformed`.
+  - `n`: an escape is `%` followed by **exactly two** characters from `[0-9A-Fa-f]`; anything
+    else (`%+1`, `% 1`, `%G1`, a trailing `%4`) is `malformed`, as is a raw non-ASCII character
+    or a result that is not valid UTF-8.
 - The phone tries the hosts in order, each with a 3 s connect timeout.
 
 Vectors: `vectors/pairing_uri.json`. Each `valid` entry has the URI and the parsed `fields`
 (`version`, `fp_hex`, `secret_hex`, `hosts`, `port`, `mac_name`); each `invalid` entry has the
 URI and the expected error (`malformed` or `unsupportedVersion`). They include a name with a
-curly apostrophe and an emoji (`Ada’s MacBook Pro \U0001F34E`) and two hosts.
+curly apostrophe and an emoji (`Ada’s MacBook Pro 🍎`) and two hosts.
 
 ### 5.3 Sequence
 
@@ -216,7 +226,8 @@ sender closes the connection. Framing errors (section 2) close the connection wi
 
 - `python3 -I protocol/tools/make_vectors.py` writes `protocol/vectors/*.json`;
   `... --check` regenerates in memory and exits 1 on any difference. The output is
-  deterministic; the only external input is the committed test certificates.
+  deterministic; the only external input is the committed test certificates, which are read
+  with `openssl`, so **`--check` needs `openssl` on PATH** (a missing one exits 2 with a message).
 - `scripts/make-test-identities.sh` creates the three test-only PKCS#12 identities (password
   `test`). **Re-running it creates new keys, which changes the fingerprints**, so the vectors
   must be regenerated and every implementation's tests re-run. The identities are for tests

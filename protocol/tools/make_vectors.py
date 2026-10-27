@@ -12,6 +12,8 @@ import base64
 import hashlib
 import hmac
 import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -125,7 +127,10 @@ def b64url_decode(s: str) -> bytes:
     allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
     if not s or any(c not in allowed for c in s) or len(s) % 4 == 1:
         raise UriError("malformed")
-    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    data = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    if b64url(data) != s:  # canonical only: unused trailing bits must be zero
+        raise UriError("malformed")
+    return data
 
 
 def pct_encode(s: str) -> str:
@@ -133,25 +138,31 @@ def pct_encode(s: str) -> str:
 
 
 def pct_decode(s: str) -> str:
+    """An escape is '%' followed by exactly two ASCII hex digits; anything else is malformed."""
     out = bytearray()
     i = 0
-    b = s.encode("ascii", "strict")
-    while i < len(b):
-        if b[i] == 0x25:
-            try:
-                out.append(int(b[i + 1:i + 3].decode(), 16))
-                if len(b[i + 1:i + 3]) != 2:
-                    raise ValueError
-            except ValueError:
+    while i < len(s):
+        c = s[i]
+        if c == "%":
+            h = s[i + 1:i + 3]
+            if not re.fullmatch(r"[0-9A-Fa-f]{2}", h):
                 raise UriError("malformed")
+            out.append(int(h, 16))
             i += 3
-        else:
-            out.append(b[i])
+        elif ord(c) < 0x80:
+            out.append(ord(c))
             i += 1
+        else:
+            raise UriError("malformed")  # raw non-ASCII must be percent-encoded
     try:
         return out.decode("utf-8")
     except UnicodeDecodeError:
         raise UriError("malformed")
+
+
+def canonical_uint(s: str):
+    """Canonical ASCII decimal: '0' or no leading zeros. Returns int, or None if not canonical."""
+    return int(s) if re.fullmatch(r"0|[1-9][0-9]*", s, re.ASCII) else None
 
 
 def encode_pairing_uri(mac_fp: bytes, secret: bytes, hosts: list, port: int, mac_name: str) -> str:
@@ -172,9 +183,10 @@ def parse_pairing_uri(uri: str) -> dict:
         if k in params:
             raise UriError("malformed")  # duplicate parameter
         params[k] = v
-    if params.get("v") is None or not params["v"].isdigit():
+    version = canonical_uint(params.get("v", ""))
+    if version is None:
         raise UriError("malformed")
-    if int(params["v"]) != 1:
+    if version != 1:
         raise UriError("unsupportedVersion")
     try:
         fp = b64url_decode(params["fp"])
@@ -184,17 +196,22 @@ def parse_pairing_uri(uri: str) -> dict:
         hosts = [h for h in params["h"].split(",")]
         if not hosts or any(h == "" for h in hosts):
             raise UriError("malformed")
-        if not params["p"].isdigit() or not (1 <= int(params["p"]) <= 65535):
+        port = canonical_uint(params["p"])
+        if port is None or not (1 <= port <= 65535):
             raise UriError("malformed")
         name = pct_decode(params.get("n", ""))
     except KeyError:
         raise UriError("malformed")
     return {"version": 1, "fp_hex": fp.hex(), "secret_hex": secret.hex(),
-            "hosts": hosts, "port": int(params["p"]), "mac_name": name}
+            "hosts": hosts, "port": port, "mac_name": name}
 
 
 # ---------------------------------------------------------------- test identities
 def load_identities() -> list:
+    if shutil.which("openssl") is None:
+        print("error: `openssl` not found on PATH (needed to read the test .p12 identities)",
+              file=sys.stderr)
+        sys.exit(2)
     out = []
     for name in ("mac", "phone", "stranger"):
         p12 = str(IDENTITIES / f"{name}.p12")
@@ -206,7 +223,8 @@ def load_identities() -> list:
                 pem = r.stdout
                 break
         if pem is None:
-            sys.exit(f"cannot read {p12}")
+            print(f"error: cannot read {p12} with openssl", file=sys.stderr)
+            sys.exit(2)
         b64 = pem.split("-----BEGIN CERTIFICATE-----")[1].split("-----END CERTIFICATE-----")[0]
         der = base64.b64decode("".join(b64.split()))
         out.append({"name": name, "der": der, "fp": fingerprint(der)})
@@ -330,6 +348,10 @@ def build_pairing_uri(ids: list) -> dict:
 
     fp_b64, s_b64 = b64url(mac_fp), b64url(secret)
     short = b64url(mac_fp[:31])
+    alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    assert len(fp_b64) % 4 == 3  # 32 bytes -> last char carries 2 unused bits
+    noncanon = alpha[alpha.index(fp_b64[-1]) | 1]  # same bytes, non-zero trailing bit
+    assert noncanon != fp_b64[-1]
     long_ = b64url(secret + b"\x00")
     q = f"fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=Mac"
     invalid_vecs = [
@@ -352,6 +374,14 @@ def build_pairing_uri(ids: list) -> dict:
         ("port_zero", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=0", "malformed"),
         ("port_too_large", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=65536", "malformed"),
         ("name_bad_utf8", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%FF", "malformed"),
+        ("name_plus_after_percent", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%+1", "malformed"),
+        ("name_space_after_percent", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=% 1", "malformed"),
+        ("name_non_hex_escape", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%G1", "malformed"),
+        ("version_leading_zero", f"anmirror://pair?v=01&{q}", "malformed"),
+        ("port_leading_zero", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=049152", "malformed"),
+        ("port_non_ascii_digit", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=\u00b2", "malformed"),
+        ("version_non_ascii_digit", f"anmirror://pair?v=\u00b2&{q}", "malformed"),
+        ("fp_non_canonical_trailing_bits", f"anmirror://pair?v=1&fp={fp_b64[:-1]}{noncanon}&s={s_b64}&h=192.168.1.20&p=49152", "malformed"),
         ("name_truncated_escape", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%4", "malformed"),
         ("duplicate_param", f"anmirror://pair?v=1&v=1&{q}", "malformed"),
         ("wrong_scheme", f"https://pair?v=1&{q}", "malformed"),

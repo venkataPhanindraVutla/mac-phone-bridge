@@ -142,6 +142,46 @@
       "error": "malformed"
     },
     {
+      "name": "name_plus_after_percent",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%+1",
+      "error": "malformed"
+    },
+    {
+      "name": "name_space_after_percent",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=% 1",
+      "error": "malformed"
+    },
+    {
+      "name": "name_non_hex_escape",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%G1",
+      "error": "malformed"
+    },
+    {
+      "name": "version_leading_zero",
+      "uri": "anmirror://pair?v=01&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "port_leading_zero",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=049152",
+      "error": "malformed"
+    },
+    {
+      "name": "port_non_ascii_digit",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=²",
+      "error": "malformed"
+    },
+    {
+      "name": "version_non_ascii_digit",
+      "uri": "anmirror://pair?v=²&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=Mac",
+      "error": "malformed"
+    },
+    {
+      "name": "fp_non_canonical_trailing_bits",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3B&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152",
+      "error": "malformed"
+    },
+    {
       "name": "name_truncated_escape",
       "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%4",
       "error": "malformed"
