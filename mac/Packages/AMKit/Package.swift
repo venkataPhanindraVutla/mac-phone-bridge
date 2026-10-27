@@ -34,5 +34,8 @@ let package = Package(
             name: "AMProtocolTests",
             dependencies: ["AMProtocol"]
         ),
+        .testTarget(name: "ConnectionCoreTests", dependencies: ["ConnectionCore"]),
+        .testTarget(name: "FeatureStatusTests", dependencies: ["FeatureStatus"]),
+        .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind"]),
     ]
 )

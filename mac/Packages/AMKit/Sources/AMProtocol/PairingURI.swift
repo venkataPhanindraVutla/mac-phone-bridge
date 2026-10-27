@@ -156,7 +156,8 @@ public struct PairingURI: Equatable, Sendable {
                 i += 1
             }
         }
-        return String(validatingUTF8: out.map { CChar(bitPattern: $0) } + [0]) == nil ? nil : String(decoding: out, as: UTF8.self)
+        // Validate the byte array itself (not a NUL-terminated C string), so %00 cannot hide later bytes.
+        return String(bytes: out, encoding: .utf8)
     }
 }
 

@@ -345,6 +345,8 @@ def build_pairing_uri(ids: list) -> dict:
     base = encode_pairing_uri(mac_fp, secret, ["192.168.1.20"], 49152, "Office Mac")
     extra = valid(["192.168.1.20"], 49152, "Office Mac", uri=base + "&future=abc%20def&x=1")
     valid_vecs.append(extra)
+    # NUL is valid UTF-8, so an escaped %00 inside a name is accepted.
+    valid_vecs.append(valid(["192.168.1.20"], 49152, "a\x00b"))
 
     fp_b64, s_b64 = b64url(mac_fp), b64url(secret)
     short = b64url(mac_fp[:31])
@@ -374,6 +376,7 @@ def build_pairing_uri(ids: list) -> dict:
         ("port_zero", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=0", "malformed"),
         ("port_too_large", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=65536", "malformed"),
         ("name_bad_utf8", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%FF", "malformed"),
+        ("name_nul_then_bad_utf8", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%00%FF", "malformed"),
         ("name_plus_after_percent", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%+1", "malformed"),
         ("name_space_after_percent", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=% 1", "malformed"),
         ("name_non_hex_escape", f"anmirror://pair?v=1&fp={fp_b64}&s={s_b64}&h=192.168.1.20&p=49152&n=%G1", "malformed"),

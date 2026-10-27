@@ -53,6 +53,19 @@
         "port": 49152,
         "mac_name": "Office Mac"
       }
+    },
+    {
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=a%00b",
+      "fields": {
+        "version": 1,
+        "fp_hex": "d72e52ca22350ec5c1cb484b283acecbde44cac5bdf08af75e0091a158332b70",
+        "secret_hex": "e595c8e480bd4714ff92fbba2fc45222118099c1675edb90309ce9099eb02258",
+        "hosts": [
+          "192.168.1.20"
+        ],
+        "port": 49152,
+        "mac_name": "a\u0000b"
+      }
     }
   ],
   "invalid": [
@@ -139,6 +152,11 @@
     {
       "name": "name_bad_utf8",
       "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%FF",
+      "error": "malformed"
+    },
+    {
+      "name": "name_nul_then_bad_utf8",
+      "uri": "anmirror://pair?v=1&fp=1y5SyiI1DsXBy0hLKDrOy95EysW98Ir3XgCRoVgzK3A&s=5ZXI5IC9RxT_kvu6L8RSIhGAmcFnXtuQMJzpCZ6wIlg&h=192.168.1.20&p=49152&n=%00%FF",
       "error": "malformed"
     },
     {
