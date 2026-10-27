@@ -80,3 +80,12 @@ private func certificateCount(label: String) -> Int {
     ] as CFDictionary, &certs)
     return status == errSecSuccess ? (certs as? [Any])?.count ?? 0 : 0
 }
+
+@Test func lowestFingerprintIsChosenDeterministically() {
+    let ders = (1...5).map { Data(repeating: UInt8($0), count: 20) }
+    let prints = ders.map { PairingCrypto.fingerprint(certificateDER: $0) }
+    let expected = prints.indices.min { prints[$0].lexicographicallyPrecedes(prints[$1]) }
+    #expect(KeychainIdentityProvider.lowestFingerprintIndex(of: ders) == expected)
+    #expect(KeychainIdentityProvider.lowestFingerprintIndex(of: ders.reversed()) == ders.count - 1 - expected!)
+    #expect(KeychainIdentityProvider.lowestFingerprintIndex(of: []) == nil)
+}

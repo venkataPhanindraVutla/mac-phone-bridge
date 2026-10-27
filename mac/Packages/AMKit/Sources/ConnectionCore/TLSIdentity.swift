@@ -1,5 +1,6 @@
 import AMProtocol
 import Foundation
+import os
 import Security
 import SwiftASN1
 import X509
@@ -131,21 +132,41 @@ public struct KeychainIdentityProvider: IdentityProvider {
     /// under its subject name, so a label query does not find it (the identity would then
     /// change on every launch).
     private func findCertificate(for key: SecKey) throws -> SecCertificate? {
+        // A key with no public-key hash cannot be matched to its certificate; minting a new
+        // certificate here would silently change the fingerprint, so fail instead.
         guard let attributes = SecKeyCopyAttributes(key) as? [String: Any],
-              let hash = attributes[kSecAttrApplicationLabel as String] as? Data else { return nil }
+              let hash = attributes[kSecAttrApplicationLabel as String] as? Data else {
+            throw IdentityError.identityUnavailable
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
             kSecAttrPublicKeyHash as String: hash,
             kSecReturnRef as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecMatchLimit as String: kSecMatchLimitAll,
             kSecUseDataProtectionKeychain as String: false,
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let result else { throw IdentityError.keychain(status) }
-        // swiftlint:disable:next force_cast
-        return (result as! SecCertificate)
+        guard status == errSecSuccess, let found = result as? [SecCertificate], !found.isEmpty else {
+            throw IdentityError.keychain(status)
+        }
+        if found.count == 1 { return found[0] }
+        let ders = found.map { SecCertificateCopyData($0) as Data }
+        guard let index = Self.lowestFingerprintIndex(of: ders) else { return nil }
+        Self.log.warning("\(found.count, privacy: .public) certificates match the identity key; using the lowest fingerprint")
+        return found[index]
+    }
+
+    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "identity")
+
+    /// Index of the certificate with the lowest SHA-256 fingerprint: a deterministic choice
+    /// when several certificates match one key.
+    static func lowestFingerprintIndex(of certificateDERs: [Data]) -> Int? {
+        let prints = certificateDERs.map { PairingCrypto.fingerprint(certificateDER: $0) }
+        guard var best = prints.indices.first else { return nil }
+        for i in prints.indices.dropFirst() where prints[i].lexicographicallyPrecedes(prints[best]) { best = i }
+        return best
     }
 
     private func findPrivateKey() throws -> SecKey? {

@@ -1,4 +1,5 @@
 import AMProtocol
+import AppKit
 import ConnectionCore
 import SwiftUI
 
@@ -13,6 +14,12 @@ struct PairingWindow: View {
         .padding(24)
         .frame(width: 360)
         .onDisappear { model.cancelPairing() }
+        // A close that only hides the window does not run onDisappear.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            if let window = note.object as? NSWindow, window.title == String(localized: "Pair a phone") {
+                model.cancelPairing()
+            }
+        }
     }
 
     @ViewBuilder private var content: some View {

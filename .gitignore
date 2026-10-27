@@ -7,3 +7,4 @@ local.properties
 DerivedData/
 .superpowers/
 .DS_Store
+mac/build-fix/
