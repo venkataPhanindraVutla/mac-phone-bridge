@@ -95,7 +95,7 @@ class TlsConnectorTest {
     fun serverRefusingPhoneCertificateIsReportedAsRefusal() = runBlocking {
         // TLS 1.3: the server judges the client certificate after the client has sent its
         // last flight, so the refusal shows up either while the handshake is still writing
-        // (the connector then reports refusedByPeer) or on the first read (NOT_PAIRED).
+        // (the connector then reports refusedByPeer) or on the first read (TLS_REFUSED).
         TestMacServer(allowedClients = setOf(Identities.STRANGER_FP)) { _ -> }.use { server ->
             repeat(5) {
                 val outcome = withTimeout(10_000) {
@@ -106,10 +106,11 @@ class TlsConnectorTest {
                     } catch (e: UnreachableException) {
                         assertTrue(e.refusedByPeer, "pin matched, so this is a refusal: $e")
                         assertEquals(listOf("127.0.0.1", "localhost"), e.tried, "every host is still tried")
-                        HelloFailure.NOT_PAIRED
+                        HelloFailure.TLS_REFUSED
                     }
                 }
-                assertEquals(HelloFailure.NOT_PAIRED, outcome)
+                // Heuristic, never the explicit NOT_PAIRED.
+                assertEquals(HelloFailure.TLS_REFUSED, outcome)
             }
         }
     }

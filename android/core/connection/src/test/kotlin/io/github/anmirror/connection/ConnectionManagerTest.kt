@@ -255,14 +255,19 @@ class ConnectionManagerTest {
 
     @Test
     fun shortSessionsDoNotResetBackoff() = runTest {
-        val r = rig(listOf(macA()))
+        // NSD/StaticDiscovery re-report the visible Mac on every new subscription; after a
+        // session that died at once that replay must not end the wait (no hot loop).
+        val r = rig(listOf(macA()), StaticDiscovery(listOf(service("10.0.0.5", 4000, keyA))))
         val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
         mac.goodbyeAfterHello = GoodbyeReason.GOODBYE_REASON_SHUTDOWN
         r.manager.start()
-        advanceTimeBy(7_001)
+        advanceTimeBy(52_001)
         runCurrent()
-        // Each session dies at once, so the backoff keeps growing: 1, 2, 4 s.
-        assertEquals(listOf(0L, 1_000L, 3_000L, 7_000L), r.connector.dials.map { it.second })
+        // Each session dies at once, so the backoff keeps its 1, 2, 4, 5, 5, 5, 30 s cadence.
+        assertEquals(
+            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 52_000L),
+            r.connector.dials.map { it.second },
+        )
     }
 
     @Test
@@ -457,11 +462,167 @@ class ConnectionManagerTest {
         r.connector.refusing += "10.0.0.9:4000"
         r.manager.start()
         runCurrent()
-        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value, "one refused attempt is not enough")
         assertEquals(listOf("10.0.0.5:4000", "10.0.0.9:4000"), r.connector.dials.map { it.first })
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(4, r.connector.dials.size)
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals(4, r.connector.dials.size, "no retries in NotRecognized before the 15 min retry")
+    }
+
+    @Test
+    fun singleHeuristicRefusalDoesNotEnterNotRecognized() = runTest {
+        // One address; a reset mid-handshake (or a Mac app restart) looks like a refusal once.
+        val r = rig(listOf(macA()))
+        r.connector.refusing += "10.0.0.5:4000"
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
+        r.connector.refusing.clear()
+        r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+    }
+
+    @Test
+    fun twoConsecutiveHeuristicRefusalsEnterNotRecognized() = runTest {
+        val r = rig(listOf(macA()))
+        r.connector.refusing += "10.0.0.5:4000"
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(listOf(0L, 1_000L), r.connector.dials.map { it.second })
         advanceTimeBy(600_000)
         runCurrent()
         assertEquals(2, r.connector.dials.size)
+    }
+
+    @Test
+    fun heuristicRefusalsMustBeConsecutive() = runTest {
+        val r = rig(listOf(macA()))
+        r.connector.refusing += "10.0.0.5:4000"
+        r.manager.start()
+        runCurrent() // refused (1)
+        r.connector.refusing.clear() // next attempt: plain unreachable (nothing answers)
+        advanceTimeBy(1_000)
+        runCurrent()
+        r.connector.refusing += "10.0.0.5:4000"
+        advanceTimeBy(2_000)
+        runCurrent() // refused again, but not consecutively
+        assertEquals(3, r.connector.dials.size)
+        assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
+    }
+
+    @Test
+    fun tlsErrorAfterHandshakeIsHeuristic() = runTest {
+        // TLS 1.3: a refusal (or a reset reported as SSLException) on the first read.
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.tlsErrorAfterHandshake = true
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(2, mac.connects)
+    }
+
+    @Test
+    fun explicitNotPairedEntersImmediately() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.errorOnHello = ErrorCode.ERROR_CODE_NOT_PAIRED
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        assertEquals(1, mac.connects, "an authenticated NOT_PAIRED needs no second attempt")
+    }
+
+    @Test
+    fun notRecognizedRetriesAfter15Minutes() = runTest {
+        val r = rig(listOf(macA()))
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.errorOnHello = ErrorCode.ERROR_CODE_NOT_PAIRED
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.NotRecognized(macA()), r.manager.state.value)
+        advanceTimeBy(15 * 60_000 - 1)
+        runCurrent()
+        assertEquals(1, mac.connects)
+        mac.errorOnHello = null // re-paired meanwhile
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(2, mac.connects)
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+    }
+
+    @Test
+    fun kickRestartsFinishedDiscovery() = runTest {
+        var subscriptions = 0
+        val r = rig(listOf(macA()), MacDiscovery { kotlinx.coroutines.flow.flow<DiscoveredService> { subscriptions++ } })
+        r.manager.start()
+        advanceTimeBy(100_000)
+        runCurrent()
+        assertEquals(1, subscriptions, "a finished subscription is not restarted per attempt")
+        r.manager.kick()
+        runCurrent()
+        assertEquals(2, subscriptions, "a kick restarts it")
+    }
+
+    @Test
+    fun incompatibleStopsDiscovery() = runTest {
+        var active = 0
+        val discovery = MacDiscovery {
+            kotlinx.coroutines.flow.flow<DiscoveredService> {
+                active++
+                try {
+                    kotlinx.coroutines.awaitCancellation()
+                } finally {
+                    active--
+                }
+            }
+        }
+        val r = rig(listOf(macA()), discovery)
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.helloVersion = 2
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Incompatible(macA()), r.manager.state.value)
+        assertEquals(0, active, "no Bonjour browsing while waiting for an update")
+    }
+
+    @Test
+    fun forgetKickIsNotSwallowed() = runTest {
+        // forget() lands right after the loop read the store: its kick must still wake the wait.
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        lateinit var manager: ConnectionManager
+        var hooked = false
+        val store = object : PairedMacStore by inner {
+            override suspend fun all(): List<PairedMac> {
+                val snapshot = inner.all()
+                if (!hooked && snapshot.isNotEmpty()) {
+                    hooked = true
+                    backgroundScope.launch { manager.forget(snapshot.first().id) }
+                    kotlinx.coroutines.yield()
+                }
+                return snapshot
+            }
+        }
+        val connector = FakeConnector { testScheduler.currentTime } // nothing answers
+        manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        assertTrue(hooked)
+        assertEquals(PhoneConnectionState.NotPaired, manager.state.value, "not stuck in Unreachable for a forgotten Mac")
+        assertEquals(0L, testScheduler.currentTime)
     }
 
     @Test

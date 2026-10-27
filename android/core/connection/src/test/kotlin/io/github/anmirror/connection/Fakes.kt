@@ -55,13 +55,18 @@ internal class MemoryWire private constructor() : Wire {
     }
 
     override fun close() {
-        if (shut()) peer.shut()
+        if (shut(null)) peer.shut(null)
     }
 
-    private fun shut(): Boolean = synchronized(this) {
+    /** Ends both ends; the peer sees [error] (like a TLS alert or reset on its first read). */
+    fun abort(error: Throwable) {
+        if (shut(null)) peer.shut(error)
+    }
+
+    private fun shut(error: Throwable?): Boolean = synchronized(this) {
         if (closed) return false
         closed = true
-        onEnd?.invoke(null)
+        onEnd?.invoke(error)
         true
     }
 }
@@ -71,6 +76,9 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
     @Volatile var answerPings = true
     @Volatile var helloVersion = 1
     @Volatile var errorOnHello: ErrorCode? = null
+
+    /** The TLS handshake "completes", then the phone's first read fails with SSLException. */
+    @Volatile var tlsErrorAfterHandshake = false
 
     /** Answer hello, then say goodbye with this reason right away (a session that dies at once). */
     @Volatile var goodbyeAfterHello: GoodbyeReason? = null
@@ -90,6 +98,7 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
         val phone = ControlChannel(phoneSide, host, port, fpHex)
         connects++
         current = mac
+        if (tlsErrorAfterHandshake) macSide.abort(javax.net.ssl.SSLException("Received fatal alert: bad_certificate"))
         scope.launch {
             while (true) {
                 val e = try {

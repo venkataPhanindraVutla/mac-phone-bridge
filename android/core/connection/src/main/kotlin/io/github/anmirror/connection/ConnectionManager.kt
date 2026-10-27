@@ -40,10 +40,11 @@ sealed interface PhoneConnectionState {
     data class Unreachable(val mac: PairedMac) : PhoneConnectionState
 
     /**
-     * The Mac answered with its pinned certificate but does not know this phone: it refused our
-     * certificate at TLS on every address tried, or said `system.error NOT_PAIRED`. Likely it
-     * forgot this phone while we were away. Not retried until [ConnectionManager.kick] (or a
-     * Bonjour address not tried yet). Never forgotten automatically: the refusal is spoofable.
+     * The Mac answered with its pinned certificate but does not know this phone: an explicit
+     * `system.error NOT_PAIRED`, or a TLS refusal on every address in 2 consecutive attempts.
+     * Likely it forgot this phone while we were away. Left on [ConnectionManager.kick], on a
+     * Bonjour address not tried yet, or after `notRecognizedRetryMs` (15 min). Never forgotten
+     * automatically: a refusal is spoofable.
      */
     data class NotRecognized(val mac: PairedMac) : PhoneConnectionState
 
@@ -66,6 +67,10 @@ data class ConnectionTiming(
     val backoffMs: List<Long> = listOf(1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 30_000, 60_000),
     /** Retry delay after `system.error BUSY`. */
     val busyRetryMs: Long = 60_000,
+    /** Timed retry out of `NotRecognized`. */
+    val notRecognizedRetryMs: Long = 15 * 60_000,
+    /** Consecutive attempts ending in a heuristic (TLS) refusal before `NotRecognized`. */
+    val heuristicRefusalsForNotRecognized: Int = 2,
 ) {
     fun backoff(attempt: Int): Long = backoffMs[attempt.coerceIn(0, backoffMs.lastIndex)]
 }
@@ -81,8 +86,12 @@ data class ConnectionTiming(
  * - After a failed attempt waits 1, 2, 4, 5, 5, 5 s, then 30 s once, then 60 s each time.
  *   [kick] retries now and resets that; so does a matching Bonjour event, so a Mac that wakes
  *   and re-advertises is reached within seconds even at the 60 s cap.
- * - `BUSY`: retry after 60 s or on [kick]. `NOT_PAIRED`/refused on every address:
- *   [PhoneConnectionState.NotRecognized]. Protocol mismatch: `Incompatible`. Both wait for [kick].
+ * - `BUSY`: retry after 60 s or on [kick]. Protocol mismatch: `Incompatible`, until [kick].
+ * - [PhoneConnectionState.NotRecognized] at once on an explicit `system.error NOT_PAIRED`; for a
+ *   TLS-level refusal (a heuristic: resets look alike) only after 2 consecutive attempts that
+ *   each ended refused on every address. The first such attempt backs off like `Unreachable`.
+ * - After a session shorter than one ping interval, the backoff wait ignores Bonjour events:
+ *   the new subscription replays the visible Mac, which must not cause a hot reconnect loop.
  * - While connected: ping every 30 s, reconnect if no pong within 10 s. Discovery is not
  *   subscribed while connected, so other paired Macs appearing change nothing.
  * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect. The backoff
@@ -192,7 +201,8 @@ class ConnectionManager(
         data class Connected(val channel: ControlChannel, val shared: Set<String>) : Attempt
         data object NothingToDial : Attempt
         data object Unreachable : Attempt
-        data class NotRecognized(val tried: Set<String>) : Attempt
+        /** [explicit]: `system.error NOT_PAIRED`; otherwise a TLS-level (heuristic) refusal. */
+        data class NotRecognized(val tried: Set<String>, val explicit: Boolean) : Attempt
         data object Busy : Attempt
         data object Incompatible : Attempt
         data object Unpaired : Attempt
@@ -203,8 +213,9 @@ class ConnectionManager(
         private var job: Job? = null
         private var macId: String? = null
 
+        /** Starts watching [mac], or restarts a subscription for it that has finished. */
         fun follow(mac: PairedMac) {
-            if (macId == mac.id) return
+            if (macId == mac.id && job?.isActive == true) return
             stop()
             macId = mac.id
             job = scope.launch {
@@ -223,6 +234,12 @@ class ConnectionManager(
             }
         }
 
+        /** Watches [mac] unless already following it (a finished subscription is left alone). */
+        fun target(mac: PairedMac) {
+            if (macId == mac.id) return
+            follow(mac)
+        }
+
         fun stop() {
             job?.cancel()
             job = null
@@ -231,25 +248,37 @@ class ConnectionManager(
         }
     }
 
+    private enum class Wake { TIMEOUT, USER, DISCOVERY }
+
     private suspend fun loop(gen: Int) = coroutineScope {
         val watch = DiscoveryWatch(this)
         var attempt = 0
+        var heuristicRefusals = 0
+        var restartWatch = false
         while (true) {
+            // Drain kicks before reading the store, so a forget() (or pairing) that lands after
+            // the read is still pending and wakes the next wait.
+            userKicks.tryReceive()
             val mac = store.all().maxByOrNull { it.lastConnectedAt }
             if (mac == null) {
                 watch.stop()
                 setState(gen, PhoneConnectionState.NotPaired)
                 userKicks.receive()
                 attempt = 0
+                heuristicRefusals = 0
                 continue
             }
-            watch.follow(mac)
+            // A user kick also restarts a Bonjour subscription that has finished.
+            if (restartWatch) watch.follow(mac) else watch.target(mac)
+            restartWatch = false
             yield() // let a new subscription report what it already knows
-            // Wake-ups from before this attempt are satisfied by it.
-            userKicks.tryReceive()
+            // Bonjour events from before this attempt are satisfied by it (found is kept).
             discoveryWake.tryReceive()
 
-            when (val result = connect(gen, mac)) {
+            val result = connect(gen, mac)
+            if (result !is Attempt.NotRecognized || result.explicit) heuristicRefusals = 0
+            var backedOff = false // this wait is a step of the 1, 2, 4, ... backoff
+            val wake: Wake = when (result) {
                 is Attempt.Connected -> {
                     watch.stop()
                     val (end, matured) = runConnected(gen, mac, result)
@@ -263,67 +292,94 @@ class ConnectionManager(
                     // Only a session that lived a while proves the link is good again.
                     if (matured) attempt = 0
                     setState(gen, PhoneConnectionState.Connecting(still))
-                    watch.follow(still)
-                    attempt = backoffWait(attempt)
+                    watch.target(still)
+                    // After a short session the new subscription's replay must not end the wait.
+                    backedOff = true
+                    backoffWait(attempt, listenToDiscovery = matured)
                 }
                 Attempt.Unpaired -> {
                     store.remove(mac.id)
                     attempt = 0
+                    continue
                 }
                 Attempt.Incompatible -> {
+                    watch.stop()
                     setState(gen, PhoneConnectionState.Incompatible(mac))
                     userKicks.receive()
-                    attempt = 0
+                    Wake.USER
                 }
                 is Attempt.NotRecognized -> {
-                    setState(gen, PhoneConnectionState.NotRecognized(mac))
-                    awaitNotRecognizedExit(result.tried)
-                    attempt = 0
+                    if (!result.explicit) heuristicRefusals++
+                    if (result.explicit || heuristicRefusals >= timing.heuristicRefusalsForNotRecognized) {
+                        heuristicRefusals = 0
+                        setState(gen, PhoneConnectionState.NotRecognized(mac))
+                        awaitNotRecognizedExit(result.tried).also { attempt = 0 }
+                    } else {
+                        // One TLS refusal may be a reset on a flaky network: back off as usual.
+                        setState(gen, PhoneConnectionState.Unreachable(mac))
+                        backedOff = true
+                        backoffWait(attempt, listenToDiscovery = true)
+                    }
                 }
                 Attempt.Busy -> {
                     setState(gen, PhoneConnectionState.Busy(mac))
-                    if (withTimeoutOrNull(timing.busyRetryMs) { userKicks.receive() } != null) attempt = 0
+                    if (withTimeoutOrNull(timing.busyRetryMs) { userKicks.receive() } != null) Wake.USER else Wake.TIMEOUT
                 }
                 Attempt.Unreachable -> {
                     setState(gen, PhoneConnectionState.Unreachable(mac))
-                    attempt = backoffWait(attempt)
+                    backedOff = true
+                    backoffWait(attempt, listenToDiscovery = true)
                 }
                 Attempt.NothingToDial -> {
                     setState(gen, PhoneConnectionState.Searching)
-                    attempt = backoffWait(attempt)
+                    backedOff = true
+                    backoffWait(attempt, listenToDiscovery = true)
                 }
             }
+            when (wake) {
+                Wake.TIMEOUT -> if (backedOff) attempt++
+                Wake.USER -> {
+                    attempt = 0
+                    restartWatch = true
+                }
+                Wake.DISCOVERY -> attempt = 0
+            }
         }
     }
 
-    /** Waits the backoff for [attempt]; a kick or matching Bonjour event ends it early and resets. */
-    private suspend fun backoffWait(attempt: Int): Int {
-        val woke = withTimeoutOrNull(timing.backoff(attempt)) {
-            select<Unit> {
-                userKicks.onReceive {}
-                discoveryWake.onReceive {}
+    /**
+     * Waits the backoff for [attempt]. A kick (and, if [listenToDiscovery], a matching Bonjour
+     * event) ends it early; the caller then resets the backoff.
+     */
+    private suspend fun backoffWait(attempt: Int, listenToDiscovery: Boolean): Wake =
+        withTimeoutOrNull(timing.backoff(attempt)) {
+            select<Wake> {
+                userKicks.onReceive { Wake.USER }
+                if (listenToDiscovery) discoveryWake.onReceive { Wake.DISCOVERY }
             }
-        } != null
-        return if (woke) 0 else attempt + 1
-    }
+        } ?: Wake.TIMEOUT
 
-    /** Until [kick], or a Bonjour address for this Mac that this attempt did not try. */
-    private suspend fun awaitNotRecognizedExit(tried: Set<String>) {
-        while (true) {
-            val kicked = select<Boolean> {
-                userKicks.onReceive { true }
-                discoveryWake.onReceive { false }
+    /** Until [kick], a Bonjour address for this Mac that this attempt did not try, or the timed retry. */
+    private suspend fun awaitNotRecognizedExit(tried: Set<String>): Wake =
+        withTimeoutOrNull(timing.notRecognizedRetryMs) {
+            while (true) {
+                val kicked = select<Boolean> {
+                    userKicks.onReceive { true }
+                    discoveryWake.onReceive { false }
+                }
+                if (kicked) return@withTimeoutOrNull Wake.USER
+                val f = found
+                if (f != null && "${f.host}:${f.port}" !in tried) return@withTimeoutOrNull Wake.DISCOVERY
             }
-            if (kicked) return
-            val f = found
-            if (f != null && "${f.host}:${f.port}" !in tried) return
-        }
-    }
+            @Suppress("UNREACHABLE_CODE")
+            Wake.TIMEOUT
+        } ?: Wake.TIMEOUT
 
     /** One attempt: the last address, then the discovered one. */
     private suspend fun connect(gen: Int, mac: PairedMac): Attempt {
         val tried = LinkedHashSet<String>()
-        var refused = false
+        var refused = false // heuristic: TLS-level refusal
+        var notPaired = false // explicit system.error NOT_PAIRED
 
         suspend fun tryAt(host: String, port: Int): Attempt? {
             if (!tried.add("$host:$port")) return null
@@ -340,8 +396,11 @@ class ConnectionManager(
                     HelloFailure.BUSY -> Attempt.Busy
                     HelloFailure.PROTOCOL_MISMATCH -> Attempt.Incompatible
                     HelloFailure.UNPAIRED -> Attempt.Unpaired
-                    // system.error NOT_PAIRED, or an alert refusing our certificate on first read.
                     HelloFailure.NOT_PAIRED -> {
+                        notPaired = true
+                        null
+                    }
+                    HelloFailure.TLS_REFUSED -> {
                         refused = true
                         null
                     }
@@ -355,7 +414,8 @@ class ConnectionManager(
         if (host != null && port != null) tryAt(host, port)?.let { return it }
         found?.let { s -> tryAt(s.host, s.port)?.let { return it } }
         return when {
-            refused -> Attempt.NotRecognized(tried)
+            notPaired -> Attempt.NotRecognized(tried, explicit = true)
+            refused -> Attempt.NotRecognized(tried, explicit = false)
             tried.isEmpty() -> Attempt.NothingToDial
             else -> Attempt.Unreachable
         }

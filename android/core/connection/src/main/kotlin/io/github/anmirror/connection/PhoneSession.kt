@@ -34,11 +34,16 @@ sealed interface HelloResult {
 }
 
 enum class HelloFailure {
-    /**
-     * The Mac does not know this phone: `system.error NOT_PAIRED`, or the Mac refused the
-     * phone's certificate in the TLS handshake (TLS 1.3 reports that on the first read).
-     */
+    /** Explicit, authenticated `system.error NOT_PAIRED` from the pinned Mac. */
     NOT_PAIRED,
+
+    /**
+     * Heuristic: a TLS error (SSLException) on the first read or write after the handshake.
+     * Usually the Mac refusing the phone's certificate (TLS 1.3 reports that late), but a
+     * reset or abort on a flaky network can look the same (Conscrypt reports ECONNRESET as
+     * SSLException). Not proof that the Mac forgot this phone.
+     */
+    TLS_REFUSED,
 
     /** `system.goodbye UNPAIRED` instead of a hello: the Mac has forgotten this phone. */
     UNPAIRED,
@@ -73,7 +78,7 @@ suspend fun exchangeHello(channel: ControlChannel, hello: Hello, timeoutMs: Long
         }
         withTimeoutOrNull(timeoutMs) { awaitHello(channel, hello) } ?: HelloResult.Failed(HelloFailure.TIMED_OUT)
     } catch (e: SSLException) {
-        HelloResult.Failed(HelloFailure.NOT_PAIRED)
+        HelloResult.Failed(HelloFailure.TLS_REFUSED)
     } catch (e: IOException) {
         HelloResult.Failed(HelloFailure.CLOSED)
     } catch (e: ProtocolException) {

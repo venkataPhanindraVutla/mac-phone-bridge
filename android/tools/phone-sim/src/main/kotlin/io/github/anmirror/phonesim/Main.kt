@@ -16,6 +16,7 @@
 package io.github.anmirror.phonesim
 
 import io.github.anmirror.connection.ControlChannel
+import io.github.anmirror.connection.HelloFailure
 import io.github.anmirror.connection.HelloResult
 import io.github.anmirror.connection.JsonFilePairedMacStore
 import io.github.anmirror.connection.PROTOCOL_VERSION
@@ -253,7 +254,8 @@ private suspend fun session(
     store: JsonFilePairedMacStore,
 ): SessionEnd {
     val shared = when (val r = exchangeHello(channel, hello)) {
-        is HelloResult.Failed -> failed(r.reason.name)
+        // A TLS refusal after the handshake prints like a refusal at connect: NOT_PAIRED.
+        is HelloResult.Failed -> failed(if (r.reason == HelloFailure.TLS_REFUSED) "NOT_PAIRED" else r.reason.name)
         is HelloResult.Ok -> r.shared
     }
     store.save(mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = System.currentTimeMillis()))
