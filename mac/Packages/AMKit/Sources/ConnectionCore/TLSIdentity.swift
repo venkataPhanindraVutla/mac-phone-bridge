@@ -89,17 +89,15 @@ public struct KeychainIdentityProvider: IdentityProvider {
     }
 
     /// Never rotates silently: a new certificate means a new fingerprint, which breaks every
-    /// phone's pin. A new one is made only when there is no private key at all.
+    /// phone's pin. A new key is made only when there is no private key at all.
     public func identity() throws -> TLSIdentity {
         let existingKey = try findPrivateKey()
-        if let cert = try findCertificate() {
-            if existingKey != nil {
-                guard let identity = identity(for: cert) else { throw IdentityError.identityUnavailable }
-                return try TLSIdentity(secIdentity: identity)
-            }
-            // The key is gone, so this certificate can never be used again.
-            try deleteCertificates()
+        if let key = existingKey, let cert = try findCertificate(for: key) {
+            guard let identity = identity(for: cert) else { throw IdentityError.identityUnavailable }
+            return try TLSIdentity(secIdentity: identity)
         }
+        // No key, or a key whose certificate was never stored (interrupted first run): the
+        // key is reused when there is one.
         let key = try existingKey ?? createPrivateKey()
         let der = try makeSelfSignedCertificate(key: key)
         guard let cert = SecCertificateCreateWithData(nil, der as CFData) else {
@@ -129,10 +127,15 @@ public struct KeychainIdentityProvider: IdentityProvider {
         return status == errSecSuccess ? identity : nil
     }
 
-    private func findCertificate() throws -> SecCertificate? {
+    /// The certificate for `key`, found by public-key hash: the keychain stores a certificate
+    /// under its subject name, so a label query does not find it (the identity would then
+    /// change on every launch).
+    private func findCertificate(for key: SecKey) throws -> SecCertificate? {
+        guard let attributes = SecKeyCopyAttributes(key) as? [String: Any],
+              let hash = attributes[kSecAttrApplicationLabel as String] as? Data else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
-            kSecAttrLabel as String: label,
+            kSecAttrPublicKeyHash as String: hash,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseDataProtectionKeychain as String: false,
@@ -143,18 +146,6 @@ public struct KeychainIdentityProvider: IdentityProvider {
         guard status == errSecSuccess, let result else { throw IdentityError.keychain(status) }
         // swiftlint:disable:next force_cast
         return (result as! SecCertificate)
-    }
-
-    private func deleteCertificates() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassCertificate,
-            kSecAttrLabel as String: label,
-            kSecUseDataProtectionKeychain as String: false,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw IdentityError.keychain(status)
-        }
     }
 
     private func findPrivateKey() throws -> SecKey? {
