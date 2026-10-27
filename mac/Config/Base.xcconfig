@@ -1,0 +1,4 @@
+// Contributor builds are ad-hoc signed. The owner sets DEVELOPMENT_TEAM in Local.xcconfig
+// (gitignored) to sign with a free Personal Team, which keeps Keychain prompts away.
+CODE_SIGN_IDENTITY = -
+#include? "Local.xcconfig"

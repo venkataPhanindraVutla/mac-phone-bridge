@@ -1,0 +1,52 @@
+name: AndroidMirroring
+options:
+  bundleIdPrefix: io.github.anmirror
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+packages:
+  AMKit:
+    path: Packages/AMKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  AndroidMirroring:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    dependencies:
+      - package: AMKit
+        product: AMProtocol
+      - package: AMKit
+        product: ConnectionCore
+    settings:
+      base:
+        PRODUCT_NAME: Android Mirroring
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.anmirror.mac
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+schemes:
+  AndroidMirroring:
+    build:
+      targets:
+        AndroidMirroring: all
+    run:
+      config: Debug
+    archive:
+      config: Release
