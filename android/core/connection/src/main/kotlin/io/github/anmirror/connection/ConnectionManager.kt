@@ -171,8 +171,8 @@ class ConnectionManager(
      */
     fun adopt(channel: ControlChannel) {
         adopted.getAndSet(channel)?.takeIf { it !== channel }?.close()
-        current?.takeIf { !it.mac.fingerprintHex.equals(channel.peerFingerprintHex, ignoreCase = true) }
-            ?.session?.channel?.close()
+        // The loop kicks again once that session has ended (the session takes kicks as pings).
+        current?.takeIf { !channel.isFor(it.mac) }?.session?.channel?.close()
         kick()
     }
 
@@ -300,6 +300,8 @@ class ConnectionManager(
                 is Attempt.Connected -> {
                     watch.stop()
                     val (end, matured) = runConnected(gen, mac, result)
+                    // adopt() ended this session for another Mac; its kick went to the session.
+                    if (adopted.get() != null) kick()
                     if (end == SessionEnd.UNPAIRED) store.remove(mac.id)
                     // A Mac no longer paired (goodbye UNPAIRED, forget) is not retried.
                     val still = store.all().firstOrNull { it.id == mac.id }
@@ -432,12 +434,15 @@ class ConnectionManager(
 
         // The connection a pairing just left open, if it is this Mac's.
         adopted.getAndSet(null)?.let { channel ->
-            if (channel.isClosed || !channel.peerFingerprintHex.equals(mac.fingerprintHex, ignoreCase = true)) {
-                channel.close()
-            } else {
-                tried.add("${channel.host}:${channel.port}")
-                setState(gen, PhoneConnectionState.Connecting(mac))
-                helloOn(channel)?.let { return it }
+            when {
+                channel.isClosed -> Unit
+                // Another Mac's (a store read from before it was saved): keep it for its attempt.
+                !channel.isFor(mac) -> if (!adopted.compareAndSet(null, channel)) channel.close()
+                else -> {
+                    tried.add("${channel.host}:${channel.port}")
+                    setState(gen, PhoneConnectionState.Connecting(mac))
+                    helloOn(channel)?.let { return it }
+                }
             }
         }
 
@@ -462,6 +467,8 @@ class ConnectionManager(
                 if (store.all().none { it.id == mac.id }) return@withLock null
                 val updated = mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = clock())
                 store.save(updated)
+                // A pairing connection to this Mac handed over while we dialed it is not needed now.
+                adopted.get()?.takeIf { it !== channel && it.isFor(mac) && adopted.compareAndSet(it, null) }?.close()
                 PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs).also {
                     current = Current(updated, it)
                     setState(gen, PhoneConnectionState.Connected(updated, a.shared))
@@ -489,6 +496,9 @@ class ConnectionManager(
             current = null
         }
     }
+
+    private fun ControlChannel.isFor(mac: PairedMac): Boolean =
+        peerFingerprintHex.equals(mac.fingerprintHex, ignoreCase = true)
 
     private fun unpairedGoodbye(): Goodbye = Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_UNPAIRED).build()
 }

@@ -717,18 +717,58 @@ class ConnectionManagerTest {
     }
 
     @Test
-    fun adoptedChannelOfAnotherMacIsClosedNotUsed() = runTest {
+    fun adoptedChannelOfAMacNotPickedYetIsKeptOpen() = runTest {
+        // R28 M-1: an attempt for Mac A (a stale store read) must not close Mac B's channel.
         val r = rig(listOf(macA()))
         val a = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
-        val stranger = FakeMac(Identities.STRANGER_FP, backgroundScope)
-        val channel = stranger.accept("10.0.0.9", 4000)
+        val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        val channel = b.accept("10.0.0.8", 4000)
         r.manager.adopt(channel)
         r.manager.start()
         runCurrent()
         assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
         assertEquals(1, a.connects, "Mac A is dialed as usual")
-        assertTrue(channel.isClosed, "a channel no attempt can use is closed")
-        assertEquals(0, stranger.received.count { it.type == MessageType.HELLO })
+        assertFalse(channel.isClosed, "Mac B's channel is put back, not closed")
+        assertEquals(0, b.received.count { it.type == MessageType.HELLO })
+    }
+
+    @Test
+    fun adoptWhileConnectedToAnotherMacSwitchesOnTheAdoptedChannel() = runTest {
+        // R28 M-1: connected to A, then B is paired: B on the adopted channel at once, no dial.
+        val r = rig(listOf(macA()))
+        r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        r.manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        val dialsBefore = r.connector.dials.size
+        r.store.save(macB(at = nowMs + 1))
+        val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        r.manager.adopt(b.accept("10.0.0.8", 4000))
+        runCurrent() // no virtual time passes: the kick must survive the closing session
+        val state = assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals(Identities.STRANGER_FP, state.mac.id)
+        assertEquals(dialsBefore, r.connector.dials.size, "no extra dial")
+        assertEquals(1, b.received.count { it.type == MessageType.HELLO })
+    }
+
+    @Test
+    fun leftoverAdoptedChannelForTheSameMacIsClosedWhenASessionStarts() = runTest {
+        // R28 M-1: B dialed between save and adopt; the late adopted channel must not linger.
+        val store = InMemoryPairedMacStore(listOf(macA()))
+        val fake = FakeConnector { testScheduler.currentTime }
+        val a = FakeMac(Identities.MAC_FP, backgroundScope).also { fake.macs["10.0.0.5:4000"] = it }
+        lateinit var manager: ConnectionManager
+        var late: ControlChannel? = null
+        val connector = MacConnector { hosts, port, fp ->
+            fake.connect(hosts, port, fp).also {
+                if (late == null) late = a.accept("10.0.0.5", 4000).also { manager.adopt(it) }
+            }
+        }
+        manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        assertTrue(checkNotNull(late).isClosed, "the leftover adopted channel is closed")
     }
 
     @Test
