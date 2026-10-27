@@ -40,6 +40,9 @@ public enum IdentityError: Error, Equatable, Sendable {
     case noIdentityInFile
     case keychain(OSStatus)
     case certificateCreation(String)
+    /// The certificate and key are both in the keychain but do not form an identity
+    /// (for example access was denied). Not repaired automatically.
+    case identityUnavailable
 }
 
 /// Loads an identity from a PKCS#12 file into process memory only. For tests and
@@ -85,13 +88,19 @@ public struct KeychainIdentityProvider: IdentityProvider {
         self.label = label
     }
 
+    /// Never rotates silently: a new certificate means a new fingerprint, which breaks every
+    /// phone's pin. A new one is made only when there is no private key at all.
     public func identity() throws -> TLSIdentity {
-        if let cert = try findCertificate(), let identity = identity(for: cert) {
-            return try TLSIdentity(secIdentity: identity)
+        let existingKey = try findPrivateKey()
+        if let cert = try findCertificate() {
+            if existingKey != nil {
+                guard let identity = identity(for: cert) else { throw IdentityError.identityUnavailable }
+                return try TLSIdentity(secIdentity: identity)
+            }
+            // The key is gone, so this certificate can never be used again.
+            try deleteCertificates()
         }
-        // A certificate without its key (or the other way round) is unusable: start over.
-        try deleteCertificates()
-        let key = try findPrivateKey() ?? createPrivateKey()
+        let key = try existingKey ?? createPrivateKey()
         let der = try makeSelfSignedCertificate(key: key)
         guard let cert = SecCertificateCreateWithData(nil, der as CFData) else {
             throw IdentityError.certificateCreation("SecCertificateCreateWithData failed")

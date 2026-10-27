@@ -33,32 +33,40 @@ public actor ControlConnection {
     public static func open(_ connection: NWConnection, timeout: Duration? = nil) async throws -> ControlConnection {
         let queue = DispatchQueue(label: "io.github.anmirror.connection")
         let gate = ReadyGate()
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            gate.set(c)
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    gate.resume(.success(()))
-                case let .failed(error):
-                    gate.resume(.failure(ConnectionError.notReady(String(describing: error))))
-                case let .waiting(error):
-                    // Not reachable right now: give up instead of waiting for a better path.
-                    gate.resume(.failure(ConnectionError.notReady(String(describing: error))))
-                    connection.cancel()
-                case .cancelled:
-                    gate.resume(.failure(ConnectionError.notReady("cancelled")))
-                default:
-                    break
+        do {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                gate.set(c)
+                // Weak: the handler is owned by the connection, so a strong capture would make
+                // a connection that never reaches "cancelled" retain itself.
+                connection.stateUpdateHandler = { [weak connection] state in
+                    switch state {
+                    case .ready:
+                        gate.resume(.success(()))
+                    case let .failed(error):
+                        gate.resume(.failure(ConnectionError.notReady(String(describing: error))))
+                        connection?.cancel()
+                    case let .waiting(error):
+                        // Not reachable right now: give up instead of waiting for a better path.
+                        gate.resume(.failure(ConnectionError.notReady(String(describing: error))))
+                        connection?.cancel()
+                    case .cancelled:
+                        gate.resume(.failure(ConnectionError.notReady("cancelled")))
+                    default:
+                        break
+                    }
+                }
+                connection.start(queue: queue)
+                if let timeout {
+                    let seconds = Double(timeout.components.seconds)
+                        + Double(timeout.components.attoseconds) / 1e18
+                    queue.asyncAfter(deadline: .now() + seconds) { [weak connection] in
+                        if gate.resume(.failure(ConnectionError.notReady("timed out"))) { connection?.cancel() }
+                    }
                 }
             }
-            connection.start(queue: queue)
-            if let timeout {
-                let seconds = Double(timeout.components.seconds)
-                    + Double(timeout.components.attoseconds) / 1e18
-                queue.asyncAfter(deadline: .now() + seconds) {
-                    if gate.resume(.failure(ConnectionError.notReady("timed out"))) { connection.cancel() }
-                }
-            }
+        } catch {
+            connection.cancel()
+            throw error
         }
         guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata,
               let der = peerCertificate(metadata)

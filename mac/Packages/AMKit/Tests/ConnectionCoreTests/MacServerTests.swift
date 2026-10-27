@@ -1,5 +1,6 @@
 import AMProtocol
 import Foundation
+import Network
 import Testing
 @testable import ConnectionCore
 
@@ -442,6 +443,131 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
         try await back.sendHello()
         #expect(try #require(await back.next()).type == MessageType.hello.rawValue)
         #expect(await eventually { server.state == .connected(known, shared: ["status.v1", "find.v1"]) })
+    }
+}
+
+// MARK: review fixes (round 1)
+
+@MainActor
+@Suite struct MacServerFixTests {
+    @Test func refusedStrangerConnectionIsCancelled() async throws {
+        let phones = InMemoryPairedPhoneStore()
+        try phones.save(try pairedPhone("phone"))
+        let (server, port, log) = try await startServer(phones: phones)
+        defer { server.stop() }
+        var accepted: [NWConnection] = []
+        server.onAcceptForTesting = { accepted.append($0) }
+        if let stranger = try? await TestPhone.connect("stranger", port: port) {
+            try? await stranger.sendHello()
+            _ = await stranger.ended()
+        }
+        #expect(await eventually { log.contains(.rejected(.notPairedCertificate)) })
+        #expect(await eventually { accepted.count == 1 && accepted.allSatisfy { $0.state == .cancelled } })
+    }
+
+    @Test func oldQRWhileNewerWindowOpenGetsExpired() async throws {
+        let (server, port, log) = try await startServer()
+        defer { server.stop() }
+        let a = server.beginPairing()
+        let b = server.beginPairing()
+        #expect(a.secret != b.secret)
+        let phone = try await TestPhone.connect("phone", port: port)
+        try await phone.sendPairRequest(a)
+        #expect(try await phone.nextErrorCode() == .pairingExpired)
+        #expect(log.contains(.rejected(.pairingExpired)))
+        // The old QR did not use up an attempt of the new window: B still pairs.
+        let fresh = try await TestPhone.connect("phone", port: port)
+        _ = try await pair(fresh, server: server, uri: b)
+    }
+
+    @Test func replacingWindowMidConfirmationSendsPairingRejected() async throws {
+        let (server, port, _) = try await startServer()
+        defer { server.stop() }
+        let uri = server.beginPairing()
+        let phone = try await TestPhone.connect("phone", port: port)
+        try await phone.sendPairRequest(uri)
+        #expect(try #require(await phone.next()).type == MessageType.pairVerified.rawValue)
+        _ = server.beginPairing()
+        #expect(try await phone.nextErrorCode() == .pairingRejected)
+        #expect(await phone.ended())
+    }
+
+    @Test func stopMidConfirmationSendsPairingRejected() async throws {
+        let (server, port, _) = try await startServer()
+        let uri = server.beginPairing()
+        let phone = try await TestPhone.connect("phone", port: port)
+        try await phone.sendPairRequest(uri)
+        #expect(try #require(await phone.next()).type == MessageType.pairVerified.rawValue)
+        server.stop()
+        #expect(try await phone.nextErrorCode() == .pairingRejected)
+        #expect(await phone.ended())
+    }
+
+    @Test func pairingRequestWhileConnectedGetsExpired() async throws {
+        let phones = InMemoryPairedPhoneStore()
+        try phones.save(try pairedPhone("phone"))
+        let (server, port, _) = try await startServer(phones: phones)
+        defer { server.stop() }
+        var received: [AMEnvelope] = []
+        server.onMessage = { received.append($0) }
+        let phone = try await TestPhone.connect("phone", port: port)
+        try await phone.sendHello()
+        _ = await phone.next()
+        let stale = PairingURI(macFingerprint: try vectorFingerprint("mac"), secret: Data(repeating: 1, count: 32),
+                               hosts: ["127.0.0.1"], port: port, macName: "Test Mac")
+        try await phone.sendPairRequest(stale)
+        #expect(try await phone.nextErrorCode() == .pairingExpired)
+        #expect(await phone.ended())
+        #expect(received.isEmpty)
+    }
+
+    @Test func pairingRequestAfterPairCompleteGetsExpired() async throws {
+        let (server, port, _) = try await startServer()
+        defer { server.stop() }
+        let uri = server.beginPairing()
+        let phone = try await TestPhone.connect("phone", port: port)
+        _ = try await pair(phone, server: server, uri: uri)
+        // Same connection, before hello (awaitingHello).
+        try await phone.sendPairRequest(uri)
+        #expect(try await phone.nextErrorCode() == .pairingExpired)
+        #expect(await phone.ended())
+    }
+
+    @Test func goodbyeUnpairedClosesEverySessionOfThatPhone() async throws {
+        let phones = InMemoryPairedPhoneStore()
+        try phones.save(try pairedPhone("phone"))
+        let (server, port, _) = try await startServer(phones: phones)
+        defer { server.stop() }
+        let idle = try await TestPhone.connect("phone", port: port) // never says hello
+        let main = try await TestPhone.connect("phone", port: port)
+        try await main.sendHello()
+        _ = await main.next()
+        var bye = AMGoodbye()
+        bye.reason = .unpaired
+        try await main.conn.send(.goodbye, bye, channel: .system)
+        #expect(await main.ended())
+        #expect(await idle.ended())
+        #expect(try phones.all().isEmpty)
+    }
+
+    @Test func forgetClosesEverySessionAndRemovesFirst() async throws {
+        let phones = InMemoryPairedPhoneStore()
+        let known = try pairedPhone("phone")
+        try phones.save(known)
+        let (server, port, _) = try await startServer(phones: phones)
+        defer { server.stop() }
+        let idle = try await TestPhone.connect("phone", port: port)
+        let main = try await TestPhone.connect("phone", port: port)
+        try await main.sendHello()
+        _ = await main.next()
+        #expect(await eventually { server.state != .idle })
+        await server.forget(phoneID: known.id)
+        // Removal is synchronous with forget: nothing awaited while still trusted.
+        #expect(try phones.all().isEmpty)
+        #expect(try AMGoodbye(serializedBytes: try #require(await main.next()).payload).reason == .unpaired)
+        #expect(await main.ended())
+        #expect(await idle.ended())
+        #expect(server.state == .idle)
     }
 }
 

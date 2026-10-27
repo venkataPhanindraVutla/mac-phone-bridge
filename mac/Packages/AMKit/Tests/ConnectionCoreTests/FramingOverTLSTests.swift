@@ -169,3 +169,37 @@ actor ServerSide {
     }
     #expect(await server.connection == nil)
 }
+
+/// Keeps the server-side NWConnections a listener handed out.
+final class AcceptedConnections: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [NWConnection] = []
+    func add(_ c: NWConnection) { lock.lock(); list.append(c); lock.unlock() }
+    var all: [NWConnection] { lock.lock(); defer { lock.unlock() }; return list }
+}
+
+@Test func refusedHandshakeCancelsServerConnection() async throws {
+    let mac = try testIdentity("mac")
+    let stranger = try testIdentity("stranger")
+    let phoneFP = try testIdentity("phone").fingerprint
+    let accepted = AcceptedConnections()
+    let listener = try LoopbackListener(identity: mac, acceptPeer: { $0 == phoneFP }) { nw in
+        accepted.add(nw)
+        Task { _ = try? await ControlConnection.open(nw) }
+    }
+    let port = try await listener.start()
+    defer { listener.stop() }
+
+    if let client = try? await connectClient(port: port, identity: stranger, pin: mac.fingerprint) {
+        _ = try? await client.send(.ping, AMPing(), channel: .system)
+        _ = await Inbox(client.envelopes).waitForEnd()
+        client.close()
+    }
+    let deadline = ContinuousClock.now + .seconds(3)
+    while ContinuousClock.now < deadline,
+          accepted.all.isEmpty || accepted.all.contains(where: { $0.state != .cancelled }) {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(accepted.all.count == 1)
+    #expect(accepted.all.allSatisfy { $0.state == .cancelled })
+}

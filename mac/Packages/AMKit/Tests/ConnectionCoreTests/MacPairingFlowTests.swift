@@ -150,3 +150,18 @@ private func verified(_ flow: MacPairingFlow, at now: Date = t0) -> PairingVerdi
         #expect(flow.remoteDecision(true, now: t0) == .cancelled)
     }
 }
+
+@Test func isSpentTracksBurnAndLifetime() {
+    let fresh = makeFlow()
+    #expect(!fresh.isSpent(now: t0))
+    #expect(!fresh.isSpent(now: t0 + 300))
+    #expect(fresh.isSpent(now: t0 + 301))
+
+    let used = makeFlow()
+    _ = verified(used)
+    #expect(used.isSpent(now: t0))
+
+    let bad = makeFlow()
+    for _ in 0..<3 { _ = bad.verify(request(bad, good: false), phoneFingerprint: phoneFP, now: t0) }
+    #expect(bad.isSpent(now: t0))
+}

@@ -1,4 +1,5 @@
 import AMProtocol
+import CryptoKit
 import Foundation
 import Network
 import Observation
@@ -56,6 +57,8 @@ public final class MacServer {
     /// Messages from the connected phone other than hello/ping/goodbye.
     @ObservationIgnored public var onMessage: ((AMEnvelope) -> Void)?
     @ObservationIgnored public var onEvent: ((MacServerEvent) -> Void)?
+    /// Test hook: sees every accepted NWConnection before the handshake.
+    @ObservationIgnored var onAcceptForTesting: ((NWConnection) -> Void)?
 
     @ObservationIgnored private let identityProvider: any IdentityProvider
     @ObservationIgnored private let phones: any PairedPhoneStore
@@ -79,6 +82,10 @@ public final class MacServer {
     @ObservationIgnored private var active: Session?
     @ObservationIgnored private var window: PairingWindow?
     @ObservationIgnored private var incompatiblePhone: String?
+    /// Secrets of windows this process closed or replaced, newest last. A proof made with
+    /// one of them is an old QR code: it gets PAIRING_EXPIRED, not BAD_PAIRING_SECRET.
+    @ObservationIgnored private var retiredSecrets: [Data] = []
+    private static let maxRetiredSecrets = 16
 
     private static let listenerQueue = DispatchQueue(label: "io.github.anmirror.listener")
     private static let maxRestartAttempts = 40
@@ -120,8 +127,8 @@ public final class MacServer {
 
     /// Closes every connection and the listener.
     public func stop() {
+        if let w = window { endWindow(w, rejection: nil, phoneError: .pairingRejected) }
         for s in Array(sessions.values) { drop(s) }
-        window = nil
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
@@ -150,7 +157,9 @@ public final class MacServer {
     /// `start()` once `port` is known. Replaces any window already open.
     public func beginPairing() -> PairingURI {
         guard let identity else { preconditionFailure("MacServer.start() must succeed before beginPairing()") }
-        if let old = window { endWindow(old, rejection: nil) }
+        if let old = window {
+            endWindow(old, rejection: old.session == nil ? nil : .pairingRejected, phoneError: .pairingRejected)
+        }
         let flow = MacPairingFlow(macFingerprint: identity.fingerprint, now: now(), lifetime: pairingLifetime)
         let uri = PairingURI(macFingerprint: identity.fingerprint, secret: flow.secret,
                              hosts: PairingHosts.current(), port: port ?? 0, macName: macName)
@@ -189,16 +198,18 @@ public final class MacServer {
     /// Unpairs: tells the phone (`system.goodbye UNPAIRED`) if it is connected, then removes it.
     public func forget(phoneID: String) async {
         let known = (try? phones.all())?.first { $0.id == phoneID }
+        // Untrust first, so a reconnect cannot slip in while the goodbye is on its way.
+        try? phones.remove(id: phoneID)
+        refreshPolicy()
+        var bye = AMGoodbye()
+        bye.reason = .unpaired
         for s in Array(sessions.values) where s.conn.peerFingerprint.lowercaseHex == phoneID {
-            if case .active = s.phase {
-                var bye = AMGoodbye()
-                bye.reason = .unpaired
-                _ = try? await s.conn.send(.goodbye, bye, channel: .system)
+            switch s.phase {
+            case .active, .awaitingHello: post(s, .goodbye, bye, channel: .system)
+            default: break
             }
             drop(s, flush: true)
         }
-        try? phones.remove(id: phoneID)
-        refreshPolicy()
         if let known { emit(.unpaired(known)) }
         recomputeState()
     }
@@ -270,9 +281,14 @@ public final class MacServer {
     }
 
     private func accept(_ nw: NWConnection) {
+        onAcceptForTesting?(nw)
         Task { [weak self] in
-            guard let conn = try? await ControlConnection.open(nw, timeout: .seconds(10)) else { return }
-            self?.attach(conn)
+            do {
+                let conn = try await ControlConnection.open(nw, timeout: .seconds(10))
+                if let self { self.attach(conn) } else { conn.close() }
+            } catch {
+                nw.cancel()
+            }
         }
     }
 
@@ -308,11 +324,21 @@ public final class MacServer {
             handleGoodbye(env, paired: paired, in: session)
             return
         }
+        if env.type == MessageType.pairRequest.rawValue {
+            if case .awaitingFirst = session.phase {
+                handlePairRequest(env, in: session)
+            } else if let w = window, !w.flow.isSpent(now: now()) {
+                // Pairing must be the first message on a connection.
+                reject(session, .pairingRejected, .pairingRejected)
+            } else {
+                // Ruling R2, in every phase.
+                reject(session, .pairingExpired, .pairingExpired)
+            }
+            return
+        }
         switch session.phase {
         case .awaitingFirst:
-            if env.type == MessageType.pairRequest.rawValue {
-                handlePairRequest(env, in: session)
-            } else if paired == nil {
+            if paired == nil {
                 reject(session, .notPaired, .notPairedCertificate)
             } else if env.type == MessageType.hello.rawValue, let paired {
                 handleHello(env, phone: paired, in: session)
@@ -344,6 +370,11 @@ public final class MacServer {
         }
         guard let request = try? AMPairRequest(serializedBytes: env.payload) else {
             reject(session, .pairingRejected, .pairingRejected)
+            return
+        }
+        if matchesRetiredSecret(request.secretProof, phoneFingerprint: session.conn.peerFingerprint) {
+            // An older QR code from this Mac (Review Focus 3); does not use up an attempt.
+            reject(session, .pairingExpired, .pairingExpired)
             return
         }
         switch w.flow.verify(request, phoneFingerprint: session.conn.peerFingerprint, now: now()) {
@@ -400,12 +431,20 @@ public final class MacServer {
         }
     }
 
-    /// Closes the pairing window; also closes its pairing connection, if any.
-    private func endWindow(_ w: PairingWindow, rejection: MacRejection?) {
+    /// Closes the pairing window; also closes its pairing connection, if any, first sending
+    /// `system.error phoneError` when given (SPEC 5.3: the Mac refuses to continue).
+    private func endWindow(_ w: PairingWindow, rejection: MacRejection?, phoneError: AMErrorCode? = nil) {
         w.timer?.cancel()
         if window === w { window = nil }
+        retire(w.flow.secret)
         if let s = w.session {
             w.session = nil
+            if let phoneError {
+                var error = AMError()
+                error.code = phoneError
+                error.message = "pairing window closed"
+                post(s, .error, error, channel: .system)
+            }
             drop(s, flush: true)
         }
         refreshPolicy()
@@ -449,6 +488,7 @@ public final class MacServer {
             try? phones.remove(id: paired.id)
             refreshPolicy()
             emit(.unpaired(paired))
+            for s in Array(sessions.values) where s.conn.peerFingerprint == paired.fingerprint { drop(s) }
         }
         drop(session)
     }
@@ -502,6 +542,26 @@ public final class MacServer {
     }
 
     // MARK: helpers
+
+    private func retire(_ secret: Data) {
+        guard !retiredSecrets.contains(secret) else { return }
+        retiredSecrets.append(secret)
+        if retiredSecrets.count > Self.maxRetiredSecrets { retiredSecrets.removeFirst() }
+    }
+
+    /// Constant-time per candidate: compares HMACs of the proofs, like `MacPairingFlow`.
+    private func matchesRetiredSecret(_ proof: Data, phoneFingerprint: Data) -> Bool {
+        guard let macFP = identity?.fingerprint else { return false }
+        var matched = false
+        for secret in retiredSecrets {
+            let key = SymmetricKey(data: secret)
+            let expected = PairingCrypto.secretProof(secret: secret, macFingerprint: macFP,
+                                                     phoneFingerprint: phoneFingerprint)
+            let given = HMAC<SHA256>.authenticationCode(for: proof, using: key)
+            if HMAC<SHA256>.isValidAuthenticationCode(given, authenticating: expected, using: key) { matched = true }
+        }
+        return matched
+    }
 
     private func pairedPhone(_ fingerprint: Data) -> PairedPhone? {
         (try? phones.all())?.first { $0.fingerprint == fingerprint }

@@ -70,6 +70,15 @@ public final class MacPairingFlow: @unchecked Sendable {
             macFingerprint: macFingerprint, phoneFingerprint: phoneFingerprint))
     }
 
+    /// True once the secret can no longer verify: used, burned by bad proofs or a cancel,
+    /// or older than `lifetime`.
+    public func isSpent(now: Date) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if burned || now.timeIntervalSince(openedAt) > lifetime { return true }
+        guard case .open = state else { return true }
+        return false
+    }
+
     public func localDecision(_ accepted: Bool, now: Date) -> PairingOutcome {
         decide(accepted, isLocal: true, now: now)
     }
