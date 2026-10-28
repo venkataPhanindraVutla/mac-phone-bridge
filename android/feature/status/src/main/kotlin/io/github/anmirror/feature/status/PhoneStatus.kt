@@ -3,7 +3,8 @@ package io.github.anmirror.feature.status
 import io.github.anmirror.protocol.v1.NetworkKind
 import io.github.anmirror.protocol.v1.StatusUpdate
 
-/** What the Mac shows about this phone. [signalLevel] is 0..4, or -1 for no SIM / no service. */
+/** What the Mac shows about this phone. [signalLevel] is 0..4, or -1 for unknown / no service (no SIM, airplane mode,
+ * no usable cell reading). 0 is a real "no bars" reading. */
 data class PhoneStatus(
     val batteryPercent: Int,
     val charging: Boolean,

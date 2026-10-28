@@ -14,6 +14,7 @@ import android.telephony.PhoneStateListener
 import android.telephony.SignalStrength
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import io.github.anmirror.protocol.v1.NetworkKind
 import kotlinx.coroutines.channels.awaitClose
@@ -58,6 +59,13 @@ private class StatusSources(private val app: Context) {
         return percent to charging
     }
 
+    private fun view(s: SignalStrength) = SignalStrengthView(
+        level = s.level,
+        cells = s.cellSignalStrengths.map {
+            CellView(valid = it.dbm != Int.MAX_VALUE) // CellSignalStrength.isValid is not public API
+        },
+    )
+
     private fun signal(): Flow<Int> = callbackFlow {
         val tm = app.getSystemService(TelephonyManager::class.java)
         if (tm == null) {
@@ -65,13 +73,22 @@ private class StatusSources(private val app: Context) {
             awaitClose { }
             return@callbackFlow
         }
-        fun level(s: SignalStrength?): Int =
-            if (tm.simState != TelephonyManager.SIM_STATE_READY || s == null) -1 else s.level.coerceIn(0, 4)
+        fun airplane() = Settings.Global.getInt(app.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+        fun simReady() = tm.simState == TelephonyManager.SIM_STATE_READY
+        fun level(s: SignalStrength?): Int = signalLevel(simReady(), airplane(), s?.let(::view))
 
-        trySend(level(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) tm.signalStrength else null))
+        // Known without a callback: no SIM / airplane. Otherwise the first callback supplies the
+        // value (sending -1 for "not known yet" would flash "No service" at connect).
+        val initial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) tm.signalStrength else null
+        var sent = false
+        if (initial != null || !simReady() || airplane()) {
+            trySend(level(initial))
+            sent = true
+        }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && Looper.myLooper() == null) {
-            awaitClose { } // API 29-30 listeners need a Looper thread; keep the initial value
+            if (!sent) trySend(-1) // API 29-30 listeners need a Looper thread: no callback will come
+            awaitClose { }
             return@callbackFlow
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
