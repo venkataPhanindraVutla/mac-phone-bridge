@@ -42,19 +42,24 @@ You need a Mac (Apple silicon or Intel) to build both apps.
 
 - **Xcode 26 or later** (Swift 6).
 - **xcodegen:** `brew install xcodegen`
-- **protoc 4.36.2.** Download it from Maven Central and check it. This is the same pinned version CI uses. Maven publishes only SHA-1 files, so the Intel check uses SHA-1 (from the `.sha1` file next to the download). The Apple silicon SHA-256 was computed from the downloaded file, and both binaries carry a valid Google Developer ID signature (`codesign --verify`).
+- **protoc 4.36.2.** Download it from Maven Central and check it. This is the same pinned version CI uses. Maven publishes only SHA-1 for these files, so the Intel check uses SHA-1 (the value from the `.sha1` file next to the download). The Apple silicon SHA-256 was computed from the downloaded file. Both binaries passed `codesign --verify` when checked. The install only happens if the checksum passes:
   ```sh
   U=https://repo1.maven.org/maven2/com/google/protobuf/protoc/4.36.2
   if [ "$(uname -m)" = arm64 ]; then
-    curl -fsSL -o protoc "$U/protoc-4.36.2-osx-aarch_64.exe"
-    echo "765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb  protoc" | shasum -a 256 -c -
+    F=protoc-4.36.2-osx-aarch_64.exe; ALGO=256; HASH=765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb
   else
-    curl -fsSL -o protoc "$U/protoc-4.36.2-osx-x86_64.exe"
-    echo "9ca6235adbf070c0931273b809de5063e566c32f  protoc" | shasum -a 1 -c -
+    F=protoc-4.36.2-osx-x86_64.exe; ALGO=1; HASH=9ca6235adbf070c0931273b809de5063e566c32f
   fi
-  chmod +x protoc
-  codesign --verify -vv protoc                       # optional: Google signature check
-  mkdir -p "$HOME/.local/bin" && mv protoc "$HOME/.local/bin/protoc"   # make sure this is on your PATH
+  if curl -fsSL -o protoc "$U/$F" \
+     && echo "$HASH  protoc" | shasum -a "$ALGO" -c - \
+     && chmod +x protoc \
+     && mkdir -p "$HOME/.local/bin" \
+     && mv protoc "$HOME/.local/bin/protoc"; then
+    echo "protoc installed to $HOME/.local/bin (make sure it is on your PATH)"
+  else
+    echo "checksum mismatch or download failed; protoc not installed"; rm -f protoc
+  fi
+  codesign --verify -vv "$HOME/.local/bin/protoc"   # optional: signature check
   ```
 - **JDK 21,** any vendor. Point `JAVA_HOME` at it.
 - **Android SDK** with platform **37.1** (Android Studio's SDK Manager, or `sdkmanager "platforms;android-37.1"`). Put the SDK path in `android/local.properties` as `sdk.dir=...`, or set `ANDROID_HOME`.
