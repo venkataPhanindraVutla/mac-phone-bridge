@@ -49,10 +49,20 @@ final class IncomingCallPanels {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let host = NSHostingView(rootView: IncomingCallView(model: model, callID: callID))
+        // The number or name can arrive after the first state: the view reports its size and the panel follows.
+        let host = NSHostingView(rootView: IncomingCallView(model: model, callID: callID) { [weak self] size in
+            self?.resize(callID: callID, to: size)
+        })
         panel.contentView = host
         panel.setContentSize(host.fittingSize)
         return panel
+    }
+
+    private func resize(callID: String, to size: CGSize) {
+        guard let panel = panels[callID], size.width > 0, size.height > 0,
+              size != panel.contentRect(forFrameRect: panel.frame).size else { return }
+        panel.setContentSize(size)
+        layout(order: model.ringing.map(\.callID))
     }
 
     /// Newest at the bottom of the stack, so the oldest sits nearest the corner.
@@ -73,6 +83,7 @@ final class IncomingCallPanels {
 private struct IncomingCallView: View {
     let model: CallModel
     let callID: String
+    let onSize: (CGSize) -> Void
 
     var body: some View {
         if let call = model.ringing.first(where: { $0.callID == callID }) {
@@ -89,7 +100,9 @@ private struct IncomingCallView: View {
             }
             .padding(14)
             .frame(width: 320, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .onGeometryChange(for: CGSize.self, of: { $0.size }, action: onSize)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Text("Incoming call from \(model.displayName(call))"))
         }
