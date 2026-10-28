@@ -2,14 +2,22 @@
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
-> **Status: milestone 0.1 (foundation) is code-complete and being verified on real devices.** It covers pairing, a secure connection, phone status in the Mac menu bar, and find my phone. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md).
+> **Status: milestone 0.2 is code-complete and being verified on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the Mac menu bar, find my phone), it adds notifications on the Mac with actions and inline reply, one-time-code copy, contacts for caller names, and calls (see, answer, decline, mute and hang up). The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md).
+
+### What's in 0.2
+
+- **Notifications on your Mac,** with action buttons and inline reply, a per-app filter, and dismissals that go both ways.
+- **One-time codes:** a "Copy code" button on notifications that contain a sign-in code.
+- **Contacts:** synced to an encrypted file on your Mac, used only for caller names; off with one switch in Settings.
+- **Calls:** a panel for incoming calls, with Answer, Decline, Mute and Hang up from the Mac. Needs call-log and answer-calls access, which the open-source build asks for.
+- No SMS or MMS access: the Android app asks for no SMS permission.
 
 ## What it will do (version 1)
 
-- 🔔 **Notifications on your Mac,** with actions and inline reply
+- 🔔 **Notifications on your Mac,** with actions and inline reply (in 0.2)
 - 📁 **Files both ways:** drag, Share menu, and your phone in Finder's sidebar
 - 📋 **Shared clipboard** for text
-- 📞 **Calls:** see, answer and decline from your Mac
+- 📞 **Calls:** see, answer and decline from your Mac (in 0.2)
 - 🎵 **Music controller,** including your Mac's media keys
 - 🖥️ **Screen mirroring with full control:** use WhatsApp and any app with your Mac's keyboard and mouse
 - Also:
