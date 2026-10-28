@@ -26,6 +26,11 @@ android {
     productFlavors {
         create("oss") {
             dimension = "distribution"
+            // READ_CALL_LOG and ANSWER_PHONE_CALLS are declared in src/oss only. `-PplayLike=true`
+            // turns both switches off, to check that a build without them still works.
+            val playLike = providers.gradleProperty("playLike").orNull == "true"
+            buildConfigField("boolean", "FEATURE_CALL_LOG", (!playLike).toString())
+            buildConfigField("boolean", "FEATURE_ANSWER_CALLS", (!playLike).toString())
         }
     }
 
@@ -58,6 +63,7 @@ dependencies {
     implementation(project(":feature:find"))
     implementation(project(":feature:notify"))
     implementation(project(":feature:contacts"))
+    implementation(project(":feature:calls"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

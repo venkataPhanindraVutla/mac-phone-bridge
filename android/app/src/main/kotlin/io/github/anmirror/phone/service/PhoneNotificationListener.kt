@@ -21,6 +21,7 @@ class PhoneNotificationListener : NotificationListenerService() {
             activeNotifications = { runCatching { activeNotifications }.getOrNull() },
             cancel = { key -> cancelNotification(key) },
         )
+        graph.callNotifications.active = { runCatching { activeNotifications.toList() }.getOrNull() }
         // After the invoker is in place: the resync this triggers reads from it.
         graph.refreshNotifyAccess()
         graph.setListenerBound(true)
@@ -28,6 +29,7 @@ class PhoneNotificationListener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         graph.setListenerBound(false)
+        graph.callNotifications.active = null
         graph.notifyInvoker.target = null
         graph.refreshNotifyAccess()
     }

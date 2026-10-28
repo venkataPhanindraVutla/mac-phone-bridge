@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
         // Back from Settings: re-read notification access.
         graph.refreshNotifyAccess()
         graph.refreshContactsGranted()
+        graph.refreshCallsPermissions()
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
@@ -83,6 +84,8 @@ private fun AppRoot(graph: AppGraph) {
     val notifyAccess by graph.notifyAccess.collectAsStateWithLifecycle()
     val contactsOn by graph.contactsOn.collectAsStateWithLifecycle()
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
+    val callsOn by graph.callsOn.collectAsStateWithLifecycle()
+    val callsPermissions by graph.callsPermissions.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -115,6 +118,10 @@ private fun AppRoot(graph: AppGraph) {
                         contactsGranted = contactsGranted,
                         onContactsToggle = graph::setContactsOn,
                         onContactsPermissionResult = graph::refreshContactsGranted,
+                        callsOn = callsOn,
+                        callsGranted = callsPermissions.phoneState,
+                        onCallsToggle = graph::setCallsOn,
+                        onCallsPermissionResult = graph::refreshCallsPermissions,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

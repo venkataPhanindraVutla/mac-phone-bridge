@@ -23,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
+import io.github.anmirror.phone.BuildConfig
 import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
@@ -34,6 +35,11 @@ import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
 import io.github.anmirror.connection.PhoneConnectionState.Connected
+import io.github.anmirror.feature.calls.AndroidCallStateSource
+import io.github.anmirror.feature.calls.CallController
+import io.github.anmirror.feature.calls.CallLogMissedCallLookup
+import io.github.anmirror.feature.calls.CallStyleCallActions
+import io.github.anmirror.feature.calls.TelecomCallActions
 import io.github.anmirror.feature.find.AndroidAlarmAudio
 import io.github.anmirror.feature.find.AndroidDndOverride
 import io.github.anmirror.feature.find.AndroidRingNotifier
@@ -42,6 +48,9 @@ import io.github.anmirror.feature.find.RingController
 import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
+import io.github.anmirror.protocol.v1.CallCommand
+import io.github.anmirror.protocol.v1.CallCommandOutcome
+import io.github.anmirror.protocol.v1.CallCommandResult
 import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
@@ -89,6 +98,7 @@ class ConnectionService : LifecycleService() {
         setUpFindMyPhone()
         setUpNotifications()
         setUpContacts()
+        setUpCalls()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -113,6 +123,8 @@ class ConnectionService : LifecycleService() {
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
+        callController?.stop()
+        callController = null
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
@@ -253,6 +265,68 @@ class ConnectionService : LifecycleService() {
                 }
         }
     }
+
+    private var callController: CallController? = null
+
+    /**
+     * Calls: the controller (and its telephony source) lives while the switch is on and
+     * READ_PHONE_STATE is granted, so a call survives a dropped connection; what it sends goes
+     * through [AppGraph.sendCalls], which sends only while the Mac shares calls.v1.
+     * `calls.availability` is sent regardless, while the Mac shares calls.v1, and every
+     * `calls.command` gets exactly one `calls.result`, NOT_ALLOWED while the feature is closed.
+     */
+    private fun setUpCalls() {
+        graph.manager.on(MessageType.CALLS_COMMAND) { env ->
+            val command = CallCommand.parseFrom(env.payload)
+            graph.scope.launch {
+                if (!graph.callsShared()) return@launch
+                val controller = callController?.takeIf { graph.callsOpen() }
+                val result = controller?.onCommand(command) ?: CallCommandResult.newBuilder()
+                    .setCallId(command.callId)
+                    .setOutcome(CallCommandOutcome.CALL_COMMAND_OUTCOME_NOT_ALLOWED)
+                    .build()
+                graph.manager.send(Channel.CHANNEL_CALLS, MessageType.CALLS_RESULT, result, env.id)
+            }
+        }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "calls.v1" in it.shared }.distinctUntilChanged(),
+                graph.callsOn,
+                graph.callsPermissions,
+            ) { shared, on, permissions -> Triple(shared, on, permissions) }
+                .distinctUntilChanged()
+                .collect { (shared, on, permissions) ->
+                    if (shared) {
+                        graph.manager.send(Channel.CHANNEL_CALLS, MessageType.CALLS_AVAILABILITY, featureAvailability(permissions.phoneState, on))
+                    }
+                    callController?.stop()
+                    callController = null
+                    if (on && permissions.phoneState) {
+                        val controller = newCallController(permissions.callLog, permissions.answer)
+                        callController = controller
+                        controller.start()
+                    }
+                }
+        }
+        // Once per (re)connect: catch the Mac up with a call already in progress.
+        lifecycleScope.launch {
+            graph.manager.state
+                .map { it is Connected && "calls.v1" in it.shared }
+                .distinctUntilChanged()
+                .collect { shared -> if (shared) callController?.onConnected() }
+        }
+    }
+
+    private fun newCallController(callLog: Boolean, answer: Boolean) = CallController(
+        source = AndroidCallStateSource(this),
+        primary = if (BuildConfig.FEATURE_ANSWER_CALLS && answer) TelecomCallActions(this) else null,
+        fallback = CallStyleCallActions { graph.callNotifications.notification() },
+        missed = if (BuildConfig.FEATURE_CALL_LOG && callLog) CallLogMissedCallLookup(this) else null,
+        notificationNumber = { graph.callNotifications.title() },
+        clock = System::currentTimeMillis,
+        newId = { java.util.UUID.randomUUID().toString() },
+        send = { type, payload -> graph.sendCalls(type, payload) },
+    )
 
     private var contactsObserver: ContentObserver? = null
     private var contactsDebounce: Job? = null

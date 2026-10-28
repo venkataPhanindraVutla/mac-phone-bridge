@@ -16,6 +16,9 @@
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- Contacts for caller names on the Mac: asked only when "Share contacts with your Mac" is turned on. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Calls on the Mac: the phone's call state, asked only when "Calls on your Mac" is turned on; the mic mute for Mute. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

@@ -18,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import io.github.anmirror.phone.BuildConfig
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.service.PhoneNotificationListener
 
@@ -29,6 +30,16 @@ fun pairingPermissions(needsCamera: Boolean): List<String> = buildList {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
     if (needsCamera) add(Manifest.permission.CAMERA)
     if (Build.VERSION.SDK_INT >= 37) add(LOCAL_NETWORK)
+}
+
+/**
+ * "Calls on your Mac" permissions, in the order they are asked: the call state (required), then the
+ * call log (confirms missed calls) and answering (Answer / Decline / Hang up), when this build has them.
+ */
+fun callsPermissions(): List<String> = buildList {
+    add(Manifest.permission.READ_PHONE_STATE)
+    if (BuildConfig.FEATURE_CALL_LOG) add(Manifest.permission.READ_CALL_LOG)
+    if (BuildConfig.FEATURE_ANSWER_CALLS) add(Manifest.permission.ANSWER_PHONE_CALLS)
 }
 
 fun Context.isGranted(permission: String): Boolean =

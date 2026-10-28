@@ -60,6 +60,10 @@ fun HomeScreen(
     contactsGranted: Boolean,
     onContactsToggle: (Boolean) -> Unit,
     onContactsPermissionResult: () -> Unit,
+    callsOn: Boolean,
+    callsGranted: Boolean,
+    onCallsToggle: (Boolean) -> Unit,
+    onCallsPermissionResult: () -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -101,6 +105,7 @@ fun HomeScreen(
         }
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
+        CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -248,6 +253,50 @@ private fun ContactsRow(on: Boolean, granted: Boolean, onToggle: (Boolean) -> Un
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_contacts_allow)) }
+        }
+    }
+}
+
+/**
+ * "Calls on your Mac": READ_PHONE_STATE (plus the call log and answering permissions, where this
+ * build has them) is asked for only when the switch is turned on. If refused, the way back is the
+ * app's page in Settings.
+ */
+@Composable
+private fun CallsRow(on: Boolean, granted: Boolean, onToggle: (Boolean) -> Unit, onPermissionResult: () -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_calls_title)
+    val (chain, _) = rememberPermissionChain(callsPermissions(), onDone = onPermissionResult)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked) chain.start()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && !granted) {
+            Text(stringResource(R.string.home_calls_needs_permission), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_calls_allow)) }
         }
     }
 }

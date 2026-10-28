@@ -2,9 +2,11 @@ package io.github.anmirror.phone
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Notification
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import android.service.notification.StatusBarNotification
 import android.util.AtomicFile
 import android.util.Log
 import com.google.protobuf.MessageLite
@@ -192,6 +194,48 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendContacts(type: String, payload: MessageLite): Boolean =
         contactsOpen() && manager.send(ProtoChannel.CHANNEL_CONTACTS, type, payload)
 
+    private val callsPrefs = app.getSharedPreferences("calls", Context.MODE_PRIVATE)
+    private val _callsOn = MutableStateFlow(callsPrefs.getBoolean(KEY_CALLS_ON, false))
+
+    /** The user's "Calls on your Mac" switch. Off until they turn it on. */
+    val callsOn: StateFlow<Boolean> = _callsOn.asStateFlow()
+
+    private val _callsPermissions = MutableStateFlow(readCallsPermissions())
+
+    /** Which of the calls permissions are granted (re-read on resume and after the permission prompts). */
+    val callsPermissions: StateFlow<CallsPermissions> = _callsPermissions.asStateFlow()
+
+    fun setCallsOn(on: Boolean) {
+        callsPrefs.edit().putBoolean(KEY_CALLS_ON, on).apply()
+        _callsOn.value = on
+    }
+
+    fun refreshCallsPermissions() {
+        _callsPermissions.value = readCallsPermissions()
+    }
+
+    private fun readCallsPermissions() = CallsPermissions(
+        phoneState = app.isGranted(Manifest.permission.READ_PHONE_STATE),
+        callLog = BuildConfig.FEATURE_CALL_LOG && app.isGranted(Manifest.permission.READ_CALL_LOG),
+        answer = BuildConfig.FEATURE_ANSWER_CALLS && app.isGranted(Manifest.permission.ANSWER_PHONE_CALLS),
+    )
+
+    /** The connected Mac shares calls.v1. */
+    fun callsShared(): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && "calls.v1" in s.shared
+    }
+
+    /** The phone sends no calls content unless the Mac shares calls.v1, the switch is on and READ_PHONE_STATE is granted. */
+    fun callsOpen(): Boolean = callsShared() && _callsOn.value && app.isGranted(Manifest.permission.READ_PHONE_STATE)
+
+    /** Sends a `calls.*` message when [callsOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendCalls(type: String, payload: MessageLite): Boolean =
+        callsOpen() && manager.send(ProtoChannel.CHANNEL_CALLS, type, payload)
+
+    /** Points at the notification listener while it is bound; the active call notification comes from it. */
+    val callNotifications = DelegatingCallNotifications()
+
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     /** Queues a listener event; they run one at a time, in the order the listener saw them. */
@@ -234,9 +278,10 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
+        private const val KEY_CALLS_ON = "calls_on_mac"
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")
@@ -278,4 +323,21 @@ class DelegatingActionInvoker : ActionInvoker {
     override fun active(): List<NotificationSnapshot> = target?.active().orEmpty()
     override fun image(key: String): ByteArray? = target?.image(key)
     override fun icon(packageName: String): ByteArray? = target?.icon(packageName)
+}
+
+/** The calls permissions that are granted; only [phoneState] is required. */
+data class CallsPermissions(val phoneState: Boolean, val callLog: Boolean, val answer: Boolean)
+
+/**
+ * The active `category == call` notification, read through the notification listener while it is
+ * bound. Both lookups are null when it is not (feature/calls cannot see the listener itself).
+ */
+class DelegatingCallNotifications {
+    @Volatile var active: (() -> List<StatusBarNotification>?)? = null
+
+    fun notification(): Notification? =
+        active?.invoke()?.firstOrNull { it.notification.category == Notification.CATEGORY_CALL }?.notification
+
+    /** Title of the call notification: the caller's number or name. */
+    fun title(): String? = notification()?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
 }

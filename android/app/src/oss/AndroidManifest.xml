@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Play restricts both; only the oss flavor (GitHub, F-Droid) declares them. Each is asked
+         for only when "Calls on your Mac" is turned on: the call log confirms missed calls, and
+         answer/decline/hang up from the Mac go through Telecom. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+</manifest>
