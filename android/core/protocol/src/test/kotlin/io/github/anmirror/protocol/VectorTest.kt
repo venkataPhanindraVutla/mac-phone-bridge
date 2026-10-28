@@ -185,7 +185,14 @@ class VectorTest {
         val photo = unique.first { u -> u.arr("taken").map { it.jsonPrimitive.content } == listOf("photo.jpg", "photo (1).jpg") }
         assertEquals("photo (2).jpg", photo.str("out"))
         assertTrue(unique.any { it.str("name").toByteArray().size == 255 && it.str("out").toByteArray().size <= 255 && it.str("out") != it.str("name") })
-        for (u in unique) assertFalse(u.str("out") in u.arr("taken").map { it.jsonPrimitive.content }, u.str("name"))
+        fun key(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC).lowercase(java.util.Locale.ROOT)
+        for (u in unique) assertFalse(key(u.str("out")) in u.arr("taken").map { key(it.jsonPrimitive.content) }, u.str("name"))
+        fun outFor(name: String) = unique.first { it.str("name") == name }.str("out")
+        assertEquals("Photo (1).JPG", outFor("Photo.JPG"))
+        assertEquals("É (1).pdf", outFor("É.pdf"))
+        assertEquals("e\u0301 (1).txt", outFor("e\u0301.txt"))
+        assertTrue(unique.any { it.str("name") == "Photo.jpg" && it.str("out") == "Photo (2).jpg" })
+        assertTrue(sanitize.any { it.str("in") == "a".repeat(254) + " x" && !it.str("out").endsWith(" ") })
     }
 
     @Test

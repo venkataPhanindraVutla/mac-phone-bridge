@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote
 
@@ -448,20 +449,27 @@ def sanitize_name(raw: str) -> str:
         return "file"
     if len(name.encode("utf-8")) > NAME_MAX_BYTES:
         stem, ext = _split_ext(name)
-        name = _cut(stem, NAME_MAX_BYTES - len(ext.encode("utf-8"))) + ext
+        name = _cut(stem, NAME_MAX_BYTES - len(ext.encode("utf-8"))).rstrip(". ") + ext
     return name
 
 
+def name_key(name: str) -> str:
+    """Collision key: lowercase(NFC(name)), locale-independent (SPEC section 16 step 6)."""
+    return unicodedata.normalize("NFC", name).lower()
+
+
 def unique_name(name: str, taken: set) -> str:
-    """name if free, else 'stem (n).ext' with the smallest free n >= 1, within NAME_MAX_BYTES."""
-    if name not in taken:
+    """name if free, else 'stem (n).ext' with the smallest free n >= 1, within NAME_MAX_BYTES.
+    Names collide when their name_key is equal."""
+    keys = {name_key(t) for t in taken}
+    if name_key(name) not in keys:
         return name
     stem, ext = _split_ext(name)
     n = 1
     while True:
         suffix = f" ({n})" + ext
-        cand = _cut(stem, NAME_MAX_BYTES - len(suffix.encode("utf-8"))) + suffix
-        if cand not in taken:
+        cand = _cut(stem, NAME_MAX_BYTES - len(suffix.encode("utf-8"))).rstrip(". ") + f" ({n})" + ext
+        if name_key(cand) not in keys:
             return cand
         n += 1
 
@@ -473,11 +481,13 @@ def build_filenames() -> dict:
         "a" * 296 + ".jpg", "é" * 150 + ".pdf",
         "/", "dir/", "  . hidden.txt", "del\u007f.txt", "\u2066x\u2069.txt",
         "report.tar.gz", "noext", "a" * 300, "b" * 10 + "." + "c" * 20,
+        "a" * 254 + " x", "a" * 300 + "." + "c" * 20, "a" * 253 + "..x",
     ]
     sanitize = []
     for raw in sanitize_cases:
         out = sanitize_name(raw)
         assert out == sanitize_name(out) and len(out.encode("utf-8")) <= NAME_MAX_BYTES, raw
+        assert out == out.lstrip(". ").rstrip(" "), raw
         sanitize.append({"in": raw, "out": out})
     long_name = "a" * 251 + ".jpg"
     unique_cases = [
@@ -488,13 +498,22 @@ def build_filenames() -> dict:
         ("noext", ["noext"], None),
         (long_name, [long_name], None),
         ("é" * 125 + ".pdf", ["é" * 125 + ".pdf"], None),
+        ("Photo.JPG", ["photo.jpg"], None),
+        ("É.pdf", ["é.pdf"], None),
+        ("e\u0301.txt", ["\u00e9.txt"], None),  # NFD name, NFC taken
+        ("\u00e9.txt", ["e\u0301.txt"], None),  # NFC name, NFD taken
+        ("Photo.jpg", ["photo.jpg", "photo (1).jpg"], None),
+        ("a" * 250 + " .jpg", ["a" * 250 + " .jpg"], None),
     ]
     unique = []
     for name, taken, _ in unique_cases:
         out = unique_name(name, set(taken))
-        assert out not in taken and len(out.encode("utf-8")) <= NAME_MAX_BYTES, name
+        assert name_key(out) not in {name_key(t) for t in taken}, name
+        assert len(out.encode("utf-8")) <= NAME_MAX_BYTES, name
         unique.append({"name": name, "taken": taken, "out": out})
     assert unique[2]["out"] == "photo (2).jpg" and unique[5]["out"] == "a" * 247 + " (1).jpg"
+    assert unique[7]["out"] == "Photo (1).JPG" and unique[8]["out"] == "É (1).pdf"
+    assert unique[11]["out"] == "Photo (2).jpg"
     return {"notes": "sanitize_name then unique_name, see SPEC section 16; sizes are UTF-8 bytes",
             "sanitize": sanitize, "unique": unique}
 

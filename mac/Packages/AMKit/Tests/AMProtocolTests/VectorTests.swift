@@ -283,7 +283,14 @@ private struct FilenamesFile: Decodable {
     let photo = try #require(file.unique.first { $0.taken == ["photo.jpg", "photo (1).jpg"] })
     #expect(photo.out == "photo (2).jpg")
     #expect(file.unique.contains { $0.name.utf8.count == 255 && $0.out.utf8.count <= 255 && $0.out != $0.name })
-    for u in file.unique { #expect(!u.taken.contains(u.out), "\(u.name)") }
+    func key(_ s: String) -> String { s.precomposedStringWithCanonicalMapping.lowercased() }
+    for u in file.unique { #expect(!u.taken.map(key).contains(key(u.out)), "\(u.name)") }
+    let byName = Dictionary(grouping: file.unique, by: \.name)
+    #expect(byName["Photo.JPG"]?.first?.out == "Photo (1).JPG")
+    #expect(byName["É.pdf"]?.first?.out == "É (1).pdf")
+    #expect(byName["e\u{301}.txt"]?.first?.out == "e\u{301} (1).txt")
+    #expect(file.unique.contains { $0.name == "Photo.jpg" && $0.out == "Photo (2).jpg" })
+    #expect(file.sanitize.contains { $0.in == String(repeating: "a", count: 254) + " x" && !$0.out.hasSuffix(" ") })
 }
 
 @Test func messageTypeRawValues() {
