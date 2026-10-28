@@ -134,7 +134,10 @@ class ConnectionManager(
     /** A connection handed over by [adopt], not yet used by an attempt. */
     private val adopted = AtomicReference<ControlChannel?>(null)
 
-    private class Current(val mac: PairedMac, val session: PhoneSession)
+    private class Current(val mac: PairedMac, val session: PhoneSession) {
+        /** Set by whoever ends this session for a switch (adopt or setup), so A is told once. */
+        val switching = AtomicBoolean(false)
+    }
 
     @Volatile private var current: Current? = null
 
@@ -175,7 +178,7 @@ class ConnectionManager(
         adopted.getAndSet(channel)?.takeIf { it !== channel }?.close()
         // Switching Macs: tell the old one (it keeps this phone paired), then close. The loop
         // kicks again once that session has ended (the session takes kicks as pings).
-        current?.takeIf { !channel.isFor(it.mac) }?.session?.channel?.let { old ->
+        current?.takeIf { !channel.isFor(it.mac) && it.switching.compareAndSet(false, true) }?.session?.channel?.let { old ->
             scope.launch {
                 try {
                     runCatching { old.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, goodbye(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC)) }
@@ -186,6 +189,9 @@ class ConnectionManager(
         }
         kick()
     }
+
+    /** For tests: a channel handed over by [adopt] is waiting. */
+    internal fun hasAdoptedChannel(): Boolean = adopted.get() != null
 
     /** Sends to the connected Mac. False when not connected or the feature is not shared. */
     suspend fun send(channel: Channel, type: String, payload: MessageLite): Boolean {
@@ -212,7 +218,12 @@ class ConnectionManager(
     /** Unpairs: tells the Mac (`system.goodbye UNPAIRED`) if connected, and removes it. */
     suspend fun forget(macId: String) {
         val c = setupLock.withLock {
+            val fp = store.all().firstOrNull { it.id == macId }?.fingerprintHex ?: macId
             store.remove(macId)
+            // A pairing connection to this Mac waiting to be used goes too.
+            adopted.get()
+                ?.takeIf { it.peerFingerprintHex.equals(fp, ignoreCase = true) && adopted.compareAndSet(it, null) }
+                ?.close()
             current?.takeIf { it.mac.id == macId }
         }
         if (c != null) {
@@ -450,8 +461,10 @@ class ConnectionManager(
         adopted.getAndSet(null)?.let { channel ->
             when {
                 channel.isClosed -> Unit
-                // Another Mac's (a store read from before it was saved): keep it for its attempt.
-                !channel.isFor(mac) -> if (!adopted.compareAndSet(null, channel)) channel.close()
+                // Another stored Mac's (a store read from before it was saved): keep it for its
+                // attempt. A channel whose Mac is not paired (any more) is closed.
+                !channel.isFor(mac) ->
+                    if (store.all().none { channel.isFor(it) } || !adopted.compareAndSet(null, channel)) channel.close()
                 else -> {
                     tried.add("${channel.host}:${channel.port}")
                     setState(gen, PhoneConnectionState.Connecting(mac))
@@ -490,13 +503,30 @@ class ConnectionManager(
                 store.save(updated)
                 // A pairing connection to this Mac handed over while we dialed it is not needed now.
                 adopted.get()?.takeIf { it !== channel && it.isFor(mac) && adopted.compareAndSet(it, null) }?.close()
-                PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs).also {
-                    current = Current(updated, it)
-                    setState(gen, PhoneConnectionState.Connected(updated, a.shared))
+                val session = PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs)
+                val cur = Current(updated, session)
+                current = cur
+                // adopt() sets `adopted` before reading `current`; we publish `current`, then read
+                // `adopted`. So an adopt() that ran during this setup (and saw no current) is seen
+                // here: hand over to the adopted Mac instead of starting this session.
+                val late = adopted.get()
+                if (late != null && !late.isClosed && !late.isFor(mac) && store.all().any { late.isFor(it) }) {
+                    return@withLock if (cur.switching.compareAndSet(false, true)) SWITCH else HANDLED
                 }
+                setState(gen, PhoneConnectionState.Connected(updated, a.shared))
+                session
             }
             if (session === YIELD) {
                 channel.close()
+                return SessionEnd.CLOSED to false
+            }
+            if (session === SWITCH) {
+                runCatching { channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, goodbye(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC)) }
+                channel.close()
+                return SessionEnd.CLOSED to false
+            }
+            if (session === HANDLED) {
+                // adopt() saw this session too; it sends the goodbye, then closes the channel.
                 return SessionEnd.CLOSED to false
             }
             if (session !is PhoneSession) {
@@ -530,7 +560,11 @@ class ConnectionManager(
     private fun goodbye(reason: GoodbyeReason): Goodbye = Goodbye.newBuilder().setReason(reason).build()
 
     private companion object {
-        /** runConnected's setup result: yield to an adopted channel of another Mac. */
+        /** runConnected's setup results: yield to an adopted channel of another Mac (before any
+         *  save), or end this just-set-up session for it with SWITCHING_MAC (adopt raced setup);
+         *  HANDLED when adopt() is already sending that goodbye. */
         val YIELD = Any()
+        val SWITCH = Any()
+        val HANDLED = Any()
     }
 }

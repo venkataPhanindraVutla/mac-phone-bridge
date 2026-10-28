@@ -9,6 +9,7 @@ import io.github.anmirror.protocol.v1.GoodbyeReason
 import io.github.anmirror.protocol.v1.RingRequest
 import io.github.anmirror.protocol.v1.RingState
 import io.github.anmirror.protocol.v1.StatusUpdate
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -812,5 +813,66 @@ class ConnectionManagerTest {
         runCurrent()
         assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
         assertTrue(r.connector.dials.isNotEmpty(), "redials once the adopted connection is gone")
+    }
+
+    @Test
+    fun adoptDuringSetupOfAnotherMacEndsThatSessionWithSwitchingMac() = runTest {
+        // R30: adopt(B) lands while A's setup is suspended in store.save (current not yet set).
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        val latch = CompletableDeferred<Unit>()
+        var saving = false
+        val store = object : PairedMacStore by inner {
+            override suspend fun save(mac: PairedMac) {
+                if (mac.id == Identities.MAC_FP && !latch.isCompleted) {
+                    saving = true
+                    latch.await()
+                }
+                inner.save(mac)
+            }
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val a = FakeMac(Identities.MAC_FP, backgroundScope).also { connector.macs["10.0.0.5:4000"] = it }
+        val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        val manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        assertTrue(saving, "A's setup is inside store.save")
+        inner.save(macB(at = nowMs + 1))
+        manager.adopt(b.accept("10.0.0.8", 4000))
+        latch.complete(Unit)
+        runCurrent()
+        val state = assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        assertEquals(Identities.STRANGER_FP, state.mac.id, "the phone ends up on B")
+        assertEquals(1, b.received.count { it.type == MessageType.HELLO }, "on B's adopted channel")
+        assertEquals(1, b.connects)
+        val bye = a.received.filter { it.type == MessageType.GOODBYE }.map { Goodbye.parseFrom(it.payload).reason }
+        assertEquals(listOf(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC), bye, "A is told once")
+    }
+
+    @Test
+    fun forgettingTheAdoptedMacClosesItsChannel() = runTest {
+        // R30: adopt B, then forget(B) before the loop uses it: no channel left in the slot.
+        val r = rig(listOf(macA(), macB(at = nowMs + 1)))
+        val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        val channel = b.accept("10.0.0.8", 4000)
+        r.manager.adopt(channel)
+        r.manager.forget(Identities.STRANGER_FP)
+        assertTrue(channel.isClosed, "the forgotten Mac's channel is closed")
+        assertFalse(r.manager.hasAdoptedChannel(), "the slot is empty")
+    }
+
+    @Test
+    fun adoptedChannelOfAMacNoLongerStoredIsClosedNotKept() = runTest {
+        // R30: connect() must not put back a channel whose Mac is not paired.
+        val r = rig(listOf(macA()))
+        r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        val stranger = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        val channel = stranger.accept("10.0.0.9", 4000)
+        r.manager.adopt(channel)
+        r.manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertTrue(channel.isClosed)
+        assertFalse(r.manager.hasAdoptedChannel())
     }
 }
