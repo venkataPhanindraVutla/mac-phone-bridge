@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "ConnectionCore", targets: ["ConnectionCore"]),
         .library(name: "FeatureStatus", targets: ["FeatureStatus"]),
         .library(name: "FeatureFind", targets: ["FeatureFind"]),
+        .library(name: "FeatureNotify", targets: ["FeatureNotify"]),
         .executable(name: "am-mac-sim", targets: ["am-mac-sim"]),
     ],
     dependencies: [
@@ -32,6 +33,7 @@ let package = Package(
         ),
         .target(name: "FeatureStatus", dependencies: ["AMProtocol"]),
         .target(name: "FeatureFind", dependencies: ["AMProtocol", "ConnectionCore"]),
+        .target(name: "FeatureNotify", dependencies: ["AMProtocol", "ConnectionCore"]),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
@@ -49,5 +51,6 @@ let package = Package(
         ),
         .testTarget(name: "FeatureStatusTests", dependencies: ["FeatureStatus"]),
         .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind", "AMProtocol"]),
+        .testTarget(name: "FeatureNotifyTests", dependencies: ["FeatureNotify", "AMProtocol"]),
     ]
 )
