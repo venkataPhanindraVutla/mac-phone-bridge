@@ -56,10 +56,10 @@ You need a Mac (Apple silicon or Intel) to build both apps.
      && mkdir -p "$HOME/.local/bin" \
      && mv protoc "$HOME/.local/bin/protoc"; then
     echo "protoc installed to $HOME/.local/bin (make sure it is on your PATH)"
+    codesign --verify -vv "$HOME/.local/bin/protoc"   # optional: signature check
   else
-    echo "checksum mismatch or download failed; protoc not installed"; rm -f protoc
+    echo "protoc not installed (download, checksum or install step failed)"; rm -f protoc
   fi
-  codesign --verify -vv "$HOME/.local/bin/protoc"   # optional: signature check
   ```
 - **JDK 21,** any vendor. Point `JAVA_HOME` at it.
 - **Android SDK** with platform **37.1** (Android Studio's SDK Manager, or `sdkmanager "platforms;android-37.1"`). Put the SDK path in `android/local.properties` as `sdk.dir=...`, or set `ANDROID_HOME`.
