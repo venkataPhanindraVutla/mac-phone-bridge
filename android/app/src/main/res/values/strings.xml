@@ -28,7 +28,7 @@
     <string name="pair_link_title">Pair with %1$s?</string>
     <string name="pair_link_body">A link wants to pair this phone with a Mac called %1$s. Continue only if you just chose Pair a Phone on your Mac.</string>
     <string name="pair_link_continue">Continue</string>
-    <string name="pair_replaces">This replaces %1$s.</string>
+    <string name="pair_switches_from">You\'ll switch from %1$s to this Mac.</string>
     <string name="pair_done">Paired with %1$s</string>
     <string name="pair_continue">Done</string>
     <string name="pair_try_again">Try again</string>

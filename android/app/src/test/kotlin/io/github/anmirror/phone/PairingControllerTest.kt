@@ -1,10 +1,12 @@
 package io.github.anmirror.phone
 
 import io.github.anmirror.connection.ConnectionManager
+import io.github.anmirror.connection.ControlChannel
 import io.github.anmirror.connection.InMemoryPairedMacStore
 import io.github.anmirror.connection.MacConnector
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairingFailure
+import io.github.anmirror.connection.PairingResult
 import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.connection.StaticDiscovery
 import io.github.anmirror.connection.TlsIdentity
@@ -18,6 +20,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.net.ssl.KeyManager
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -32,10 +36,20 @@ class PairingControllerTest {
     private fun link(hosts: List<String>, name: String = "Studio") =
         PairingUri(macFingerprint = macFp, secret = ByteArray(32) { 3 }, hosts = hosts, port = 4000, macName = name).toUriString()
 
-    private class Rig(val controller: PairingController, val dials: MutableList<List<String>>, val starts: () -> Int)
+    private class Rig(
+        val controller: PairingController,
+        val dials: MutableList<List<String>>,
+        val starts: () -> Int,
+        val store: InMemoryPairedMacStore,
+        val manager: ConnectionManager,
+    )
 
     /** [hang]: the connector never returns (a pairing stays in progress). */
-    private fun TestScope.rig(paired: List<PairedMac> = emptyList(), hang: Boolean = false): Rig {
+    private fun TestScope.rig(
+        paired: List<PairedMac> = emptyList(),
+        hang: Boolean = false,
+        pairer: (suspend (PairingUri, suspend (String) -> Boolean) -> PairingResult)? = null,
+    ): Rig {
         val dials = CopyOnWriteArrayList<List<String>>()
         val connector = MacConnector { hosts, _, _ ->
             dials += hosts
@@ -51,12 +65,12 @@ class PairingControllerTest {
         var starts = 0
         val controller = PairingController(
             scope = backgroundScope,
-            client = PhonePairingClient(connector, identity, "Phone", "Model"),
+            pair = pairer ?: PhonePairingClient(connector, identity, "Phone", "Model")::pair,
             store = store,
             manager = manager,
             startService = { starts++ },
         )
-        return Rig(controller, dials) { starts }
+        return Rig(controller, dials, { starts }, store, manager)
     }
 
     @Test
@@ -66,7 +80,7 @@ class PairingControllerTest {
         runCurrent()
         val offer = assertIs<PairingState.LinkOffer>(r.controller.state.value)
         assertEquals("Studio", offer.macName)
-        assertNull(offer.replaces)
+        assertNull(offer.switchesFrom)
         assertEquals(emptyList(), r.dials, "nothing is dialed before Continue")
         r.controller.acceptLink()
         runCurrent()
@@ -98,21 +112,21 @@ class PairingControllerTest {
     }
 
     @Test
-    fun linkOfferSaysWhichMacItReplaces() = runTest {
+    fun linkOfferSaysWhichMacItSwitchesFrom() = runTest {
         val current = PairedMac("aa", "Office iMac", "aa", ByteArray(32), "10.0.0.2", 4000, 5)
         val r = rig(paired = listOf(current))
         r.controller.offerLink(link(listOf("192.168.0.121")))
         runCurrent()
-        assertEquals("Office iMac", assertIs<PairingState.LinkOffer>(r.controller.state.value).replaces)
+        assertEquals("Office iMac", assertIs<PairingState.LinkOffer>(r.controller.state.value).switchesFrom)
     }
 
     @Test
-    fun repairingTheSameMacReplacesNothing() = runTest {
+    fun repairingTheSameMacSwitchesFromNothing() = runTest {
         val same = PairedMac(macFpHex, "Studio", macFpHex, ByteArray(32), "10.0.0.2", 4000, 5)
         val r = rig(paired = listOf(same))
         r.controller.offerLink(link(listOf("192.168.0.121")))
         runCurrent()
-        assertNull(assertIs<PairingState.LinkOffer>(r.controller.state.value).replaces)
+        assertNull(assertIs<PairingState.LinkOffer>(r.controller.state.value).switchesFrom)
     }
 
     @Test
@@ -127,6 +141,25 @@ class PairingControllerTest {
         r.controller.pair(link(listOf("8.8.8.8", "192.168.1.20", "evil.example.com", "mac.local")))
         runCurrent()
         assertEquals(listOf(listOf("192.168.1.20", "mac.local")), r.dials, "only LAN hosts are dialed")
+    }
+
+    @Test
+    fun pairingBWhileAIsPairedKeepsAAndMakesBActive() = runTest {
+        // R29: a phone may be paired with several Macs; it connects to one at a time.
+        val a = PairedMac("aa".repeat(32), "Office iMac", "aa".repeat(32), ByteArray(32), "10.0.0.2", 4000, 5)
+        val b = PairedMac(macFpHex, "Studio", macFpHex, ByteArray(32), "192.168.0.121", 4000, 10)
+        // A channel that is already dead: the manager then dials B's address as usual.
+        val socket = SSLContext.getDefault().socketFactory.createSocket() as SSLSocket
+        val r = rig(paired = listOf(a), pairer = { _, _ -> PairingResult.Paired(b, ControlChannel(socket, "192.168.0.121")) })
+        r.controller.pair(link(listOf("192.168.0.121")))
+        runCurrent()
+        assertEquals(PairingState.Paired("Studio"), r.controller.state.value)
+        assertEquals(setOf(a.id, b.id), r.store.all().map { it.id }.toSet(), "A stays paired")
+        assertEquals(1, r.starts())
+        r.manager.start()
+        runCurrent()
+        assertEquals(listOf("192.168.0.121"), r.dials.first(), "B is the Mac the manager connects to")
+        assertTrue(r.dials.none { it == listOf("10.0.0.2") }, "A is not dialed")
     }
 
     @Test

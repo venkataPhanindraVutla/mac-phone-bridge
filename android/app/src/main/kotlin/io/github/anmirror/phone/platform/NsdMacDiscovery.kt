@@ -98,15 +98,17 @@ class NsdMacDiscovery(context: Context, scope: CoroutineScope) : MacDiscovery {
                 if (useServiceInfoCallback()) {
                     synchronized(lock) {
                         if (callbacks.containsKey(name)) return
-                        val cb = infoCallback(name, ::put, ::drop) {
-                            // Registration failed: forget it, so the next onServiceFound retries.
-                            synchronized(lock) { callbacks.remove(name) }
+                        lateinit var cb: NsdManager.ServiceInfoCallback
+                        cb = infoCallback(name, ::put, ::drop) {
+                            // Registration failed: forget it (only if still this callback), so the
+                            // next onServiceFound retries.
+                            synchronized(lock) { callbacks.remove(name, cb) }
                         }
                         callbacks[name] = cb
                         try {
                             nsd.registerServiceInfoCallback(info, DirectExecutor, cb)
                         } catch (e: IllegalArgumentException) {
-                            callbacks.remove(name)
+                            callbacks.remove(name, cb)
                             Log.w(TAG, "nsd: cannot watch service", e)
                         }
                     }

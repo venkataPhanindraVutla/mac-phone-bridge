@@ -45,7 +45,7 @@ fun LinkOfferScreen(offer: PairingState.LinkOffer, onContinue: () -> Unit, onCan
             if (rationale != null) stringResource(rationale) else stringResource(R.string.pair_link_body, offer.macName),
             style = MaterialTheme.typography.bodyLarge,
         )
-        offer.replaces?.let { Text(stringResource(R.string.pair_replaces, it), style = MaterialTheme.typography.bodyLarge) }
+        offer.switchesFrom?.let { Text(stringResource(R.string.pair_switches_from, it), style = MaterialTheme.typography.bodyLarge) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.pair_cancel)) }
             Button(onClick = chain::start, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.pair_link_continue)) }

@@ -67,7 +67,7 @@ fun ConfirmCodeScreen(
                     modifier = Modifier.align(Alignment.CenterHorizontally).clearAndSetSemantics { contentDescription = spoken },
                 )
                 Text(stringResource(R.string.pair_code_hint), style = MaterialTheme.typography.bodyLarge)
-                state.replaces?.let { Text(stringResource(R.string.pair_replaces, it), style = MaterialTheme.typography.bodyLarge) }
+                state.switchesFrom?.let { Text(stringResource(R.string.pair_switches_from, it), style = MaterialTheme.typography.bodyLarge) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.pair_cancel)) }
                     Button(onClick = onConfirm, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.pair_confirm)) }

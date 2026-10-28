@@ -5,7 +5,6 @@ import io.github.anmirror.connection.ConnectionManager
 import io.github.anmirror.connection.PairedMacStore
 import io.github.anmirror.connection.PairingFailure
 import io.github.anmirror.connection.PairingResult
-import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.protocol.PairingUri
 import io.github.anmirror.protocol.PairingUriException
 import kotlinx.coroutines.CompletableDeferred
@@ -27,16 +26,16 @@ sealed interface PairingState {
     /**
      * An `anmirror://pair` link opened the app. Nothing is dialed until the user agrees
      * ([PairingController.acceptLink]); a web page can open such a link (ruling R27).
-     * [replaces] names the Mac this pairing would replace, if any.
+     * [switchesFrom] names the Mac the phone will switch from (it stays paired), if any.
      */
-    data class LinkOffer(val uri: PairingUri, val replaces: String?) : PairingState {
+    data class LinkOffer(val uri: PairingUri, val switchesFrom: String?) : PairingState {
         val macName: String get() = uri.macName
     }
 
     data class Connecting(val macName: String) : PairingState
 
-    /** Shows [code]; waits for Confirm or Cancel. [replaces] as in [LinkOffer]. */
-    data class ShowCode(val macName: String, val code: String, val replaces: String? = null) : PairingState
+    /** Shows [code]; waits for Confirm or Cancel. [switchesFrom] as in [LinkOffer]. */
+    data class ShowCode(val macName: String, val code: String, val switchesFrom: String? = null) : PairingState
 
     /** The user confirmed; waiting for the Mac's user. */
     data class WaitingForMac(val macName: String) : PairingState
@@ -54,13 +53,16 @@ sealed interface PairingState {
  * - A link waits for consent ([offerLink], then [acceptLink]) and never interrupts a pairing.
  * - [confirm] starts the connection service, while the app is in front (Android does not let a
  *   background app start a foreground service).
- * - On success it saves the Mac, forgets the Mac it replaces, and hands the open connection to
- *   the [ConnectionManager], which says `system.hello` on it (SPEC 5.3 step 6). That runs to the
- *   end even if the user cancels late, so the connection cannot leak.
+ * - On success it saves the Mac and hands the open connection to the [ConnectionManager], which
+ *   says `system.hello` on it (SPEC 5.3 step 6). Other paired Macs stay paired (PRD §4: several
+ *   Macs, one connected at a time). The new Mac becomes the active one: it has the newest
+ *   `lastConnectedAt`, and [ConnectionManager.adopt] ends a session with another Mac with
+ *   `goodbye SWITCHING_MAC`. That runs to the end even if the user cancels late, so the
+ *   connection cannot leak.
  */
 class PairingController(
     private val scope: CoroutineScope,
-    private val client: PhonePairingClient,
+    private val pair: suspend (PairingUri, suspend (String) -> Boolean) -> PairingResult,
     private val store: PairedMacStore,
     private val manager: ConnectionManager,
     private val startService: () -> Unit,
@@ -85,10 +87,10 @@ class PairingController(
         }
         val uri = parse(text) ?: return
         scope.launch {
-            val replaces = replacedName(uri)
+            val switchesFrom = switchedFromName(uri)
             if (!inProgress()) {
                 Log.i(TAG, "pairing: link offered, waiting for consent")
-                _state.value = PairingState.LinkOffer(uri, replaces)
+                _state.value = PairingState.LinkOffer(uri, switchesFrom)
             }
         }
     }
@@ -125,11 +127,11 @@ class PairingController(
         Log.i(TAG, "pairing: dialing ${hosts.size} host(s)")
         _state.value = PairingState.Connecting(uri.macName)
         job = scope.launch {
-            val replaces = replacedName(uri)
-            val result = client.pair(uri) { code6 ->
+            val switchesFrom = switchedFromName(uri)
+            val result = pair(uri) { code6 ->
                 val d = CompletableDeferred<Boolean>()
                 decision = d
-                _state.value = PairingState.ShowCode(uri.macName, code6, replaces)
+                _state.value = PairingState.ShowCode(uri.macName, code6, switchesFrom)
                 try {
                     d.await().also { if (it) _state.value = PairingState.WaitingForMac(uri.macName) }
                 } finally {
@@ -142,8 +144,6 @@ class PairingController(
                     try {
                         store.save(result.mac)
                         saved = true
-                        // One Mac at a time: the Mac this replaces is forgotten (and told, if connected).
-                        store.all().filter { it.id != result.mac.id }.forEach { manager.forget(it.id) }
                         startService()
                     } catch (e: Exception) {
                         Log.e(TAG, "pairing: cannot finish", e)
@@ -161,8 +161,8 @@ class PairingController(
         }
     }
 
-    /** The name of the paired Mac that pairing with [uri] would replace, or null. */
-    private suspend fun replacedName(uri: PairingUri): String? {
+    /** The name of the paired Mac the phone switches from by pairing with [uri], or null. */
+    private suspend fun switchedFromName(uri: PairingUri): String? {
         val id = uri.macFingerprint.joinToString("") { "%02x".format(it) }
         return runCatching { store.all() }.getOrDefault(emptyList())
             .filter { it.id != id }

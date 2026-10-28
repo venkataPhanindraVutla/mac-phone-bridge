@@ -69,7 +69,7 @@ class AppGraph private constructor(context: Context) {
 
     val pairing = PairingController(
         scope = scope,
-        client = PhonePairingClient(connector, identity, deviceName(), deviceModel()),
+        pair = PhonePairingClient(connector, identity, deviceName(), deviceModel())::pair,
         store = store,
         manager = manager,
         startService = { ConnectionService.start(app) },
