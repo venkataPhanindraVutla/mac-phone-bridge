@@ -2,6 +2,7 @@ import AppKit
 import AMProtocol
 import ConnectionCore
 import CryptoKit
+import FeatureCalls
 import FeatureContacts
 import FeatureFind
 import FeatureNotify
@@ -15,7 +16,7 @@ import os
 @MainActor
 @Observable
 final class AppModel {
-    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1"]
+    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1"]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
 
@@ -23,6 +24,9 @@ final class AppModel {
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
     let notifications: NotificationsModel
+    let calls: CallModel
+    /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
+    private(set) var showPhoneCalls: Bool = AppModel.savedShowPhoneCalls
     /// Whether phone contacts name callers and notification titles (default on). Turning it off wipes the stores.
     private(set) var contactsForNames: Bool = AppModel.savedContactsForNames
     private(set) var pairedPhones: [PairedPhone] = []
@@ -36,6 +40,7 @@ final class AppModel {
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
     @ObservationIgnored private let notificationPresenter: UserNotificationPresenter
     @ObservationIgnored private let icons: IconCache
+    @ObservationIgnored private var callPanels: IncomingCallPanels?
     /// The connected phone's contacts, loaded while it is connected and shares contacts.v1.
     @ObservationIgnored private let contactsSlot = ContactsSlot()
     /// The phone's last `contacts.availability`; nil until the first one of this connection.
@@ -48,6 +53,10 @@ final class AppModel {
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private static let portKey = "listenPort"
     @ObservationIgnored private static let contactsKey = "contactsForNames"
+    @ObservationIgnored private static let callsKey = "showPhoneCalls"
+    private static var savedShowPhoneCalls: Bool {
+        UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
+    }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
     }
@@ -94,11 +103,22 @@ final class AppModel {
                 try? await server.send(type, message, channel: .notify)
             }
         )
+        calls = CallModel(
+            nameFor: { slot.store?.name(forNumber: $0) }, presenter: presenter,
+            send: { type, message in
+                // Only a phone that shares calls.v1 gets calls messages.
+                guard server.activePhone?.shared.contains("calls.v1") == true else { return }
+                try? await server.send(type, message, channel: .calls)
+            }
+        )
         let (stream, continuation) = AsyncStream.makeStream(of: NotifyWork.self)
         notifyWork = continuation
+        calls.enabled = showPhoneCalls
+        callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
         server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
         let model = notifications
+        let calls = calls
         notifyDrain = Task { @MainActor [weak self] in
             for await work in stream {
                 switch work {
@@ -110,6 +130,9 @@ final class AppModel {
                 case let .contactsMessage(envelope): await self?.contactsMessage(envelope)
                 case .contactsToggled: await self?.contactsToggled()
                 case let .contactsForget(phoneID): self?.contactsForget(phoneID: phoneID)
+                case let .callsConnected(phoneID): calls.connected(phoneID: phoneID)
+                case .callsDisconnected: calls.disconnected()
+                case let .callsMessage(envelope): await calls.route(envelope)
                 }
             }
         }
@@ -161,6 +184,17 @@ final class AppModel {
 
     /// Phone notifications are offered only while the connected phone shares `notify.v1`.
     var canNotify: Bool { server.activePhone?.shared.contains("notify.v1") ?? false }
+
+    /// Phone calls are offered only while the connected phone shares `calls.v1`.
+    var canCall: Bool { server.activePhone?.shared.contains("calls.v1") ?? false }
+
+    /// The "Show phone calls" switch in Settings.
+    func setShowPhoneCalls(_ on: Bool) {
+        guard on != showPhoneCalls else { return }
+        showPhoneCalls = on
+        UserDefaults.standard.set(on, forKey: Self.callsKey)
+        calls.enabled = on
+    }
 
     /// How many contacts the connected phone has shared; 0 when none are loaded.
     var contactsCount: Int { contactsSlot.store?.count ?? 0 }
@@ -276,6 +310,7 @@ final class AppModel {
             ring.clearHint()
             // Contacts first, so the store is there when the phone's first notifications are shown.
             if shared.contains("contacts.v1") { notifyWork.yield(.contactsConnected(phone.id)) }
+            if shared.contains("calls.v1") { notifyWork.yield(.callsConnected(phone.id)) }
             if shared.contains("notify.v1") { notifyWork.yield(.connected(phone.id)) }
             refreshPhones()
             #if DEBUG
@@ -286,6 +321,7 @@ final class AppModel {
             ring.reset()
             notifyWork.yield(.disconnected)
             notifyWork.yield(.contactsDisconnected)
+            notifyWork.yield(.callsDisconnected)
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
@@ -294,6 +330,7 @@ final class AppModel {
             ring.reset()
             notifyWork.yield(.disconnected)
             notifyWork.yield(.contactsDisconnected)
+            notifyWork.yield(.callsDisconnected)
             notifyWork.yield(.contactsForget(phone.id)) // a forgotten phone leaves no contacts behind
             UserDefaults.standard.removeObject(forKey: Self.notifySettingsKey(phoneID: phone.id))
             refreshPhones()
@@ -316,6 +353,10 @@ final class AppModel {
         }
         if envelope.type.hasPrefix("contacts.") {
             notifyWork.yield(.contactsMessage(envelope))
+            return
+        }
+        if envelope.type.hasPrefix("calls.") {
+            notifyWork.yield(.callsMessage(envelope))
             return
         }
         switch envelope.type {
@@ -437,6 +478,9 @@ private enum NotifyWork: Sendable {
     case contactsMessage(AMEnvelope)
     case contactsToggled
     case contactsForget(String)
+    case callsConnected(String)
+    case callsDisconnected
+    case callsMessage(AMEnvelope)
 }
 
 /// Holds the connected phone's contacts for the notification model's name lookup.

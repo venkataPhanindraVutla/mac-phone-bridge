@@ -1,4 +1,5 @@
 import AppKit
+import FeatureCalls
 import FeatureFind
 import FeatureStatus
 import SwiftUI
@@ -75,6 +76,20 @@ struct MenuContent: View {
                !availability.enabled, availability.reason == .needsPermission {
                 Text("Turn on notification access in the phone app.")
             }
+        }
+        if model.isConnected, model.canCall, let call = model.calls.active {
+            Text("On a call with \(model.calls.displayName(call)) · \(model.calls.elapsed() ?? "00:00")")
+            if call.muteSupported {
+                if call.muted {
+                    Button("Unmute") { Task { await model.calls.toggleMute() } }
+                        .accessibilityLabel(Text("Unmute"))
+                } else {
+                    Button("Mute") { Task { await model.calls.toggleMute() } }
+                        .accessibilityLabel(Text("Mute"))
+                }
+            }
+            Button("Hang up") { Task { await model.calls.hangUp() } }
+                .accessibilityLabel(Text("Hang up"))
         }
         if model.isConnected, let status = model.phoneStatus.status {
             Text(StatusFormatter.detail(status))

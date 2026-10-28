@@ -30,6 +30,13 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section("Calls") {
+                    Toggle("Show phone calls", isOn: Binding(
+                        get: { model.showPhoneCalls },
+                        set: { model.setShowPhoneCalls($0) }
+                    ))
+                    .accessibilityLabel(Text("Show phone calls"))
+                }
                 Section("Notifications") {
                     Toggle("Show phone notifications", isOn: binding(\.enabled, phone: phone))
                         .accessibilityLabel(Text("Show phone notifications"))
