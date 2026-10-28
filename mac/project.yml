@@ -31,6 +31,8 @@ targets:
         product: FeatureStatus
       - package: AMKit
         product: FeatureFind
+      - package: AMKit
+        product: FeatureNotify
     settings:
       base:
         PRODUCT_NAME: Android Mirroring

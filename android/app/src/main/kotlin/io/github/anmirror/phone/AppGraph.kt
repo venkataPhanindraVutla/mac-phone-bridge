@@ -6,7 +6,10 @@ import android.os.Build
 import android.provider.Settings
 import android.util.AtomicFile
 import android.util.Log
+import com.google.protobuf.MessageLite
+import androidx.core.app.NotificationManagerCompat
 import io.github.anmirror.connection.ConnectionManager
+import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.connection.PROTOCOL_VERSION
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairedMacStore
@@ -86,12 +89,53 @@ class AppGraph private constructor(context: Context) {
     /** Points at the notification listener while it is connected; empty answers otherwise. */
     val notifyInvoker = DelegatingActionInvoker()
 
-    /** Fed by [io.github.anmirror.phone.service.PhoneNotificationListener]; Mac-side wiring is added with the feature toggle. */
+    /** Fed by [io.github.anmirror.phone.service.PhoneNotificationListener]; sends only while [notifyOpen]. */
     val notifyBridge = NotifyBridge(
         ownPackage = app.packageName,
         invoker = notifyInvoker,
         log = { message, e -> Log.e(TAG, "notify: $message", e) },
-    ) { type, payload -> manager.send(ProtoChannel.CHANNEL_NOTIFY, type, payload) }
+    ) { type, payload -> sendNotify(type, payload) }
+
+    private val notifyPrefs = app.getSharedPreferences("notify", Context.MODE_PRIVATE)
+    private val _notifyOn = MutableStateFlow(notifyPrefs.getBoolean(KEY_NOTIFY_ON, false))
+
+    /** The user's "Show notifications on your Mac" switch. Off until they turn it on. */
+    val notifyOn: StateFlow<Boolean> = _notifyOn.asStateFlow()
+
+    private val _notifyAccess = MutableStateFlow(readNotifyAccess())
+
+    /** Whether the user has granted notification access (re-read on resume and by the listener). */
+    val notifyAccess: StateFlow<Boolean> = _notifyAccess.asStateFlow()
+
+    /** True once this session's first `notify.filter` has been applied (controller ruling R7). Touched only by the ordered event queue. */
+    var notifyFilterApplied = false
+
+    fun setNotifyOn(on: Boolean) {
+        notifyPrefs.edit().putBoolean(KEY_NOTIFY_ON, on).apply()
+        _notifyOn.value = on
+    }
+
+    fun refreshNotifyAccess() {
+        _notifyAccess.value = readNotifyAccess()
+    }
+
+    /** The listener knows first: it is bound only while access is granted. */
+    fun setNotifyAccess(granted: Boolean) {
+        _notifyAccess.value = granted
+    }
+
+    private fun readNotifyAccess(): Boolean =
+        NotificationManagerCompat.getEnabledListenerPackages(app).contains(app.packageName)
+
+    /** The phone sends no `notify.*` content unless the Mac shares notify.v1, the switch is on and access is granted. */
+    fun notifyOpen(): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && "notify.v1" in s.shared && _notifyOn.value && _notifyAccess.value
+    }
+
+    /** Sends a `notify.*` message when [notifyOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendNotify(type: String, payload: MessageLite, replyTo: Long = 0): Boolean =
+        notifyOpen() && manager.send(ProtoChannel.CHANNEL_NOTIFY, type, payload, replyTo)
 
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
@@ -135,7 +179,8 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1")
+        private const val KEY_NOTIFY_ON = "show_on_mac"
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")

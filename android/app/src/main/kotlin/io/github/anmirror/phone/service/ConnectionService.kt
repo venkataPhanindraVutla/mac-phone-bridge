@@ -23,6 +23,7 @@ import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
+import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.messageRes
@@ -37,6 +38,10 @@ import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.Channel
+import io.github.anmirror.protocol.v1.DismissNotification
+import io.github.anmirror.protocol.v1.IconRequest
+import io.github.anmirror.protocol.v1.InvokeAction
+import io.github.anmirror.protocol.v1.NotificationFilter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -55,6 +60,7 @@ class ConnectionService : LifecycleService() {
     private lateinit var network: NetworkWatcher
     private var lastText: String? = null
     private lateinit var ring: RingController
+    private var lastNotifyEnabled: Boolean? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -72,6 +78,7 @@ class ConnectionService : LifecycleService() {
             send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
         ).launchIn(lifecycleScope)
         setUpFindMyPhone()
+        setUpNotifications()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -132,6 +139,71 @@ class ConnectionService : LifecycleService() {
                 .map { it is Connected && "find.v1" in it.shared }
                 .distinctUntilChanged()
                 .collect { shared -> if (shared && ring.ringing.value) graph.manager.send(Channel.CHANNEL_FIND, MessageType.FIND_STATE, ring.currentState()) }
+        }
+    }
+
+    /**
+     * Notifications: every handler only queues onto the graph's ordered event channel, so the
+     * bridge sees the listener's events and the Mac's messages in one order. Nothing is sent
+     * unless [AppGraph.notifyOpen]; `notify.availability` is the one message that is, since it is
+     * how the Mac learns the feature is off.
+     */
+    private fun setUpNotifications() {
+        val bridge = graph.notifyBridge
+        graph.manager.on(MessageType.NOTIFY_FILTER) { env ->
+            val filter = NotificationFilter.parseFrom(env.payload)
+            graph.postNotifyEvent {
+                bridge.onFilter(filter)
+                // The Mac sends a filter right after connecting (SPEC 10): the first one starts the session.
+                if (!graph.notifyFilterApplied) {
+                    graph.notifyFilterApplied = true
+                    bridge.onConnected()
+                }
+            }
+        }
+        graph.manager.on(MessageType.NOTIFY_DISMISS) { env ->
+            val dismiss = DismissNotification.parseFrom(env.payload)
+            graph.postNotifyEvent { if (graph.notifyOpen()) bridge.onDismiss(dismiss) }
+        }
+        graph.manager.on(MessageType.NOTIFY_ICON_REQUEST) { env ->
+            val request = IconRequest.parseFrom(env.payload)
+            graph.postNotifyEvent { if (graph.notifyOpen()) bridge.onIconRequest(request) }
+        }
+        graph.manager.on(MessageType.NOTIFY_INVOKE) { env ->
+            val invoke = InvokeAction.parseFrom(env.payload)
+            graph.postNotifyEvent {
+                // Exactly one result per invoke, answering this envelope.
+                if (graph.notifyOpen()) {
+                    val result = bridge.onInvoke(env.id, invoke)
+                    graph.sendNotify(MessageType.NOTIFY_RESULT, result, replyTo = env.id)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "notify.v1" in it.shared }.distinctUntilChanged(),
+                graph.notifyOn,
+                graph.notifyAccess,
+            ) { connected, on, access -> Triple(connected, on, access) }
+                .distinctUntilChanged()
+                .collect { (connected, on, access) ->
+                    if (!connected) {
+                        lastNotifyEnabled = null
+                        graph.postNotifyEvent {
+                            graph.notifyFilterApplied = false
+                            bridge.onDisconnected()
+                        }
+                        return@collect
+                    }
+                    val availability = featureAvailability(granted = access, userOn = on)
+                    if (lastNotifyEnabled == null) graph.postNotifyEvent { graph.notifyFilterApplied = false }
+                    graph.manager.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_AVAILABILITY, availability)
+                    // Switched on (or access granted) mid-session: catch the Mac up.
+                    if (availability.enabled && lastNotifyEnabled == false) {
+                        graph.postNotifyEvent { if (graph.notifyFilterApplied) bridge.onConnected() }
+                    }
+                    lastNotifyEnabled = availability.enabled
+                }
         }
     }
 

@@ -201,8 +201,11 @@ class ConnectionManager(
     /** For tests: a channel handed over by [adopt] is waiting. */
     internal fun hasAdoptedChannel(): Boolean = adopted.get() != null
 
-    /** Sends to the connected Mac. False when not connected or the feature is not shared. */
-    suspend fun send(channel: Channel, type: String, payload: MessageLite): Boolean {
+    /**
+     * Sends to the connected Mac. False when not connected or the feature is not shared.
+     * [replyTo] is the id of the envelope being answered, or 0.
+     */
+    suspend fun send(channel: Channel, type: String, payload: MessageLite, replyTo: Long = 0): Boolean {
         val c = current ?: return false
         val feature = when (channel) {
             Channel.CHANNEL_STATUS -> "status.v1"
@@ -211,7 +214,7 @@ class ConnectionManager(
         }
         if (feature != null && feature !in c.session.shared) return false
         return try {
-            c.session.channel.send(channel, type, payload)
+            c.session.channel.send(channel, type, payload, replyTo)
             true
         } catch (e: IOException) {
             false

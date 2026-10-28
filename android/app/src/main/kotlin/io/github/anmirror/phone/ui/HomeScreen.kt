@@ -5,6 +5,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +15,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -48,6 +51,9 @@ fun HomeScreen(
     ringing: Boolean,
     onStopRing: () -> Unit,
     onRetry: () -> Unit,
+    notifyOn: Boolean,
+    notifyAccess: Boolean,
+    onNotifyToggle: (Boolean) -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -87,6 +93,7 @@ fun HomeScreen(
         } else if (state !is PhoneConnectionState.Connected) {
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
+        NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -153,6 +160,44 @@ private fun FindMyPhoneRow() {
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_find_allow)) }
+        }
+    }
+}
+
+/**
+ * "Show notifications on your Mac": the switch is the user's choice; notification access is the
+ * system's, granted in Settings. Turning the switch on without access opens that page.
+ */
+@Composable
+private fun NotifyRow(on: Boolean, access: Boolean, onToggle: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_notify_title)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked && !access) context.openNotificationAccessSettings()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && !access) {
+            Text(stringResource(R.string.home_notify_needs_access), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = { context.openNotificationAccessSettings() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_notify_allow)) }
         }
     }
 }

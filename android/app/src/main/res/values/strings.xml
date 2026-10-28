@@ -67,6 +67,10 @@
     <string name="home_find_title">Ring at full volume, even on silent</string>
     <string name="home_find_needs_access">To ring when Do Not Disturb is set to Total silence, allow Do Not Disturb access.</string>
     <string name="home_find_granted">Allowed. Your Mac can ring this phone even in Do Not Disturb.</string>
+    <!-- Home: show notifications on the Mac -->
+    <string name="home_notify_title">Show notifications on your Mac</string>
+    <string name="home_notify_needs_access">Android Mirroring needs notification access to do this. Allow it in Settings.</string>
+    <string name="home_notify_allow">Allow notification access</string>
     <string name="home_find_allow">Allow Do Not Disturb access</string>
 
     <!-- Service notification -->

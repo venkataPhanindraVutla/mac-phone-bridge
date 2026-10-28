@@ -1,9 +1,12 @@
 package io.github.anmirror.phone.ui
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -16,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import io.github.anmirror.phone.R
+import io.github.anmirror.phone.service.PhoneNotificationListener
 
 /** `Manifest.permission.ACCESS_LOCAL_NETWORK`, a runtime permission from Android 17 (API 37). */
 const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
@@ -84,4 +88,25 @@ fun rememberPermissionChain(permissions: List<String>, onDone: () -> Unit): Pair
         )
     }
     return chain to asking
+}
+
+/**
+ * Opens this app's notification-access page in Settings (API 30+), else the list of apps. Access
+ * can only be granted there; it is never a runtime prompt.
+ */
+fun Context.openNotificationAccessSettings() {
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
+            Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+            ComponentName(this, PhoneNotificationListener::class.java).flattenToString(),
+        )
+    } else {
+        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+    }
+    try {
+        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: android.content.ActivityNotFoundException) {
+        // Some builds lack the detail page: fall back to the list.
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
 }

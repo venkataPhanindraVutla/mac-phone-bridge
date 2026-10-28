@@ -45,6 +45,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Back from Settings: re-read notification access.
+        graph.refreshNotifyAccess()
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
@@ -76,6 +78,8 @@ private fun AppRoot(graph: AppGraph) {
     val pairing by graph.pairing.state.collectAsStateWithLifecycle()
     val connection by graph.manager.state.collectAsStateWithLifecycle()
     val ringing by ConnectionService.ringing.collectAsStateWithLifecycle()
+    val notifyOn by graph.notifyOn.collectAsStateWithLifecycle()
+    val notifyAccess by graph.notifyAccess.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -101,6 +105,9 @@ private fun AppRoot(graph: AppGraph) {
                         ringing = ringing,
                         onStopRing = { ConnectionService.stopRing(context) },
                         onRetry = graph.manager::kick,
+                        notifyOn = notifyOn,
+                        notifyAccess = notifyAccess,
+                        onNotifyToggle = graph::setNotifyOn,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

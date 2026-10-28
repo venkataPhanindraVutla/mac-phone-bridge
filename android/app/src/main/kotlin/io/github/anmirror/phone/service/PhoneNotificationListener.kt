@@ -21,13 +21,18 @@ class PhoneNotificationListener : NotificationListenerService() {
             activeNotifications = { runCatching { activeNotifications }.getOrNull() },
             cancel = { key -> cancelNotification(key) },
         )
+        // After the invoker is in place: a resync triggered by the access change reads from it.
+        graph.setNotifyAccess(true)
     }
 
     override fun onListenerDisconnected() {
         graph.notifyInvoker.target = null
+        graph.refreshNotifyAccess()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // Nothing is read while the feature is off or no Mac listens.
+        if (!graph.notifyOpen()) return
         val snapshot = reader.snapshot(sbn)
         graph.postNotifyEvent { graph.notifyBridge.onPosted(snapshot) }
     }

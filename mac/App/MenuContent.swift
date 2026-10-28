@@ -61,6 +61,21 @@ struct MenuContent: View {
         if let note = model.ring.note {
             Text(note)
         }
+        if model.isConnected, model.canNotify {
+            if model.notifications.authorized == false {
+                Text("Allow notifications for Android Mirroring in System Settings.")
+                Button("Open System Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .accessibilityLabel(Text("Open notification settings in System Settings"))
+            }
+            if let availability = model.notifications.phoneAvailability,
+               !availability.enabled, availability.reason == .needsPermission {
+                Text("Turn on notification access in the phone app.")
+            }
+        }
         if model.isConnected, let status = model.phoneStatus.status {
             Text(StatusFormatter.detail(status))
                 .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))

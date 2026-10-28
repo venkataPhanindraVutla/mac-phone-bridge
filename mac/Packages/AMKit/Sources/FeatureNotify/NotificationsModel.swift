@@ -60,6 +60,11 @@ public final class NotificationsModel {
         await sendFilter(phoneID: phoneID)
     }
 
+    /// Asks the system again, e.g. after the user changed the permission in System Settings.
+    public func refreshAuthorization() async {
+        authorized = await presenter.authorize()
+    }
+
     public func disconnected() {
         phoneID = nil
         phoneAvailability = nil

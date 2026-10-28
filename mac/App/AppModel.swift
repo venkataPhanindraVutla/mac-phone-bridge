@@ -2,6 +2,7 @@ import AppKit
 import AMProtocol
 import ConnectionCore
 import FeatureFind
+import FeatureNotify
 import FeatureStatus
 import Foundation
 import Observation
@@ -12,13 +13,14 @@ import os
 @MainActor
 @Observable
 final class AppModel {
-    static let capabilities: Set<String> = ["status.v1", "find.v1"]
+    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1"]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
 
     let server: MacServer
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
+    let notifications: NotificationsModel
     private(set) var pairedPhones: [PairedPhone] = []
     /// When the current QR code expires; nil when no pairing window is open.
     private(set) var pairingDeadline: Date?
@@ -28,6 +30,12 @@ final class AppModel {
     private(set) var startupError: String?
 
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
+    @ObservationIgnored private let notificationPresenter: UserNotificationPresenter
+    @ObservationIgnored private let icons: IconCache
+    /// Everything that reaches `notifications` goes through here, so it is handled one at a time in arrival order.
+    @ObservationIgnored private let notifyWork: AsyncStream<NotifyWork>.Continuation
+    @ObservationIgnored private var notifyDrain: Task<Void, Never>?
+    @ObservationIgnored private var activeObserver: NSObjectProtocol?
     /// Held for the life of the process (the model is never deallocated).
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private static let portKey = "listenPort"
@@ -42,7 +50,7 @@ final class AppModel {
         let store = KeychainPairedPhoneStore()
         phoneStore = store
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-        server = MacServer(
+        let server = MacServer(
             identity: KeychainIdentityProvider(),
             phones: store,
             secrets: KeychainSecretStore(),
@@ -50,8 +58,53 @@ final class AppModel {
             appVersion: version,
             capabilities: Self.capabilities
         )
+        self.server = server
+
+        let presenter = UserNotificationPresenter()
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let icons = IconCache(directory: caches.appendingPathComponent("io.github.anmirror.mac/notify-icons"))
+        notificationPresenter = presenter
+        self.icons = icons
+        notifications = NotificationsModel(
+            presenter: presenter, icons: icons,
+            load: { Self.loadNotifySettings(phoneID: $0) },
+            save: { Self.saveNotifySettings($1, phoneID: $0) },
+            copy: { text in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            },
+            send: { type, message in
+                // Only a phone that shares notify.v1 gets notify messages.
+                guard server.activePhone?.shared.contains("notify.v1") == true else { return }
+                try? await server.send(type, message, channel: .notify)
+            }
+        )
+        let (stream, continuation) = AsyncStream.makeStream(of: NotifyWork.self)
+        notifyWork = continuation
         server.onEvent = { [weak self] event in self?.handle(event) }
         server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
+        let model = notifications
+        notifyDrain = Task { @MainActor in
+            for await work in stream {
+                switch work {
+                case let .connected(phoneID): await model.connected(phoneID: phoneID)
+                case .disconnected: model.disconnected()
+                case let .message(envelope): _ = await NotifyRouter.route(envelope, to: model)
+                }
+            }
+        }
+        presenter.onResponse = { actionID, userInfo, reply in
+            await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
+        }
+        // The user may allow notifications in System Settings and come back.
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                if model.authorized == false { Task { await model.refreshAuthorization() } }
+            }
+        }
         refreshPhones()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -86,6 +139,12 @@ final class AppModel {
 
     /// Find my phone is offered only while the connected phone shares `find.v1`.
     var canRing: Bool { server.activePhone?.shared.contains("find.v1") ?? false }
+
+    /// Phone notifications are offered only while the connected phone shares `notify.v1`.
+    var canNotify: Bool { server.activePhone?.shared.contains("notify.v1") ?? false }
+
+    /// The cached app icon for the Settings list.
+    func appIconURL(package: String) -> URL? { icons.url(for: package) }
 
     /// Status text for the menu-bar icon; nil unless a phone is connected and has reported.
     var menuBarStatusTitle: String? {
@@ -185,6 +244,7 @@ final class AppModel {
         case let .connected(phone, shared):
             phoneStatus.reset() // never show the previous session's values
             ring.clearHint()
+            if shared.contains("notify.v1") { notifyWork.yield(.connected(phone.id)) }
             refreshPhones()
             #if DEBUG
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
@@ -192,12 +252,15 @@ final class AppModel {
         case let .disconnected(phone):
             phoneStatus.reset()
             ring.reset()
+            notifyWork.yield(.disconnected)
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
-        case .unpaired:
+        case let .unpaired(phone):
             phoneStatus.reset()
             ring.reset()
+            notifyWork.yield(.disconnected)
+            UserDefaults.standard.removeObject(forKey: Self.notifySettingsKey(phoneID: phone.id))
             refreshPhones()
         case let .rejected(reason):
             switch reason {
@@ -212,6 +275,10 @@ final class AppModel {
     }
 
     private func handle(message envelope: AMEnvelope) {
+        if envelope.type.hasPrefix("notify.") {
+            notifyWork.yield(.message(envelope))
+            return
+        }
         switch envelope.type {
         case MessageType.statusUpdate.rawValue:
             if let update = try? AMStatusUpdate(serializedBytes: envelope.payload) { phoneStatus.apply(update) }
@@ -222,7 +289,27 @@ final class AppModel {
         }
     }
 
+    private static func notifySettingsKey(phoneID: String) -> String { "notifySettings." + phoneID }
+
+    private static func loadNotifySettings(phoneID: String) -> NotifySettings {
+        guard let data = UserDefaults.standard.data(forKey: notifySettingsKey(phoneID: phoneID)),
+              let settings = try? JSONDecoder().decode(NotifySettings.self, from: data) else { return NotifySettings() }
+        return settings
+    }
+
+    private static func saveNotifySettings(_ settings: NotifySettings, phoneID: String) {
+        guard let data = try? JSONEncoder().encode(settings) else { return }
+        UserDefaults.standard.set(data, forKey: notifySettingsKey(phoneID: phoneID))
+    }
+
     private func refreshPhones() {
         pairedPhones = (try? phoneStore.all()) ?? []
     }
+}
+
+/// One unit of work for the notification model, handled in the order it arrived.
+private enum NotifyWork: Sendable {
+    case connected(String)
+    case disconnected
+    case message(AMEnvelope)
 }

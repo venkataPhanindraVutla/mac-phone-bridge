@@ -29,7 +29,7 @@ struct AndroidMirroringApp: App {
         .windowResizability(.contentSize)
 
         Window("Settings", id: WindowID.settings) {
-            SettingsView()
+            SettingsView(model: model)
         }
         .windowResizability(.contentSize)
     }
