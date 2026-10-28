@@ -48,7 +48,14 @@ private class FakeMic(var applyMute: Boolean = true) : MicMute {
 
 private class FakeLookup(var answer: Boolean?) : MissedCallLookup {
     var asked: Pair<String?, Long>? = null
-    override fun wasMissed(number: String?, sinceMs: Long): Boolean? { asked = number to sinceMs; return answer }
+    var lookups = 0
+    /** Answers given first, one per lookup, before [answer]. */
+    val queued = ArrayDeque<Boolean?>()
+    override fun wasMissed(number: String?, sinceMs: Long): Boolean? {
+        asked = number to sinceMs
+        lookups++
+        return if (queued.isEmpty()) answer else queued.removeFirst()
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -85,6 +92,7 @@ private class Rig(scope: CoroutineScope, dispatcher: CoroutineDispatcher) {
             scope = scope,
             io = dispatcher,
             lookupDelayMs = 0,
+            lookupRetryMs = 0,
         )
     }
 
@@ -230,6 +238,23 @@ class CallControllerTest {
         source.emit(TelephonyPhase.RINGING, "1")
         source.emit(TelephonyPhase.IDLE)
         assertTrue(missed.isEmpty())
+        assertEquals(2, lookup!!.lookups) // asked again once before giving up
+    }
+
+    @Test fun callLogWrittenLateIsFoundOnRetry() = test {
+        lookup!!.queued += listOf(false, true)
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        source.emit(TelephonyPhase.IDLE)
+        assertEquals(listOf("+911234"), missed.map { it.number })
+        assertEquals(2, lookup!!.lookups)
+    }
+
+    @Test fun missedCallIsLookedUpOnceWhenFound() = test {
+        lookup!!.answer = true
+        source.emit(TelephonyPhase.RINGING, "1")
+        source.emit(TelephonyPhase.IDLE)
+        assertEquals(1, missed.size)
+        assertEquals(1, lookup!!.lookups)
     }
 
     @Test fun numberFallsBackToNotification() = test {

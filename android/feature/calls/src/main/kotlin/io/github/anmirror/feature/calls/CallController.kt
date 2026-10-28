@@ -54,6 +54,8 @@ class CallController(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** The call log is written a moment after the phone goes idle. */
     private val lookupDelayMs: Long = 1_500,
+    /** Sometimes later still: a "not missed" is checked once more after this long. */
+    private val lookupRetryMs: Long = 2_000,
 ) {
     /** A phase change from the source, or (phase == null) a nudge to re-read the caller's identity. */
     private class Event(val phase: TelephonyPhase?, val number: String?)
@@ -250,7 +252,12 @@ class CallController(
         val atMs = clock()
         scope.launch {
             delay(lookupDelayMs)
-            val verdict = withContext(io) { missed?.wasMissed(call.number.ifEmpty { null }, ringStart) }
+            val lookup = suspend { withContext(io) { missed?.wasMissed(call.number.ifEmpty { null }, ringStart) } }
+            var verdict = lookup()
+            if (verdict == false) {
+                delay(lookupRetryMs)
+                verdict = lookup()
+            }
             // A waiting call may have been answered; without a call log to say so, stay quiet about it.
             if (verdict == false || (verdict == null && call.waiting)) return@launch
             send(
