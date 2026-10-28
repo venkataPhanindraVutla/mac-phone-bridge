@@ -167,12 +167,23 @@ class ConnectionManager(
      * `system.hello` on the same connection). Save the new Mac to the store first. The next
      * attempt for the Mac this channel is pinned to says hello on it instead of dialing; if that
      * fails it dials as usual. A channel no attempt can use is closed. A session with another
-     * Mac is closed, so the new Mac (the latest `lastConnectedAt`) is picked next. Kicks.
+     * Mac is ended with `system.goodbye SWITCHING_MAC` (that Mac stays paired), so the new Mac
+     * (the latest `lastConnectedAt`) is picked next. An attempt for another Mac that reaches
+     * setup while this channel waits yields to it. Kicks.
      */
     fun adopt(channel: ControlChannel) {
         adopted.getAndSet(channel)?.takeIf { it !== channel }?.close()
-        // The loop kicks again once that session has ended (the session takes kicks as pings).
-        current?.takeIf { !channel.isFor(it.mac) }?.session?.channel?.close()
+        // Switching Macs: tell the old one (it keeps this phone paired), then close. The loop
+        // kicks again once that session has ended (the session takes kicks as pings).
+        current?.takeIf { !channel.isFor(it.mac) }?.session?.channel?.let { old ->
+            scope.launch {
+                try {
+                    runCatching { old.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, goodbye(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC)) }
+                } finally {
+                    old.close()
+                }
+            }
+        }
         kick()
     }
 
@@ -277,7 +288,10 @@ class ConnectionManager(
             // Drain kicks before reading the store, so a forget() (or pairing) that lands after
             // the read is still pending and wakes the next wait.
             userKicks.tryReceive()
-            val mac = store.all().maxByOrNull { it.lastConnectedAt }
+            val macs = store.all()
+            // A Mac whose pairing connection is waiting (adopt) goes first; then the most recent.
+            val waiting = adopted.get()?.takeIf { !it.isClosed }
+            val mac = macs.firstOrNull { waiting != null && waiting.isFor(it) } ?: macs.maxByOrNull { it.lastConnectedAt }
             if (mac == null) {
                 watch.stop()
                 setState(gen, PhoneConnectionState.NotPaired)
@@ -463,8 +477,15 @@ class ConnectionManager(
         val channel = a.channel
         try {
             val session = setupLock.withLock {
+                val stored = store.all()
                 // Forgotten while we were dialing: do not bring it back.
-                if (store.all().none { it.id == mac.id }) return@withLock null
+                if (stored.none { it.id == mac.id }) return@withLock null
+                // A just-paired Mac's connection is waiting (this attempt read the store before it
+                // was saved): yield to it. No save, no session, no goodbye; the loop picks it next.
+                val waiting = adopted.get()
+                if (waiting != null && !waiting.isClosed && !waiting.isFor(mac) && stored.any { waiting.isFor(it) }) {
+                    return@withLock YIELD
+                }
                 val updated = mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = clock())
                 store.save(updated)
                 // A pairing connection to this Mac handed over while we dialed it is not needed now.
@@ -474,7 +495,11 @@ class ConnectionManager(
                     setState(gen, PhoneConnectionState.Connected(updated, a.shared))
                 }
             }
-            if (session == null) {
+            if (session === YIELD) {
+                channel.close()
+                return SessionEnd.CLOSED to false
+            }
+            if (session !is PhoneSession) {
                 runCatching { channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, unpairedGoodbye()) }
                 channel.close()
                 return SessionEnd.CLOSED to false
@@ -500,5 +525,12 @@ class ConnectionManager(
     private fun ControlChannel.isFor(mac: PairedMac): Boolean =
         peerFingerprintHex.equals(mac.fingerprintHex, ignoreCase = true)
 
-    private fun unpairedGoodbye(): Goodbye = Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_UNPAIRED).build()
+    private fun unpairedGoodbye(): Goodbye = goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED)
+
+    private fun goodbye(reason: GoodbyeReason): Goodbye = Goodbye.newBuilder().setReason(reason).build()
+
+    private companion object {
+        /** runConnected's setup result: yield to an adopted channel of another Mac. */
+        val YIELD = Any()
+    }
 }

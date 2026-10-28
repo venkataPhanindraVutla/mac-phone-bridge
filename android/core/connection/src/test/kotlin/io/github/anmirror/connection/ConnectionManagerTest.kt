@@ -717,26 +717,36 @@ class ConnectionManagerTest {
     }
 
     @Test
-    fun adoptedChannelOfAMacNotPickedYetIsKeptOpen() = runTest {
-        // R28 M-1: an attempt for Mac A (a stale store read) must not close Mac B's channel.
-        val r = rig(listOf(macA()))
-        val a = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+    fun adoptedChannelWinsOverAStaleStoreRead() = runTest {
+        // R29: the loop read the store before B was saved and dials A. A's setup must yield to
+        // B's adopted channel: no session with A, no save, no goodbye; B connects on its channel.
+        val a0 = macA(at = 200)
+        val inner = InMemoryPairedMacStore(listOf(a0, macB(at = 300)))
+        var stale = true
+        val store = object : PairedMacStore by inner {
+            override suspend fun all(): List<PairedMac> =
+                if (stale) inner.all().filter { it.id == a0.id }.also { stale = false } else inner.all()
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val a = FakeMac(Identities.MAC_FP, backgroundScope).also { connector.macs["10.0.0.5:4000"] = it }
         val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
-        val channel = b.accept("10.0.0.8", 4000)
-        r.manager.adopt(channel)
-        r.manager.start()
+        val manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.adopt(b.accept("10.0.0.8", 4000))
+        manager.start()
         runCurrent()
-        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
-        assertEquals(1, a.connects, "Mac A is dialed as usual")
-        assertFalse(channel.isClosed, "Mac B's channel is put back, not closed")
-        assertEquals(0, b.received.count { it.type == MessageType.HELLO })
+        val state = assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        assertEquals(Identities.STRANGER_FP, state.mac.id, "B is connected")
+        assertEquals(1, b.received.count { it.type == MessageType.HELLO }, "on its adopted channel")
+        assertEquals(1, b.connects)
+        assertEquals(0, a.received.count { it.type == MessageType.GOODBYE }, "A is closed without a goodbye")
+        assertEquals(200, inner.all().first { it.id == a0.id }.lastConnectedAt, "A's lastConnectedAt is not saved")
     }
 
     @Test
     fun adoptWhileConnectedToAnotherMacSwitchesOnTheAdoptedChannel() = runTest {
         // R28 M-1: connected to A, then B is paired: B on the adopted channel at once, no dial.
         val r = rig(listOf(macA()))
-        r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        val a = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
         r.manager.start()
         runCurrent()
         assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
@@ -749,6 +759,22 @@ class ConnectionManagerTest {
         assertEquals(Identities.STRANGER_FP, state.mac.id)
         assertEquals(dialsBefore, r.connector.dials.size, "no extra dial")
         assertEquals(1, b.received.count { it.type == MessageType.HELLO })
+        // R29: A is told the phone is switching, not that it was unpaired.
+        val bye = a.received.filter { it.type == MessageType.GOODBYE }.map { Goodbye.parseFrom(it.payload).reason }
+        assertEquals(listOf(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC), bye)
+    }
+
+    @Test
+    fun aWaitingAdoptedChannelPicksItsMacEvenIfNotTheMostRecent() = runTest {
+        // Equal or older lastConnectedAt (clock granularity) must not make A win forever.
+        val r = rig(listOf(macA(at = 500), macB(at = 100)))
+        val a = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        val b = FakeMac(Identities.STRANGER_FP, backgroundScope)
+        r.manager.adopt(b.accept("10.0.0.8", 4000))
+        r.manager.start()
+        runCurrent()
+        assertEquals(Identities.STRANGER_FP, assertIs<PhoneConnectionState.Connected>(r.manager.state.value).mac.id)
+        assertEquals(0, a.connects, "A is not dialed")
     }
 
     @Test
