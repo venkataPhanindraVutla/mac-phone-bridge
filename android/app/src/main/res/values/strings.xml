@@ -60,6 +60,8 @@
     <string name="home_forget_confirm">Forget</string>
 
     <!-- Find my phone -->
+    <string name="home_stop_ringing">Stop ringing</string>
+    <string name="home_stop_ringing_label">Stop ringing this phone</string>
     <string name="home_find_title">Ring at full volume, even on silent</string>
     <string name="home_find_needs_access">To ring when Do Not Disturb is set to Total silence, allow Do Not Disturb access.</string>
     <string name="home_find_granted">Allowed. Your Mac can ring this phone even in Do Not Disturb.</string>

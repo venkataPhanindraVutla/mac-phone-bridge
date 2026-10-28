@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -43,6 +44,8 @@ import io.github.anmirror.phone.messageRes
 fun HomeScreen(
     mac: PairedMac,
     state: PhoneConnectionState,
+    ringing: Boolean,
+    onStopRing: () -> Unit,
     onRetry: () -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
@@ -53,6 +56,13 @@ fun HomeScreen(
         modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (ringing) {
+            val label = stringResource(R.string.home_stop_ringing_label)
+            Button(
+                onClick = onStopRing,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = label },
+            ) { Text(stringResource(R.string.home_stop_ringing)) }
+        }
         Text(
             stringResource(R.string.home_title),
             style = MaterialTheme.typography.labelLarge,

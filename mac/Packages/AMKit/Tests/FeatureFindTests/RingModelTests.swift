@@ -60,3 +60,12 @@ private func state(ringing: Bool, silent: Bool = false) -> AMRingState {
     model.clearHint() // called on connect
     #expect(model.possiblyStillRinging == false)
 }
+
+@MainActor
+@Test func doubleResetKeepsHint() {
+    let model = RingModel()
+    model.apply(state(ringing: true))
+    model.reset()
+    model.reset() // .disconnected then .unpaired
+    #expect(model.possiblyStillRinging)
+}

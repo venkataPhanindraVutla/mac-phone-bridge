@@ -35,12 +35,19 @@ class RingControllerTest {
         override fun cancel() { cancelled++ }
     }
 
-    private class Rig(vol: Int = 3, access: Boolean = true, filter: Int = INTERRUPTION_FILTER_ALL) {
+    private class FakeStore : RingSavedStore {
+        var saved: SavedRingState? = null
+        override fun save(state: SavedRingState) { saved = state }
+        override fun load() = saved
+        override fun clear() { saved = null }
+    }
+
+    private class Rig(vol: Int = 3, access: Boolean = true, filter: Int = INTERRUPTION_FILTER_ALL, val store: FakeStore = FakeStore()) {
         val audio = FakeAudio(vol)
         val dnd = FakeDnd(access, filter)
         val notifier = FakeNotifier()
         val states = mutableListOf<RingState>()
-        val controller = RingController(audio, dnd, notifier) { states += it }
+        val controller = RingController(audio, dnd, notifier, store) { states += it }
     }
 
     @Test
@@ -135,5 +142,56 @@ class RingControllerTest {
         assertEquals(RingState.getDefaultInstance(), r.controller.currentState())
         r.controller.start()
         assertEquals(RingState.newBuilder().setRinging(true).setMayBeSilent(true).build(), r.controller.currentState())
+    }
+
+    @Test
+    fun userChangedDndMidRingIsNotOverwritten() {
+        val r = Rig(vol = 2, filter = INTERRUPTION_FILTER_NONE)
+        r.controller.start()
+        r.dnd.current = INTERRUPTION_FILTER_ALL // the user changed it while ringing
+        r.controller.stop()
+        assertEquals(INTERRUPTION_FILTER_ALL, r.dnd.current)
+        assertEquals(2, r.audio.vol, "volume is restored regardless")
+    }
+
+    @Test
+    fun restoresAfterProcessDeath() {
+        val store = FakeStore()
+        val first = Rig(vol = 2, filter = INTERRUPTION_FILTER_NONE, store = store)
+        first.controller.start()
+        assertTrue(store.saved != null)
+        // the process dies: a new controller, same phone state (max volume, ALARMS), same store
+        val second = Rig(vol = 7, filter = INTERRUPTION_FILTER_ALARMS, store = store)
+        second.controller.restoreLeftover()
+        assertEquals(2, second.audio.vol)
+        assertEquals(INTERRUPTION_FILTER_NONE, second.dnd.current)
+        assertEquals(null, store.saved)
+        assertFalse(second.controller.ringing.value)
+    }
+
+    @Test
+    fun leftoverRestoreSkipsFilterTheUserChanged() {
+        val store = FakeStore().apply { saved = SavedRingState(2, INTERRUPTION_FILTER_NONE) }
+        val r = Rig(vol = 7, filter = INTERRUPTION_FILTER_ALL, store = store)
+        r.controller.restoreLeftover()
+        assertEquals(INTERRUPTION_FILTER_ALL, r.dnd.current)
+        assertEquals(2, r.audio.vol)
+    }
+
+    @Test
+    fun startFailureRestoresAndReportsNotRinging() {
+        val r = Rig(vol = 2, filter = INTERRUPTION_FILTER_NONE)
+        val failing = object : AlarmAudio by r.audio {
+            override fun startLoop() = throw IllegalStateException("boom")
+        }
+        val dnd = r.dnd
+        val states = mutableListOf<RingState>()
+        val c = RingController(failing, dnd, r.notifier, r.store) { states += it }
+        c.start()
+        assertFalse(c.ringing.value)
+        assertEquals(2, r.audio.vol)
+        assertEquals(INTERRUPTION_FILTER_NONE, dnd.current)
+        assertEquals(null, r.store.saved)
+        assertEquals(false, states.last().ringing)
     }
 }

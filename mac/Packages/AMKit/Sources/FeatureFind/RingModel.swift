@@ -56,7 +56,7 @@ public final class RingModel {
     /// On disconnect. A phone that was ringing may keep ringing; we cannot know. The next
     /// RingState (or `clearHint()` on a reconnect) clears the hint.
     public func reset() {
-        possiblyStillRinging = ringing
+        possiblyStillRinging = possiblyStillRinging || ringing
         ringing = false
         mayBeSilent = false
     }

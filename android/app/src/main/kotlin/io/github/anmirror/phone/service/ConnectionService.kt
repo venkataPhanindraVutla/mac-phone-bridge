@@ -31,11 +31,15 @@ import io.github.anmirror.connection.PhoneConnectionState.Connected
 import io.github.anmirror.feature.find.AndroidAlarmAudio
 import io.github.anmirror.feature.find.AndroidDndOverride
 import io.github.anmirror.feature.find.AndroidRingNotifier
+import io.github.anmirror.feature.find.PrefsRingSavedStore
 import io.github.anmirror.feature.find.RingController
 import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -80,7 +84,7 @@ class ConnectionService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACTION_STOP_RING) ring.stop() // the Stop action / tap on the ring notification
+        if (intent?.action == ACTION_STOP_RING && ::ring.isInitialized) ring.stop() // the Stop action / tap on the ring notification
         // Every start must be followed by startForeground, also a sticky restart.
         goForeground(lastText ?: getString(R.string.state_looking_unnamed))
         Log.i(TAG, "service: start (restart=${intent == null})")
@@ -89,7 +93,8 @@ class ConnectionService : LifecycleService() {
 
     override fun onDestroy() {
         running = false
-        ring.stop() // the service going away must not leave an alarm behind
+        _ringing.value = false
+        if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
@@ -111,10 +116,14 @@ class ConnectionService : LifecycleService() {
             audio = AndroidAlarmAudio(this),
             dnd = AndroidDndOverride(this),
             notifier = AndroidRingNotifier(this, stop),
+            store = PrefsRingSavedStore(this),
             onState = { state ->
                 lifecycleScope.launch { graph.manager.send(Channel.CHANNEL_FIND, MessageType.FIND_STATE, state) }
             },
         )
+        // A previous process may have died mid-ring, leaving max volume / ALARMS behind.
+        ring.restoreLeftover()
+        lifecycleScope.launch { ring.ringing.collect { _ringing.value = it } }
         graph.manager.on(MessageType.FIND_RING) { ring.start() }
         graph.manager.on(MessageType.FIND_STOP) { ring.stop() }
         // After a reconnect the Mac does not know the phone is still ringing: tell it.
@@ -200,6 +209,21 @@ class ConnectionService : LifecycleService() {
     companion object {
         const val CHANNEL_ID = "connection"
         const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
+
+        private val _ringing = MutableStateFlow(false)
+
+        /** True while the phone is ringing for find-my-phone; the UI shows a Stop button then. */
+        val ringing: StateFlow<Boolean> = _ringing.asStateFlow()
+
+        /** Stops a ring in progress (no-op when the service is not running). */
+        fun stopRing(context: Context) {
+            if (!running) return
+            try {
+                context.startService(Intent(context, ConnectionService::class.java).setAction(ACTION_STOP_RING))
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "service: stop-ring refused (${e.javaClass.simpleName})")
+            }
+        }
         private const val NOTIFICATION_ID = 1
 
         /** True between onCreate and onDestroy. */

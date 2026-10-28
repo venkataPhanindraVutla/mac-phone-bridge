@@ -16,6 +16,7 @@ class RingController(
     private val audio: AlarmAudio,
     private val dnd: DndOverride,
     private val notifier: RingNotifier,
+    private val store: RingSavedStore = NoRingSavedStore,
     private val onState: (RingState) -> Unit,
 ) {
     private val lock = Any()
@@ -32,18 +33,30 @@ class RingController(
             savedVolume = audio.volume()
             maySilent = false
             savedFilter = null
-            if (dnd.currentFilter() == INTERRUPTION_FILTER_NONE) {
-                if (dnd.hasAccess()) {
-                    savedFilter = INTERRUPTION_FILTER_NONE
-                    dnd.setFilter(INTERRUPTION_FILTER_ALARMS) // alarms are allowed through
-                } else {
-                    maySilent = true // Total silence blocks even alarms, and we may not change it
+            try {
+                if (dnd.currentFilter() == INTERRUPTION_FILTER_NONE) {
+                    if (dnd.hasAccess()) {
+                        savedFilter = INTERRUPTION_FILTER_NONE
+                        // Persist first: if the process dies, the next start puts things back.
+                        store.save(SavedRingState(savedVolume, savedFilter))
+                        dnd.setFilter(INTERRUPTION_FILTER_ALARMS) // alarms are allowed through
+                    } else {
+                        maySilent = true // Total silence blocks even alarms, and we may not change it
+                    }
                 }
+                if (savedFilter == null) store.save(SavedRingState(savedVolume, null))
+                audio.setVolume(audio.maxVolume())
+                audio.startLoop()
+                notifier.show()
+                _ringing.value = true
+            } catch (e: Exception) {
+                // Half-started: put everything back and report not ringing.
+                runCatching { audio.stopLoop() }
+                restore()
+                runCatching { notifier.cancel() }
+                maySilent = false
+                _ringing.value = false
             }
-            audio.setVolume(audio.maxVolume())
-            audio.startLoop()
-            notifier.show()
-            _ringing.value = true
             current()
         }
         onState(state)
@@ -53,15 +66,36 @@ class RingController(
         val state = synchronized(lock) {
             if (!_ringing.value) return
             audio.stopLoop()
-            audio.setVolume(savedVolume)
-            savedFilter?.let { dnd.setFilter(it) }
-            savedFilter = null
+            restore()
             maySilent = false
             notifier.cancel()
             _ringing.value = false
             current()
         }
         onState(state)
+    }
+
+    /** On service start: if a previous process died mid-ring, put the volume and filter back once. */
+    fun restoreLeftover() {
+        synchronized(lock) {
+            if (_ringing.value) return
+            val saved = store.load() ?: return
+            restoreFilter(saved.filter)
+            audio.setVolume(saved.volume)
+            store.clear()
+        }
+    }
+
+    private fun restore() {
+        audio.setVolume(savedVolume)
+        restoreFilter(savedFilter)
+        savedFilter = null
+        store.clear()
+    }
+
+    // Only if it is still our ALARMS: a change the user made meanwhile stays.
+    private fun restoreFilter(filter: Int?) {
+        if (filter != null && dnd.currentFilter() == INTERRUPTION_FILTER_ALARMS) dnd.setFilter(filter)
     }
 
     /** What the Mac should be told now. */

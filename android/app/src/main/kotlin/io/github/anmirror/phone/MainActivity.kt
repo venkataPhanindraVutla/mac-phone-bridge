@@ -45,6 +45,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Opening the app is a way to silence a ring, also when notifications are blocked.
+        if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
         // when a start from the background was refused).
         graph.scope.launch {
@@ -73,6 +75,8 @@ private fun AppRoot(graph: AppGraph) {
     val macs by graph.store.macs.collectAsStateWithLifecycle()
     val pairing by graph.pairing.state.collectAsStateWithLifecycle()
     val connection by graph.manager.state.collectAsStateWithLifecycle()
+    val ringing by ConnectionService.ringing.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -94,6 +98,8 @@ private fun AppRoot(graph: AppGraph) {
                     HomeScreen(
                         mac = mac,
                         state = connection,
+                        ringing = ringing,
+                        onStopRing = { ConnectionService.stopRing(context) },
                         onRetry = graph.manager::kick,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {

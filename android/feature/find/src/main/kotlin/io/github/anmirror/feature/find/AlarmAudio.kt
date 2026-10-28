@@ -70,8 +70,8 @@ class AndroidAlarmAudio(context: Context) : AlarmAudio {
         val uri = RingtoneManager.getActualDefaultRingtoneUri(app, RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: return false
+        val p = MediaPlayer()
         return try {
-            val p = MediaPlayer()
             p.setAudioAttributes(attributes)
             p.setDataSource(app, uri)
             p.isLooping = true
@@ -82,7 +82,12 @@ class AndroidAlarmAudio(context: Context) : AlarmAudio {
                     if (player === mp) {
                         mp.release()
                         player = null
-                        startTone()
+                        // Runs on the main thread: a failing tone must not crash the app.
+                        try {
+                            startTone()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "fallback tone failed (${e.javaClass.simpleName})")
+                        }
                     }
                 }
                 true
@@ -91,6 +96,7 @@ class AndroidAlarmAudio(context: Context) : AlarmAudio {
             player = p
             true
         } catch (e: Exception) {
+            p.release()
             Log.w(TAG, "default alarm unavailable (${e.javaClass.simpleName})")
             false
         }
