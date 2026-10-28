@@ -12,60 +12,79 @@ import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NotificationFilter
 import io.github.anmirror.protocol.v1.NotificationRemoved
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Sends the phone's notifications to the Mac and carries out the Mac's replies, button presses and
- * dismissals (SPEC 10). State is in memory for this process only; nothing is stored.
+ * dismissals (SPEC 10). State is in memory for this process only; nothing is stored. Every entry
+ * point runs under one mutex, so events are handled strictly in the order they were called.
  */
 class NotifyBridge(
     private val ownPackage: String,
     private val invoker: ActionInvoker,
+    private val log: (String, Throwable) -> Unit = { _, _ -> },
     private val send: suspend (type: String, payload: MessageLite) -> Boolean,
 ) {
-    private val lock = Any()
+    private class Sent(val packageName: String, val content: String)
 
-    // Before any notify.filter arrives this session: enabled, nothing muted.
+    private val mutex = Mutex()
+
+    // Until the first notify.filter of this process: enabled, nothing muted. After that the last
+    // filter received is kept, also across reconnects (controller ruling R7).
     private var filter: NotificationFilter = DEFAULT_FILTER
 
-    /** Keys sent to the Mac during this process, with the title and text last sent for each. */
-    private val delivered = HashMap<String, String>()
+    /** Keys sent to the Mac during this process. */
+    private val delivered = HashMap<String, Sent>()
 
-    suspend fun onPosted(n: NotificationSnapshot) {
-        val f = synchronized(lock) { filter }
-        if (!NotificationMapper.eligible(n, ownPackage, f)) return
-        sendPosted(n)
+    suspend fun onPosted(n: NotificationSnapshot) = mutex.withLock {
+        if (NotificationMapper.eligible(n, ownPackage, filter)) sendPosted(n)
     }
 
-    suspend fun onRemoved(key: String) {
-        val known = synchronized(lock) { delivered.remove(key) != null }
-        if (known) send(MessageType.NOTIFY_REMOVED, NotificationRemoved.newBuilder().setKey(key).build())
+    suspend fun onRemoved(key: String) = mutex.withLock {
+        if (delivered.remove(key) != null) {
+            send(MessageType.NOTIFY_REMOVED, NotificationRemoved.newBuilder().setKey(key).build())
+        }
     }
 
     /** The Mac (re)connected: undelivered active ones first, then the list of every active key. */
-    suspend fun onConnected() {
-        val f = synchronized(lock) { filter }
-        val active = invoker.active().filter { NotificationMapper.eligible(it, ownPackage, f) }
+    suspend fun onConnected() = mutex.withLock {
+        val active = invoker.active().filter { NotificationMapper.eligible(it, ownPackage, filter) }
         for (n in active) {
-            if (synchronized(lock) { n.key !in delivered }) sendPosted(n)
+            if (n.key in delivered) continue
+            try {
+                sendPosted(n)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("skipping notification that could not be sent", e)
+            }
         }
         send(
             MessageType.NOTIFY_SNAPSHOT,
             ActiveNotifications.newBuilder().addAllKeys(active.map { it.key }).build(),
         )
+        Unit
     }
 
-    /** The filter is per connection; until the Mac sends one again, everything is allowed. */
-    fun onDisconnected() {
-        synchronized(lock) { filter = DEFAULT_FILTER }
-    }
+    /** Nothing to reset: the filter and the delivered set live for the process. */
+    fun onDisconnected() = Unit
 
-    suspend fun onFilter(f: NotificationFilter) {
-        synchronized(lock) { filter = f }
+    /** Stores the filter and retracts what it now excludes from the Mac. */
+    suspend fun onFilter(f: NotificationFilter) = mutex.withLock {
+        filter = f
+        val muted = f.mutedPackagesList.toSet()
+        val excluded = delivered.filterValues { !f.enabled || it.packageName in muted }.keys.toList()
+        for (key in excluded) {
+            delivered.remove(key)
+            send(MessageType.NOTIFY_REMOVED, NotificationRemoved.newBuilder().setKey(key).build())
+        }
     }
 
     /** Every invoke gets a result (SPEC 10): the caller sends it with `reply_to` = [envelopeId]. */
     @Suppress("UNUSED_PARAMETER")
-    suspend fun onInvoke(envelopeId: Long, a: InvokeAction): ActionResult {
+    suspend fun onInvoke(envelopeId: Long, a: InvokeAction): ActionResult = mutex.withLock {
         val outcome = when {
             invoker.active().none { it.key == a.key } -> ActionOutcome.ACTION_OUTCOME_GONE
             else -> try {
@@ -74,32 +93,33 @@ class NotifyBridge(
                 ActionOutcome.ACTION_OUTCOME_FAILED
             }
         }
-        return ActionResult.newBuilder().setKey(a.key).setOutcome(outcome).build()
+        ActionResult.newBuilder().setKey(a.key).setOutcome(outcome).build()
     }
 
     /** Removes the notification on the phone; the listener's removal callback tells the Mac. */
-    fun onDismiss(d: DismissNotification) {
-        val n = invoker.active().firstOrNull { it.key == d.key } ?: return
-        if (n.clearable) invoker.dismiss(n.key)
+    suspend fun onDismiss(d: DismissNotification) = mutex.withLock {
+        val n = invoker.active().firstOrNull { it.key == d.key }
+        if (n != null && n.clearable) invoker.dismiss(n.key)
     }
 
-    suspend fun onIconRequest(r: IconRequest) {
-        val png = invoker.icon(r.`package`)?.takeIf { it.size <= MAX_ICON_BYTES } ?: return
-        send(
-            MessageType.NOTIFY_ICON,
-            AppIcon.newBuilder().setPackage(r.`package`).setPng(ByteString.copyFrom(png)).build(),
-        )
+    suspend fun onIconRequest(r: IconRequest) = mutex.withLock {
+        val png = invoker.icon(r.`package`)?.takeIf { it.size <= MAX_ICON_BYTES }
+        if (png != null) {
+            send(
+                MessageType.NOTIFY_ICON,
+                AppIcon.newBuilder().setPackage(r.`package`).setPng(ByteString.copyFrom(png)).build(),
+            )
+        }
+        Unit
     }
 
     private suspend fun sendPosted(n: NotificationSnapshot) {
         val content = n.title + "\u0000" + n.text
-        val alert = synchronized(lock) {
-            val last = delivered[n.key]
-            !(last != null && (n.onlyAlertOnce || last == content))
-        }
+        val last = delivered[n.key]
+        val alert = !(last != null && (n.onlyAlertOnce || last.content == content))
         val image = invoker.image(n.key)?.takeIf { it.size <= MAX_IMAGE_BYTES }
         if (send(MessageType.NOTIFY_POSTED, NotificationMapper.toProto(n, image, alert))) {
-            synchronized(lock) { delivered[n.key] = content }
+            delivered[n.key] = Sent(n.packageName, content)
         }
     }
 

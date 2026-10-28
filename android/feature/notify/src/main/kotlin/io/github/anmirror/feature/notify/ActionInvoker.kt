@@ -42,20 +42,14 @@ class AndroidActionInvoker(
         val order = NotificationMapper.cappedOrder(actions.map { reader.actionSnapshot(it) })
         val action = order.getOrNull(actionIndex)?.let { actions[it] } ?: return ActionOutcome.ACTION_OUTCOME_FAILED
         val intent = action.actionIntent ?: return ActionOutcome.ACTION_OUTCOME_FAILED
-        return try {
+        val remote = action.remoteInputs?.firstOrNull { it.allowFreeFormInput }
+        if (remote != null && replyText == null) return ActionOutcome.ACTION_OUTCOME_FAILED // a reply without text
+        return outcomeOf {
             val fill = Intent()
-            val remote = action.remoteInputs?.firstOrNull { it.allowFreeFormInput }
             if (remote != null && replyText != null) {
                 RemoteInput.addResultsToIntent(arrayOf(remote), fill, Bundle().apply { putCharSequence(remote.resultKey, replyText) })
-            } else if (remote != null) {
-                return ActionOutcome.ACTION_OUTCOME_FAILED // a reply without text
             }
             intent.send(app, 0, fill)
-            ActionOutcome.ACTION_OUTCOME_OK
-        } catch (e: PendingIntent.CanceledException) {
-            ActionOutcome.ACTION_OUTCOME_GONE
-        } catch (e: Exception) {
-            ActionOutcome.ACTION_OUTCOME_FAILED
         }
     }
 
@@ -67,4 +61,14 @@ class AndroidActionInvoker(
     override fun image(key: String): ByteArray? = sbn(key)?.let { reader.image(it) }
 
     override fun icon(packageName: String): ByteArray? = reader.icon(packageName)
+}
+
+/** Runs the PendingIntent send: a cancelled intent means the notification is gone, anything else failed. */
+internal fun outcomeOf(send: () -> Unit): ActionOutcome = try {
+    send()
+    ActionOutcome.ACTION_OUTCOME_OK
+} catch (e: PendingIntent.CanceledException) {
+    ActionOutcome.ACTION_OUTCOME_GONE
+} catch (e: Exception) {
+    ActionOutcome.ACTION_OUTCOME_FAILED
 }

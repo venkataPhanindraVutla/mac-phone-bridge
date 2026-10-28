@@ -14,6 +14,7 @@ object NotificationMapper {
     const val MAX_TITLE_BYTES = 256
     const val MAX_TEXT_BYTES = 4096
     const val MAX_SUB_TEXT_BYTES = 256
+    const val MAX_LABEL_BYTES = 256 // action title, reply hint, app name
     private const val ELLIPSIS = "…"
 
     fun eligible(n: NotificationSnapshot, ownPackage: String, filter: NotificationFilter): Boolean =
@@ -37,7 +38,7 @@ object NotificationMapper {
         val b = PhoneNotification.newBuilder()
             .setKey(n.key)
             .setPackage(n.packageName)
-            .setAppName(n.appName)
+            .setAppName(truncateUtf8(n.appName, MAX_LABEL_BYTES))
             .setTitle(truncateUtf8(n.title, MAX_TITLE_BYTES))
             .setText(truncateUtf8(n.text, MAX_TEXT_BYTES))
             .setSubText(truncateUtf8(n.subText, MAX_SUB_TEXT_BYTES))
@@ -49,9 +50,9 @@ object NotificationMapper {
             b.addActions(
                 NotificationAction.newBuilder()
                     .setIndex(i)
-                    .setTitle(a.title)
+                    .setTitle(truncateUtf8(a.title, MAX_LABEL_BYTES))
                     .setIsReply(a.isReply)
-                    .setReplyHint(a.replyHint.orEmpty()),
+                    .setReplyHint(truncateUtf8(a.replyHint.orEmpty(), MAX_LABEL_BYTES)),
             )
         }
         if (imageJpeg != null) b.setImageJpeg(ByteString.copyFrom(imageJpeg))

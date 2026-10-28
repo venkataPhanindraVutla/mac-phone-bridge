@@ -8,6 +8,8 @@ import android.os.Build
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.os.BundleCompat
+import kotlin.coroutines.cancellation.CancellationException
 import java.io.ByteArrayOutputStream
 
 /** `StatusBarNotification` to [NotificationSnapshot], plus picture and app-icon extraction. */
@@ -48,23 +50,30 @@ class AndroidNotificationReader(context: Context) {
     }
 
     /** The big picture (`EXTRA_PICTURE` or `EXTRA_PICTURE_ICON`), scaled, or null. */
-    fun image(sbn: StatusBarNotification): ByteArray? {
+    fun image(sbn: StatusBarNotification): ByteArray? = nullOnFailure {
         val extras = sbn.notification.extras
-        val bitmap: Bitmap? = extras.getParcelable(Notification.EXTRA_PICTURE, Bitmap::class.java)
+        val bitmap: Bitmap? = BundleCompat.getParcelable(extras, Notification.EXTRA_PICTURE, Bitmap::class.java)
             ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                extras.getParcelable(Notification.EXTRA_PICTURE_ICON, Icon::class.java)
+                BundleCompat.getParcelable(extras, Notification.EXTRA_PICTURE_ICON, Icon::class.java)
                     ?.loadDrawable(app)?.toBitmap()
             } else {
                 null
             }
-        return bitmap?.let { ImageScaler.toJpeg(it) }
+        bitmap?.let { ImageScaler.toJpeg(it) }
     }
 
     /** The app's launcher icon as a 96x96 PNG, or null. */
-    fun icon(packageName: String): ByteArray? = try {
+    fun icon(packageName: String): ByteArray? = nullOnFailure {
         val bitmap = app.packageManager.getApplicationIcon(packageName).toBitmap(ICON_PX, ICON_PX)
         ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-    } catch (e: Exception) {
+    }
+
+    /** Extraction can throw (including OutOfMemoryError); a bad picture must not cost the notification. */
+    private inline fun nullOnFailure(block: () -> ByteArray?): ByteArray? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
         null
     }
 

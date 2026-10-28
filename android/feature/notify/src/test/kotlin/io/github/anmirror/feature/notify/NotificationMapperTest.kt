@@ -71,4 +71,14 @@ class NotificationMapperTest {
         assertFalse(p.alert)
         assertFalse(p.clearable)
     }
+
+    @Test
+    fun capsLongActionTitlesHintsAndAppName() {
+        val long = "x".repeat(1000)
+        val n = snap(actions = listOf(ActionSnapshot(long, true, long))).copy(appName = long)
+        val p = NotificationMapper.toProto(n, null, true)
+        assertTrue(p.appName.toByteArray().size <= 256)
+        assertTrue(p.actionsList[0].title.toByteArray().size <= 256)
+        assertTrue(p.actionsList[0].replyHint.toByteArray().size <= 256)
+    }
 }

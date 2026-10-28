@@ -15,6 +15,11 @@ android {
         minSdk = libs.versions.androidMinSdk.get().toInt()
     }
 
+    testOptions {
+        // PendingIntent.CanceledException must be constructible in plain JVM tests.
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         val jvmTarget = JavaVersion.toVersion(libs.versions.jvmTarget.get())
         sourceCompatibility = jvmTarget

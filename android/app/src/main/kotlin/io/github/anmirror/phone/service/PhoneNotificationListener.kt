@@ -5,7 +5,6 @@ import android.service.notification.StatusBarNotification
 import io.github.anmirror.feature.notify.AndroidActionInvoker
 import io.github.anmirror.feature.notify.AndroidNotificationReader
 import io.github.anmirror.phone.AppGraph
-import kotlinx.coroutines.launch
 
 /**
  * Hands the phone's notifications to the [io.github.anmirror.feature.notify.NotifyBridge] held by
@@ -30,10 +29,11 @@ class PhoneNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val snapshot = reader.snapshot(sbn)
-        graph.scope.launch { graph.notifyBridge.onPosted(snapshot) }
+        graph.postNotifyEvent { graph.notifyBridge.onPosted(snapshot) }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        graph.scope.launch { graph.notifyBridge.onRemoved(sbn.key) }
+        val key = sbn.key
+        graph.postNotifyEvent { graph.notifyBridge.onRemoved(key) }
     }
 }

@@ -22,10 +22,12 @@ import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.protocol.v1.ActionOutcome
-import io.github.anmirror.protocol.v1.Channel
+import io.github.anmirror.protocol.v1.Channel as ProtoChannel
 import io.github.anmirror.protocol.v1.Hello
 import io.github.anmirror.protocol.v1.SetupLevel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -85,11 +87,31 @@ class AppGraph private constructor(context: Context) {
     val notifyInvoker = DelegatingActionInvoker()
 
     /** Fed by [io.github.anmirror.phone.service.PhoneNotificationListener]; Mac-side wiring is added with the feature toggle. */
-    val notifyBridge = NotifyBridge(app.packageName, notifyInvoker) { type, payload ->
-        manager.send(Channel.CHANNEL_NOTIFY, type, payload)
+    val notifyBridge = NotifyBridge(
+        ownPackage = app.packageName,
+        invoker = notifyInvoker,
+        log = { message, e -> Log.e(TAG, "notify: $message", e) },
+    ) { type, payload -> manager.send(ProtoChannel.CHANNEL_NOTIFY, type, payload) }
+
+    private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    /** Queues a listener event; they run one at a time, in the order the listener saw them. */
+    fun postNotifyEvent(event: suspend () -> Unit) {
+        notifyEvents.trySend(event)
     }
 
     init {
+        scope.launch {
+            for (event in notifyEvents) {
+                try {
+                    event()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "notify event failed", e)
+                }
+            }
+        }
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
     }
 

@@ -10,6 +10,9 @@ import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NotificationRemoved
 import io.github.anmirror.protocol.v1.PhoneNotification
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -129,7 +132,7 @@ class NotifyBridgeTest {
     }
 
     @Test
-    fun dismissIgnoresNonClearable() {
+    fun dismissIgnoresNonClearable() = runTest {
         invoker.activeList += snap(key = "a", clearable = false)
         invoker.activeList += snap(key = "b")
         bridge.onDismiss(DismissNotification.newBuilder().setKey("a").build())
@@ -156,6 +159,78 @@ class NotifyBridgeTest {
         invoker.imageBytes = ByteArray(1024)
         bridge.onPosted(snap(key = "k2"))
         assertEquals(1024, posted().last().imageJpeg.size())
+    }
+
+    @Test
+    fun filterSurvivesReconnect() = runTest {
+        bridge.onFilter(filter(true, "com.noisy"))
+        bridge.onDisconnected()
+        bridge.onPosted(snap(pkg = "com.noisy"))
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun newlyMutedPackageIsRetracted() = runTest {
+        bridge.onPosted(snap(key = "a", pkg = "com.noisy"))
+        bridge.onPosted(snap(key = "b", pkg = "com.chat"))
+        sent.clear()
+        bridge.onFilter(filter(true, "com.noisy"))
+        assertEquals(listOf("a"), sent.map { (it.second as NotificationRemoved).key })
+        sent.clear()
+        bridge.onFilter(filter(enabled = false))
+        assertEquals(listOf("b"), sent.map { (it.second as NotificationRemoved).key })
+    }
+
+    @Test
+    fun removalQueuedBehindInFlightPostStillRemoves() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var first = true
+        val b = NotifyBridge("x", invoker) { t, p ->
+            if (first) { first = false; gate.await() }
+            sent += t to p
+            true
+        }
+        launch { b.onPosted(snap(key = "a")) }
+        launch { b.onRemoved("a") }
+        advanceUntilIdle()
+        assertTrue(sent.isEmpty())
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf(MessageType.NOTIFY_POSTED, MessageType.NOTIFY_REMOVED), sent.map { it.first })
+    }
+
+    @Test
+    fun postsToSameKeyAreSentInArrivalOrder() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var first = true
+        val b = NotifyBridge("x", invoker) { t, p ->
+            if (first) { first = false; gate.await() }
+            sent += t to p
+            true
+        }
+        launch { b.onPosted(snap(text = "one")) }
+        launch { b.onPosted(snap(text = "two")) }
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf("one", "two"), posted().map { it.text })
+        assertEquals(listOf(true, true), posted().map { it.alert })
+    }
+
+    @Test
+    fun failingSendForOneKeyStillSendsSnapshot() = runTest {
+        invoker.activeList += snap(key = "bad")
+        invoker.activeList += snap(key = "good")
+        val logged = mutableListOf<String>()
+        val b = NotifyBridge("x", invoker, { m, _ -> logged += m }) { t, p ->
+            if (t == MessageType.NOTIFY_POSTED && (p as PhoneNotification).key == "bad") error("too big")
+            sent += t to p
+            true
+        }
+        b.onConnected()
+        assertEquals(listOf("good"), posted().map { it.key })
+        assertEquals(MessageType.NOTIFY_SNAPSHOT, sent.last().first)
+        assertEquals(1, logged.size)
     }
 
     @Test
