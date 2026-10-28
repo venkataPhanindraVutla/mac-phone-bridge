@@ -18,6 +18,6 @@ enum NetworkKind {
 message StatusUpdate {
   int32 battery_percent = 1;
   bool charging = 2;
-  int32 signal_level = 3;  // 0..4, or -1 for unknown / no service (always sent explicitly)
+  int32 signal_level = 3;  // 0..4, or -1 for unknown / no service. Always set; proto3 omits 0 on the wire and it decodes as 0.
   NetworkKind network = 4;
 }

@@ -19,7 +19,8 @@ Key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
   the expected one MUST be rejected.
 - Discovery uses Bonjour/mDNS service type `_anmirror._tcp`. The advertisement carries no
   personal data: a random instance name and two TXT keys, `v` (protocol version, `1`) and
-  `r` (rotating ID, section 6).
+  `r` (rotating ID, section 6). The Mac picks a new random instance name at every 15-minute
+  epoch and on wake from sleep; the phone finds its Mac by TXT `r` only, never by the name.
 - A Mac serves one phone at a time. A phone connects to one Mac at a time.
 
 ## 2. Framing
@@ -82,8 +83,9 @@ message Envelope {
 | `find.ring` / `find.stop` | Mac to phone | `RingRequest` / `StopRingRequest` | FIND |
 | `find.state` | phone to Mac | `RingState` | FIND |
 
-`status.update.signal_level` is `0..4`, or `-1` for unknown / no service; it is always sent
-explicitly (never omitted, which is why `0` and `-1` are distinct on the wire).
+`status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
+sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
+encoded, so `0` and `-1` stay distinct.
 
 ### Capabilities
 
@@ -162,7 +164,9 @@ curly apostrophe and an emoji (`Ada’s MacBook Pro 🍎`) and two hosts.
 
 The phone scans the QR code, then connects as TLS client and **pins `fp` from the QR code** as
 the Mac's identity. The Mac accepts the phone's (unknown) certificate only while a pairing
-window is open.
+window is open and its secret can still be used: not yet used, not burned by 3 bad proofs, and
+at most 5 minutes old. Afterwards an unknown certificate is refused during the TLS handshake,
+which the phone shows as "code expired".
 
 1. Phone sends `pairing.request{protocol_version, secret_proof, device_name, device_model}`.
    If the protocol version is wrong, the Mac replies `system.error PROTOCOL_MISMATCH`.
@@ -185,8 +189,8 @@ user decline (for example the Mac's pairing window was closed).
 
 ### 5.4 Rules after pairing
 
-- An **unpaired client certificate** is accepted only while a pairing window is open, and its
-  first message MUST be `pairing.request`. Anything else gets `system.error NOT_PAIRED`, then
+- An **unpaired client certificate** is accepted only while a pairing window with a usable
+  secret is open (section 5.3), and its first message MUST be `pairing.request`. Anything else gets `system.error NOT_PAIRED`, then
   the connection is closed.
 - A **second paired phone** connecting while one is active gets `system.error BUSY`, then the
   connection is closed.
@@ -214,6 +218,13 @@ Initial values (battery tuning is planned for 0.9):
   the phone drops the connection and reconnects.
 - The Mac marks the phone as lost after **75 s** with no incoming message.
 - On wake from sleep the Mac closes every connection and restarts its listener on the same port.
+- When the Mac app quits it sends `system.goodbye{SHUTDOWN}` to the connected phone first. The
+  phone treats it as a normal disconnect: it keeps the pairing and reconnects with its backoff.
+
+What the user sees (builder's call, recorded in 0.1; shorter detection is tracked for 0.9):
+"connected/disconnected" updates **immediately when the connection closes** (app quit, Mac
+sleep/wake, phone app stopped), and **within 75 s when the phone vanishes** (Wi-Fi off, out of
+range), which is the Mac's silence timeout above.
 
 ## 8. Errors
 

@@ -77,7 +77,7 @@ public nonisolated struct AMStatusUpdate: Sendable {
 
   public var charging: Bool = false
 
-  /// 0..4, or -1 for unknown / no service (always sent explicitly)
+  /// 0..4, or -1 for unknown / no service. Always set; proto3 omits 0 on the wire and it decodes as 0.
   public var signalLevel: Int32 = 0
 
   public var network: AMNetworkKind = .unspecified
