@@ -1,0 +1,81 @@
+// Browse channel: browsing and managing files on the phone. See protocol/SPEC.md section 19.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum RootKind {
+  ROOT_KIND_UNSPECIFIED = 0;
+  ROOT_KIND_ALL_FILES = 1;
+  ROOT_KIND_PICKED_FOLDER = 2;
+}
+
+enum BrowseOutcome {
+  BROWSE_OUTCOME_UNSPECIFIED = 0;
+  BROWSE_OUTCOME_OK = 1;
+  BROWSE_OUTCOME_NOT_FOUND = 2;
+  BROWSE_OUTCOME_EXISTS = 3;
+  BROWSE_OUTCOME_DENIED = 4;
+  BROWSE_OUTCOME_BAD_PATH = 5;
+  BROWSE_OUTCOME_REVOKED = 6;
+  BROWSE_OUTCOME_IO = 7;
+}
+
+message BrowseRoot {
+  string id = 1;
+  string name = 2;
+  RootKind kind = 3;
+  bool writable = 4;
+}
+
+message BrowseRootsRequest {}
+
+message BrowseRoots {
+  repeated BrowseRoot roots = 1;
+}
+
+message BrowseEntry {
+  string name = 1;
+  bool is_dir = 2;
+  uint64 size = 3;
+  int64 modified_ms = 4;
+  string mime = 5;
+}
+
+message BrowseListRequest {
+  uint64 request_id = 1;
+  string root_id = 2;
+  string path = 3;
+  uint32 offset = 4;
+  uint32 limit = 5;
+}
+
+message BrowseListing {
+  uint64 request_id = 1;
+  repeated BrowseEntry entries = 2;
+  uint32 next_offset = 3;
+  bool more = 4;
+  BrowseOutcome outcome = 5;
+}
+
+message BrowsePath {
+  uint64 request_id = 1;
+  string root_id = 2;
+  string path = 3;
+}
+
+message BrowseRename {
+  uint64 request_id = 1;
+  string root_id = 2;
+  string path = 3;
+  string new_name = 4;
+}
+
+message BrowseResult {
+  uint64 request_id = 1;
+  BrowseOutcome outcome = 2;
+  BrowseEntry entry = 3;
+}

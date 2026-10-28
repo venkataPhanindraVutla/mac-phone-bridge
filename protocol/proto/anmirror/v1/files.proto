@@ -1,0 +1,97 @@
+// Files channel: file transfers and bulk connections. See protocol/SPEC.md sections 13 and 16.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum TransferKind {
+  TRANSFER_KIND_UNSPECIFIED = 0;
+  TRANSFER_KIND_FILE = 1;
+  TRANSFER_KIND_SCREENSHOT = 2;
+  TRANSFER_KIND_PHOTO = 3;
+}
+
+enum TransferError {
+  TRANSFER_ERROR_UNSPECIFIED = 0;
+  TRANSFER_ERROR_NO_SPACE = 1;
+  TRANSFER_ERROR_CANCELLED = 2;
+  TRANSFER_ERROR_INTERRUPTED = 3;
+  TRANSFER_ERROR_HASH_MISMATCH = 4;
+  TRANSFER_ERROR_IO = 5;
+  TRANSFER_ERROR_NOT_FOUND = 6;
+  TRANSFER_ERROR_DENIED = 7;
+  TRANSFER_ERROR_DISABLED = 8;
+  TRANSFER_ERROR_BAD_TARGET = 9;
+  TRANSFER_ERROR_TIMED_OUT = 10;
+}
+
+enum BulkRole {
+  BULK_ROLE_UNSPECIFIED = 0;
+  BULK_ROLE_PHONE_SENDS = 1;
+  BULK_ROLE_PHONE_RECEIVES = 2;
+  BULK_ROLE_THUMBNAILS = 3;
+}
+
+message BulkEndpoint {
+  uint32 port = 1;
+}
+
+message BulkHello {
+  bytes token = 1;
+  BulkRole role = 2;
+}
+
+message BrowseTarget {
+  string root_id = 1;
+  string dir_path = 2;
+  bool overwrite = 3;
+}
+
+message TransferOffer {
+  string transfer_id = 1;
+  string name = 2;
+  uint64 size = 3;
+  string mime = 4;
+  TransferKind kind = 5;
+  bytes token = 6;          // set when the Mac is the sender
+  uint64 request_id = 7;    // the photos.fetch / browse.read this answers, else 0
+  BrowseTarget target = 8;  // Mac to phone only: write into a browse root instead of Downloads
+  int64 modified_ms = 9;
+}
+
+message TransferAccept {
+  string transfer_id = 1;
+  bytes token = 2;  // set when the Mac is the receiver
+}
+
+message TransferReject {
+  string transfer_id = 1;
+  TransferError reason = 2;
+}
+
+message TransferProgress {
+  string transfer_id = 1;
+  uint64 bytes_done = 2;
+}
+
+message TransferComplete {
+  string transfer_id = 1;
+  bytes sha256 = 2;
+}
+
+message TransferReceived {
+  string transfer_id = 1;
+}
+
+message TransferCancel {
+  string transfer_id = 1;
+}
+
+message TransferFailed {
+  string transfer_id = 1;
+  TransferError reason = 2;
+  uint64 request_id = 3;
+}

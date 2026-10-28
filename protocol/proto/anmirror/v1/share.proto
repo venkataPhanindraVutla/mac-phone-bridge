@@ -1,0 +1,16 @@
+// Share channel: links and text sent between devices. See protocol/SPEC.md section 15.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message SharedLink {
+  string url = 1;
+}
+
+message SharedText {
+  string text = 1;
+}

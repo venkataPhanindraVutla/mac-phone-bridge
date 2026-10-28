@@ -55,6 +55,7 @@ enum AvailabilityReason {
   AVAILABILITY_REASON_UNSPECIFIED = 0;
   AVAILABILITY_REASON_OFF_BY_USER = 1;
   AVAILABILITY_REASON_NEEDS_PERMISSION = 2;
+  AVAILABILITY_REASON_PARTIAL_ACCESS = 3;
 }
 
 // Whether a feature works on the phone right now (notify/contacts/calls availability messages).

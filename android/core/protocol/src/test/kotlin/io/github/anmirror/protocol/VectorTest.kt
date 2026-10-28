@@ -137,11 +137,63 @@ class VectorTest {
     }
 
     @Test
+    fun filesOfferVectorDecodesToTransferOffer() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "files_offer_minimal" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_FILES, env.channel)
+        assertEquals(MessageType.FILES_OFFER, env.type)
+        val o = io.github.anmirror.protocol.v1.TransferOffer.parseFrom(env.payload)
+        assertEquals("t1", o.transferId)
+        assertEquals("photo.jpg", o.name)
+        assertEquals(5_000_000_000L, o.size)
+        assertEquals("image/jpeg", o.mime)
+        assertEquals(io.github.anmirror.protocol.v1.TransferKind.TRANSFER_KIND_FILE, o.kind)
+        assertTrue(o.token.isEmpty)
+        assertEquals(env.payload, o.toByteString())
+    }
+
+    @Test
+    fun bulkHelloVectorDecodesToBulkHello() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "bulk_hello" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_FILES, env.channel)
+        assertEquals(1L, env.id)
+        assertEquals(MessageType.BULK_HELLO, env.type)
+        val h = io.github.anmirror.protocol.v1.BulkHello.parseFrom(env.payload)
+        assertEquals(32, h.token.size())
+        assertEquals(io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_PHONE_SENDS, h.role)
+        assertEquals(env.payload, h.toByteString())
+    }
+
+    @Test
+    fun filenameVectorsLoadAndHoldInvariants() {
+        val file = load("filenames.json")
+        val sanitize = file.arr("sanitize").map { it.jsonObject }
+        val byIn = sanitize.associate { it.str("in") to it.str("out") }
+        assertEquals("passwd", byIn["../../etc/passwd"])
+        assertEquals("file", byIn[""])
+        assertEquals("tabname.txt", byIn["tab\tname\u0007.txt"])
+        assertEquals("gnp.exe", byIn["\u202Egnp.exe"])
+        assertEquals("a".repeat(251) + ".jpg", byIn["a".repeat(296) + ".jpg"])
+        assertEquals("é".repeat(125) + ".pdf", byIn["é".repeat(150) + ".pdf"])
+        for (c in sanitize) {
+            val out = c.str("out")
+            assertTrue(out.isNotEmpty() && out.toByteArray().size <= 255, c.str("in"))
+            assertTrue(out.none { it.code < 0x20 || it.code == 0x7F || it == '/' || it == '\\' }, c.str("in"))
+        }
+        val unique = file.arr("unique").map { it.jsonObject }
+        val photo = unique.first { u -> u.arr("taken").map { it.jsonPrimitive.content } == listOf("photo.jpg", "photo (1).jpg") }
+        assertEquals("photo (2).jpg", photo.str("out"))
+        assertTrue(unique.any { it.str("name").toByteArray().size == 255 && it.str("out").toByteArray().size <= 255 && it.str("out") != it.str("name") })
+        for (u in unique) assertFalse(u.str("out") in u.arr("taken").map { it.jsonPrimitive.content }, u.str("name"))
+    }
+
+    @Test
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
-        assertEquals(31, MessageType.ALL.size)
-        assertEquals(31, MessageType.ALL.toSet().size)
+        assertEquals(62, MessageType.ALL.size)
+        assertEquals(62, MessageType.ALL.toSet().size)
         val expected = mapOf(
             MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
             MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",
@@ -153,6 +205,37 @@ class VectorTest {
             MessageType.CALLS_STATE to "calls.state", MessageType.CALLS_COMMAND to "calls.command",
             MessageType.CALLS_RESULT to "calls.result", MessageType.CALLS_MISSED to "calls.missed",
             MessageType.CALLS_AVAILABILITY to "calls.availability",
+            MessageType.CLIPBOARD_TEXT to "clipboard.text",
+            MessageType.CLIPBOARD_AVAILABILITY to "clipboard.availability",
+            MessageType.SHARE_LINK to "share.link",
+            MessageType.SHARE_TEXT to "share.text",
+            MessageType.FILES_ENDPOINT to "files.endpoint",
+            MessageType.FILES_OFFER to "files.offer",
+            MessageType.FILES_ACCEPT to "files.accept",
+            MessageType.FILES_REJECT to "files.reject",
+            MessageType.FILES_PROGRESS to "files.progress",
+            MessageType.FILES_COMPLETE to "files.complete",
+            MessageType.FILES_RECEIVED to "files.received",
+            MessageType.FILES_CANCEL to "files.cancel",
+            MessageType.FILES_FAILED to "files.failed",
+            MessageType.BULK_HELLO to "bulk.hello",
+            MessageType.SCREENSHOTS_AVAILABILITY to "screenshots.availability",
+            MessageType.PHOTOS_LIST to "photos.list",
+            MessageType.PHOTOS_ITEMS to "photos.items",
+            MessageType.PHOTOS_THUMBS to "photos.thumbs",
+            MessageType.PHOTOS_FETCH to "photos.fetch",
+            MessageType.PHOTOS_AVAILABILITY to "photos.availability",
+            MessageType.BROWSE_ROOTS_REQUEST to "browse.roots_request",
+            MessageType.BROWSE_ROOTS to "browse.roots",
+            MessageType.BROWSE_LIST to "browse.list",
+            MessageType.BROWSE_LISTING to "browse.listing",
+            MessageType.BROWSE_STAT to "browse.stat",
+            MessageType.BROWSE_MKDIR to "browse.mkdir",
+            MessageType.BROWSE_DELETE to "browse.delete",
+            MessageType.BROWSE_READ to "browse.read",
+            MessageType.BROWSE_RENAME to "browse.rename",
+            MessageType.BROWSE_RESULT to "browse.result",
+            MessageType.BROWSE_AVAILABILITY to "browse.availability",
         )
         for ((const, raw) in expected) {
             assertEquals(raw, const)
@@ -161,6 +244,13 @@ class VectorTest {
         assertEquals(5, Channel.CHANNEL_NOTIFY_VALUE)
         assertEquals(6, Channel.CHANNEL_CONTACTS_VALUE)
         assertEquals(7, Channel.CHANNEL_CALLS_VALUE)
+        assertEquals(8, Channel.CHANNEL_CLIPBOARD_VALUE)
+        assertEquals(9, Channel.CHANNEL_SHARE_VALUE)
+        assertEquals(10, Channel.CHANNEL_FILES_VALUE)
+        assertEquals(11, Channel.CHANNEL_SCREENSHOTS_VALUE)
+        assertEquals(12, Channel.CHANNEL_PHOTOS_VALUE)
+        assertEquals(13, Channel.CHANNEL_BROWSE_VALUE)
+        assertEquals(3, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_PARTIAL_ACCESS_VALUE)
         val env = envelope(Channel.CHANNEL_FIND, 6, MessageType.FIND_RING, RingRequest.getDefaultInstance())
         assertEquals("find.ring", env.type)
         assertEquals(Channel.CHANNEL_FIND, env.channel)

@@ -100,6 +100,27 @@ message Envelope {
 | `calls.result` | phone to Mac (`reply_to` = command id) | `CallCommandResult` | CALLS |
 | `calls.missed` | phone to Mac | `MissedCall` | CALLS |
 | `calls.availability` | phone to Mac | `FeatureAvailability` | CALLS |
+| `clipboard.text` | both | `ClipboardText` | CLIPBOARD |
+| `clipboard.availability` | phone to Mac | `FeatureAvailability` | CLIPBOARD |
+| `share.link` / `share.text` | both | `SharedLink` / `SharedText` | SHARE |
+| `files.endpoint` | Mac to phone | `BulkEndpoint` | FILES |
+| `files.offer` | sender to receiver | `TransferOffer` | FILES |
+| `files.accept` / `files.reject` | receiver to sender | `TransferAccept` / `TransferReject` | FILES |
+| `files.progress` | receiver to sender | `TransferProgress` | FILES |
+| `files.complete` | sender to receiver | `TransferComplete` | FILES |
+| `files.received` | receiver to sender | `TransferReceived` | FILES |
+| `files.cancel` / `files.failed` | either | `TransferCancel` / `TransferFailed` | FILES |
+| `bulk.hello` | phone to Mac, first frame of a bulk connection only | `BulkHello` | FILES |
+| `screenshots.availability` | phone to Mac | `FeatureAvailability` | SCREENSHOTS |
+| `photos.list` / `photos.items` | Mac to phone / phone to Mac | `PhotosListRequest` / `PhotosList` | PHOTOS |
+| `photos.thumbs` / `photos.fetch` | Mac to phone | `PhotosThumbsRequest` / `PhotoFetch` | PHOTOS |
+| `photos.availability` | phone to Mac | `FeatureAvailability` | PHOTOS |
+| `browse.roots_request` / `browse.roots` | Mac to phone / phone to Mac | `BrowseRootsRequest` / `BrowseRoots` | BROWSE |
+| `browse.list` / `browse.listing` | Mac to phone / phone to Mac | `BrowseListRequest` / `BrowseListing` | BROWSE |
+| `browse.stat`, `browse.mkdir`, `browse.delete`, `browse.read` | Mac to phone | `BrowsePath` | BROWSE |
+| `browse.rename` | Mac to phone | `BrowseRename` | BROWSE |
+| `browse.result` | phone to Mac | `BrowseResult` | BROWSE |
+| `browse.availability` | phone to Mac | `FeatureAvailability` | BROWSE |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -109,7 +130,8 @@ encoded, so `0` and `-1` stay distinct.
 
 `Hello.capabilities` lists feature strings the sender supports. Version 0.1 defines
 `status.v1` and `find.v1`. Version 0.2 adds `notify.v1`, `contacts.v1` and `calls.v1`
-(sections 10 to 12). A side MUST NOT send messages of a feature the peer did not list.
+(sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
+`screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19). A side MUST NOT send messages of a feature the peer did not list.
 
 `Hello.protocol_version` is the integer **1**. If versions differ, the receiver answers
 `system.error` with `ERROR_CODE_PROTOCOL_MISMATCH` and closes.
@@ -317,3 +339,109 @@ Channel `CALLS`.
 - `calls.missed` is sent when a call rang, was never answered, and was not declined through
   `calls.command` (confirmed with the call log, type `MISSED`, where available).
 - `calls.availability` is as in section 10.
+
+## 13. Bulk connections
+
+File bytes never travel in control frames. They use separate bulk connections.
+
+- The Mac runs a second TLS 1.3 listener on an ephemeral port, with the same pinning as
+  section 1. It accepts only the certificate of the connected, paired phone.
+- The Mac announces the port with `files.endpoint` right after connect, whenever any of
+  `files.v1`, `screenshots.v1`, `photos.v1` or `browse.v1` is shared.
+- The phone always dials. Its first frame is a normal section 2 frame whose envelope is
+  `{channel FILES, id 1, type "bulk.hello"}` carrying `BulkHello`.
+- Tokens are issued by the Mac only: in `files.offer` when the Mac sends, in `files.accept`
+  when the Mac receives, and in `photos.thumbs`. A token is 32 random bytes, single-use, and
+  expires after 60 s.
+- An unknown, expired or reused token, or a role that does not match the token, closes the
+  connection without a reply.
+- After the hello, the sender writes exactly `size` raw bytes. The receiver reads exactly
+  `size` bytes and never waits for EOF; extra bytes fail the transfer. The sender closes after
+  `files.received` or `files.failed`, or after 30 s.
+- A control disconnect revokes every token and ends every bulk connection.
+- Requests that the Mac originates (`photos.list`, `browse.*`) carry their own `request_id`, a
+  Mac counter echoed by the phone, not the envelope `reply_to`.
+
+## 14. Clipboard (`clipboard.v1`)
+
+Channel `CLIPBOARD`. Plain text only, at most 262,144 bytes, in both directions. Concealed,
+transient and auto-generated pasteboard items are never sent. Neither side sends back text whose
+SHA-256 equals the last text it received from the peer. `clipboard.availability` is as in
+section 10.
+
+## 15. Share (`share.v1`)
+
+Channel `SHARE`.
+
+- `share.link` is only for `http` or `https` URLs with a host, at most 8,192 bytes. Anything
+  else is sent as `share.text`.
+- The receiver opens the link (on the phone, after a tap on a notification).
+- `share.text` lands on the clipboard, with a notification.
+- Files are section 16 transfers.
+
+## 16. Files (`files.v1`)
+
+Channel `FILES`.
+
+- **Steps.** `files.offer`, then `files.accept` or `files.reject`, then the bulk bytes
+  (section 13). During the bytes the receiver sends `files.progress` (at most every 500 ms).
+  When the bytes are written the sender sends `files.complete` with the SHA-256. The receiver
+  answers `files.received`, or `files.failed` with `HASH_MISMATCH`.
+- **Cancel.** Either side may send `files.cancel`. No reply is sent.
+- **Queueing.** One transfer at a time per direction; the next offer waits until the previous
+  transfer has ended.
+- **Auto-accept.** Offers from the paired peer are accepted automatically; both devices belong
+  to the same user.
+- **Free space.** The receiver rejects an offer with `NO_SPACE` when `size + 64 MiB` exceeds
+  the free space.
+- **No resume.** An interrupted transfer starts again from the offer.
+- **File-name rule**, applied by the receiver to `TransferOffer.name`:
+  1. Take the text after the last `/` or `\`.
+  2. Remove C0 controls, DEL (U+007F) and the bidi controls U+202A to U+202E and U+2066 to
+     U+2069.
+  3. Strip leading dots and spaces and trailing spaces.
+  4. If nothing is left, use `file`.
+  5. Cap at 255 bytes of UTF-8, cutting the stem at a Unicode scalar boundary and keeping an
+     extension (the text from the last `.`, dot included) of at most 16 bytes.
+  6. On a collision, use `stem (n).ext` with the smallest free `n >= 1`, still within the
+     255-byte cap (the stem is cut further when needed).
+
+  `protocol/vectors/filenames.json` holds reference cases generated by `make_vectors.py`.
+
+## 17. Screenshots (`screenshots.v1`)
+
+Channel `SCREENSHOTS`. The phone sends `TRANSFER_KIND_SCREENSHOT` offers over section 16.
+`screenshots.availability` is as in section 10 and may carry `PARTIAL_ACCESS`, which means new
+screenshots cannot be found.
+
+## 18. Photos (`photos.v1`)
+
+Channel `PHOTOS`.
+
+- `photos.list` (`limit` 1 to 200) is answered by `photos.items`, newest first.
+- `photos.thumbs` is answered over one bulk connection with role `THUMBNAILS`. Each record is
+  `uint64_be id | uint32_be length | JPEG`, in request order. A length of 0 means no thumbnail;
+  a length over 1 MiB is an error. The stream ends with the record `id = 0, length = 0`.
+- `photos.fetch` is answered by a `TRANSFER_KIND_PHOTO` offer carrying its `request_id`, or by
+  `files.failed` with that `request_id` and `NOT_FOUND`.
+- `PARTIAL_ACCESS` (in `photos.availability` and `PhotosList.partial_access`) means the list
+  holds only the items the user picked.
+
+## 19. Browse (`browse.v1`)
+
+Channel `BROWSE`.
+
+- **Paths** are relative to a root and `/`-separated; `""` is the root itself. A segment that
+  is empty, `.` or `..`, or contains `\0`, a path with a leading `/`, or a path over 4,096
+  bytes, is `BAD_PATH`. Symlinks that resolve outside the root are neither listed nor followed.
+- **Listing.** `browse.list` pages are sorted directories first, then by name
+  (case-insensitive), with `limit` clamped to 1 to 500.
+- **Deleting** is recursive and never follows symlinks.
+- **Renaming.** `new_name` must equal its own sanitized form (section 16), else `BAD_PATH`.
+- **Reading.** `browse.read` is answered by a `TRANSFER_KIND_FILE` offer with its `request_id`,
+  or by `browse.result` with the failure.
+- **Writing.** A write is a Mac `files.offer` with `target`. With `overwrite = false` a
+  collision gets the section 16 counter.
+- **Revoked folders.** A picked folder whose permission was revoked answers `REVOKED`, and the
+  phone pushes an updated `browse.roots`.
+- `browse.availability` is as in section 10.

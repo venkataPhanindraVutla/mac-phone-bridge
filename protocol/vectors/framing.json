@@ -134,6 +134,28 @@
       "frame_hex": "0000005008051001220d6e6f746966792e706f737465642a3b0a1b307c636f6d2e77686174736170707c317c6e756c6c7c3130313233120c636f6d2e77686174736170702203416e612a07686920f09f918b5001"
     },
     {
+      "name": "files_offer_minimal",
+      "envelope": {
+        "channel": 10,
+        "id": 1,
+        "reply_to": 0,
+        "type": "files.offer",
+        "payload_hex": "0a027431120970686f746f2e6a70671880e497d012220a696d6167652f6a7065672801"
+      },
+      "frame_hex": "00000036080a1001220b66696c65732e6f666665722a230a027431120970686f746f2e6a70671880e497d012220a696d6167652f6a7065672801"
+    },
+    {
+      "name": "bulk_hello",
+      "envelope": {
+        "channel": 10,
+        "id": 1,
+        "reply_to": 0,
+        "type": "bulk.hello",
+        "payload_hex": "0a20d038c019096a978d7f929d78c23066690cd708d3c60a429b9be538b043da223a1001"
+      },
+      "frame_hex": "00000036080a1001220a62756c6b2e68656c6c6f2a240a20d038c019096a978d7f929d78c23066690cd708d3c60a429b9be538b043da223a1001"
+    },
+    {
       "name": "large_ids_multibyte_varint",
       "envelope": {
         "channel": 3,

@@ -1,0 +1,40 @@
+// Photos channel: browsing the phone's photo library. See protocol/SPEC.md section 18.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message PhotoItem {
+  int64 id = 1;
+  int64 date_taken_ms = 2;
+  string mime = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  int64 duration_ms = 6;
+  bool video = 7;
+}
+
+message PhotosListRequest {
+  uint64 request_id = 1;
+  uint32 limit = 2;
+  int64 before_ms = 3;  // 0 = newest
+}
+
+message PhotosList {
+  uint64 request_id = 1;
+  repeated PhotoItem items = 2;
+  bool partial_access = 3;
+}
+
+message PhotosThumbsRequest {
+  repeated int64 ids = 1;
+  bytes token = 2;
+}
+
+message PhotoFetch {
+  uint64 request_id = 1;
+  int64 id = 2;
+}

@@ -1,0 +1,140 @@
+{
+  "notes": "sanitize_name then unique_name, see SPEC section 16; sizes are UTF-8 bytes",
+  "sanitize": [
+    {
+      "in": "../../etc/passwd",
+      "out": "passwd"
+    },
+    {
+      "in": "a/b/c.txt",
+      "out": "c.txt"
+    },
+    {
+      "in": "..\\..\\x.exe",
+      "out": "x.exe"
+    },
+    {
+      "in": ".hidden",
+      "out": "hidden"
+    },
+    {
+      "in": "....",
+      "out": "file"
+    },
+    {
+      "in": "",
+      "out": "file"
+    },
+    {
+      "in": "tab\tname\u0007.txt",
+      "out": "tabname.txt"
+    },
+    {
+      "in": "\u202egnp.exe",
+      "out": "gnp.exe"
+    },
+    {
+      "in": "日本語 📷.jpg",
+      "out": "日本語 📷.jpg"
+    },
+    {
+      "in": "name.txt  ",
+      "out": "name.txt"
+    },
+    {
+      "in": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+      "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
+    },
+    {
+      "in": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.pdf",
+      "out": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.pdf"
+    },
+    {
+      "in": "/",
+      "out": "file"
+    },
+    {
+      "in": "dir/",
+      "out": "file"
+    },
+    {
+      "in": "  . hidden.txt",
+      "out": "hidden.txt"
+    },
+    {
+      "in": "del\u007f.txt",
+      "out": "del.txt"
+    },
+    {
+      "in": "\u2066x\u2069.txt",
+      "out": "x.txt"
+    },
+    {
+      "in": "report.tar.gz",
+      "out": "report.tar.gz"
+    },
+    {
+      "in": "noext",
+      "out": "noext"
+    },
+    {
+      "in": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "in": "bbbbbbbbbb.cccccccccccccccccccc",
+      "out": "bbbbbbbbbb.cccccccccccccccccccc"
+    }
+  ],
+  "unique": [
+    {
+      "name": "photo.jpg",
+      "taken": [],
+      "out": "photo.jpg"
+    },
+    {
+      "name": "photo.jpg",
+      "taken": [
+        "photo.jpg"
+      ],
+      "out": "photo (1).jpg"
+    },
+    {
+      "name": "photo.jpg",
+      "taken": [
+        "photo.jpg",
+        "photo (1).jpg"
+      ],
+      "out": "photo (2).jpg"
+    },
+    {
+      "name": "photo.jpg",
+      "taken": [
+        "photo.jpg",
+        "photo (2).jpg"
+      ],
+      "out": "photo (1).jpg"
+    },
+    {
+      "name": "noext",
+      "taken": [
+        "noext"
+      ],
+      "out": "noext (1)"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+      "taken": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
+      ],
+      "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (1).jpg"
+    },
+    {
+      "name": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.pdf",
+      "taken": [
+        "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.pdf"
+      ],
+      "out": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé (1).pdf"
+    }
+  ]
+}

@@ -230,10 +230,66 @@ private struct URIFile: Decodable {
     #expect(try n.serializedData() == env.payload)
 }
 
+@Test func filesOfferVectorDecodesToTransferOffer() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "files_offer_minimal" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .files)
+    #expect(env.type == MessageType.filesOffer.rawValue)
+    let o = try AMTransferOffer(serializedBytes: env.payload)
+    #expect(o.transferID == "t1")
+    #expect(o.name == "photo.jpg")
+    #expect(o.size == 5_000_000_000)
+    #expect(o.mime == "image/jpeg")
+    #expect(o.kind == .file)
+    #expect(o.token.isEmpty)
+    #expect(try o.serializedData() == env.payload)
+}
+
+@Test func bulkHelloVectorDecodesToBulkHello() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "bulk_hello" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .files)
+    #expect(env.id == 1)
+    #expect(env.type == MessageType.bulkHello.rawValue)
+    let h = try AMBulkHello(serializedBytes: env.payload)
+    #expect(h.token.count == 32)
+    #expect(h.role == .phoneSends)
+    #expect(try h.serializedData() == env.payload)
+}
+
+private struct FilenamesFile: Decodable {
+    struct Sanitize: Decodable { let `in`: String; let out: String }
+    struct Unique: Decodable { let name: String; let taken: [String]; let out: String }
+    let sanitize: [Sanitize]
+    let unique: [Unique]
+}
+
+@Test func filenameVectorsLoadAndHoldInvariants() throws {
+    let file: FilenamesFile = load("filenames.json")
+    let byIn = Dictionary(uniqueKeysWithValues: file.sanitize.map { ($0.in, $0.out) })
+    #expect(byIn["../../etc/passwd"] == "passwd")
+    #expect(byIn[""] == "file")
+    #expect(byIn["tab\tname\u{7}.txt"] == "tabname.txt")
+    #expect(byIn["\u{202E}gnp.exe"] == "gnp.exe")
+    #expect(byIn[String(repeating: "a", count: 296) + ".jpg"] == String(repeating: "a", count: 251) + ".jpg")
+    #expect(byIn[String(repeating: "é", count: 150) + ".pdf"] == String(repeating: "é", count: 125) + ".pdf")
+    for c in file.sanitize {
+        #expect(!c.out.isEmpty && c.out.utf8.count <= 255, "\(c.in)")
+        #expect(!c.out.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }, "\(c.in)")
+        #expect(!c.out.contains("/") && !c.out.contains("\\"), "\(c.in)")
+    }
+    let photo = try #require(file.unique.first { $0.taken == ["photo.jpg", "photo (1).jpg"] })
+    #expect(photo.out == "photo (2).jpg")
+    #expect(file.unique.contains { $0.name.utf8.count == 255 && $0.out.utf8.count <= 255 && $0.out != $0.name })
+    for u in file.unique { #expect(!u.taken.contains(u.out), "\(u.name)") }
+}
+
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 31)
+    #expect(MessageType.allCases.count == 62)
     let expected: [MessageType: String] = [
         .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
         .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
@@ -245,11 +301,50 @@ private struct URIFile: Decodable {
         .callsState: "calls.state", .callsCommand: "calls.command",
         .callsResult: "calls.result", .callsMissed: "calls.missed",
         .callsAvailability: "calls.availability",
+        .clipboardText: "clipboard.text",
+        .clipboardAvailability: "clipboard.availability",
+        .shareLink: "share.link",
+        .shareText: "share.text",
+        .filesEndpoint: "files.endpoint",
+        .filesOffer: "files.offer",
+        .filesAccept: "files.accept",
+        .filesReject: "files.reject",
+        .filesProgress: "files.progress",
+        .filesComplete: "files.complete",
+        .filesReceived: "files.received",
+        .filesCancel: "files.cancel",
+        .filesFailed: "files.failed",
+        .bulkHello: "bulk.hello",
+        .screenshotsAvailability: "screenshots.availability",
+        .photosList: "photos.list",
+        .photosItems: "photos.items",
+        .photosThumbs: "photos.thumbs",
+        .photosFetch: "photos.fetch",
+        .photosAvailability: "photos.availability",
+        .browseRootsRequest: "browse.roots_request",
+        .browseRoots: "browse.roots",
+        .browseList: "browse.list",
+        .browseListing: "browse.listing",
+        .browseStat: "browse.stat",
+        .browseMkdir: "browse.mkdir",
+        .browseDelete: "browse.delete",
+        .browseRead: "browse.read",
+        .browseRename: "browse.rename",
+        .browseResult: "browse.result",
+        .browseAvailability: "browse.availability",
     ]
     for (type, raw) in expected { #expect(type.rawValue == raw) }
     #expect(AMChannel.notify.rawValue == 5)
     #expect(AMChannel.contacts.rawValue == 6)
     #expect(AMChannel.calls.rawValue == 7)
+    #expect(AMChannel.clipboard.rawValue == 8)
+    #expect(AMChannel.share.rawValue == 9)
+    #expect(AMChannel.files.rawValue == 10)
+    #expect(AMChannel.screenshots.rawValue == 11)
+    #expect(AMChannel.photos.rawValue == 12)
+    #expect(AMChannel.browse.rawValue == 13)
+    #expect(AMAvailabilityReason.partialAccess.rawValue == 3)
+    #expect(Set(MessageType.allCases.map(\.rawValue)).count == MessageType.allCases.count)
 }
 
 @Test func envelopeInitSerializesPayload() throws {

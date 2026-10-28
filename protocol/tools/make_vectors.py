@@ -3,7 +3,7 @@
 
 Run as:  python3 -I protocol/tools/make_vectors.py [--check]
 
-Writes protocol/vectors/{framing,crypto,pairing_uri}.json. With --check it regenerates
+Writes protocol/vectors/{framing,crypto,pairing_uri,filenames}.json. With --check it regenerates
 in memory and exits 1 if any file on disk differs. Output is fully deterministic: all
 "random" inputs are derived from fixed labels with SHA-256. Standard library only
 (the test certificates are read from the committed .p12 files via the `openssl` CLI).
@@ -31,7 +31,8 @@ RID_LABEL = b"anmirror-rid-v1"
 RID_EPOCH_SECONDS = 900
 
 CHANNELS = {"SYSTEM": 1, "PAIRING": 2, "STATUS": 3, "FIND": 4,
-            "NOTIFY": 5, "CONTACTS": 6, "CALLS": 7}
+            "NOTIFY": 5, "CONTACTS": 6, "CALLS": 7, "CLIPBOARD": 8, "SHARE": 9, "FILES": 10,
+            "SCREENSHOTS": 11, "PHOTOS": 12, "BROWSE": 13}
 
 
 # ---------------------------------------------------------------- protobuf encoding
@@ -260,6 +261,13 @@ def build_framing() -> dict:
         ("notify_posted_minimal", CHANNELS["NOTIFY"], 1, 0, "notify.posted",
          f_string(1, "0|com.whatsapp|1|null|10123") + f_string(2, "com.whatsapp")
          + f_string(4, "Ana") + f_string(5, "hi \U0001F44B") + f_varint(10, 1)),
+        # size is above 2**32 on purpose (uint64 field); kind 1 = TRANSFER_KIND_FILE
+        ("files_offer_minimal", CHANNELS["FILES"], 1, 0, "files.offer",
+         f_string(1, "t1") + f_string(2, "photo.jpg") + f_varint(3, 5_000_000_000)
+         + f_string(4, "image/jpeg") + f_varint(5, 1)),
+        # role 1 = BULK_ROLE_PHONE_SENDS
+        ("bulk_hello", CHANNELS["FILES"], 1, 0, "bulk.hello",
+         f_bytes(1, det("bulk-token")) + f_varint(2, 1)),
         ("large_ids_multibyte_varint", CHANNELS["STATUS"], 300, 16384, "status.update",
          f_varint(1, 100)),
         ("unicode_type_and_payload_bytes", CHANNELS["SYSTEM"], 1, 0, "system.pongé",
@@ -406,11 +414,97 @@ def build_pairing_uri(ids: list) -> dict:
     return {"valid": valid_vecs, "invalid": out_invalid}
 
 
+# ---------------------------------------------------------------- file names (SPEC section 16)
+NAME_MAX_BYTES = 255
+EXT_MAX_BYTES = 16
+BIDI_CONTROLS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+
+
+def _split_ext(name: str) -> tuple:
+    """(stem, ext) where ext includes the dot and is at most EXT_MAX_BYTES; else (name, '')."""
+    i = name.rfind(".")
+    if i > 0 and len(name[i:].encode("utf-8")) <= EXT_MAX_BYTES:
+        return name[:i], name[i:]
+    return name, ""
+
+
+def _cut(text: str, max_bytes: int) -> str:
+    """Longest prefix of text, cut at a Unicode scalar boundary, of at most max_bytes UTF-8 bytes."""
+    out, used = [], 0
+    for ch in text:
+        n = len(ch.encode("utf-8"))
+        if used + n > max_bytes:
+            break
+        out.append(ch)
+        used += n
+    return "".join(out)
+
+
+def sanitize_name(raw: str) -> str:
+    name = re.split(r"[/\\]", raw)[-1]
+    name = "".join(c for c in name if ord(c) > 0x1F and ord(c) != 0x7F and ord(c) not in BIDI_CONTROLS)
+    name = name.lstrip(". ").rstrip(" ")
+    if not name:
+        return "file"
+    if len(name.encode("utf-8")) > NAME_MAX_BYTES:
+        stem, ext = _split_ext(name)
+        name = _cut(stem, NAME_MAX_BYTES - len(ext.encode("utf-8"))) + ext
+    return name
+
+
+def unique_name(name: str, taken: set) -> str:
+    """name if free, else 'stem (n).ext' with the smallest free n >= 1, within NAME_MAX_BYTES."""
+    if name not in taken:
+        return name
+    stem, ext = _split_ext(name)
+    n = 1
+    while True:
+        suffix = f" ({n})" + ext
+        cand = _cut(stem, NAME_MAX_BYTES - len(suffix.encode("utf-8"))) + suffix
+        if cand not in taken:
+            return cand
+        n += 1
+
+
+def build_filenames() -> dict:
+    sanitize_cases = [
+        "../../etc/passwd", "a/b/c.txt", "..\\..\\x.exe", ".hidden", "....", "",
+        "tab\tname\u0007.txt", "\u202Egnp.exe", "日本語 \U0001F4F7.jpg", "name.txt  ",
+        "a" * 296 + ".jpg", "é" * 150 + ".pdf",
+        "/", "dir/", "  . hidden.txt", "del\u007f.txt", "\u2066x\u2069.txt",
+        "report.tar.gz", "noext", "a" * 300, "b" * 10 + "." + "c" * 20,
+    ]
+    sanitize = []
+    for raw in sanitize_cases:
+        out = sanitize_name(raw)
+        assert out == sanitize_name(out) and len(out.encode("utf-8")) <= NAME_MAX_BYTES, raw
+        sanitize.append({"in": raw, "out": out})
+    long_name = "a" * 251 + ".jpg"
+    unique_cases = [
+        ("photo.jpg", [], None),
+        ("photo.jpg", ["photo.jpg"], None),
+        ("photo.jpg", ["photo.jpg", "photo (1).jpg"], None),
+        ("photo.jpg", ["photo.jpg", "photo (2).jpg"], None),
+        ("noext", ["noext"], None),
+        (long_name, [long_name], None),
+        ("é" * 125 + ".pdf", ["é" * 125 + ".pdf"], None),
+    ]
+    unique = []
+    for name, taken, _ in unique_cases:
+        out = unique_name(name, set(taken))
+        assert out not in taken and len(out.encode("utf-8")) <= NAME_MAX_BYTES, name
+        unique.append({"name": name, "taken": taken, "out": out})
+    assert unique[2]["out"] == "photo (2).jpg" and unique[5]["out"] == "a" * 247 + " (1).jpg"
+    return {"notes": "sanitize_name then unique_name, see SPEC section 16; sizes are UTF-8 bytes",
+            "sanitize": sanitize, "unique": unique}
+
+
 def build_all() -> dict:
     ids = load_identities()
     return {"framing.json": build_framing(),
             "crypto.json": build_crypto(ids),
-            "pairing_uri.json": build_pairing_uri(ids)}
+            "pairing_uri.json": build_pairing_uri(ids),
+            "filenames.json": build_filenames()}
 
 
 def main() -> int:
@@ -418,6 +512,8 @@ def main() -> int:
     bad = False
     for fname, data in build_all().items():
         text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        # keep invisible bidi controls / DEL reviewable: write them as JSON escapes
+        text = re.sub("[\u202a-\u202e\u2066-\u2069\u007f]", lambda m: "\\u%04x" % ord(m.group()), text)
         path = VECTORS / fname
         if check:
             if not path.exists() or path.read_text(encoding="utf-8") != text:

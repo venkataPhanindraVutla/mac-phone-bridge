@@ -33,6 +33,37 @@ object MessageType {
     const val CALLS_RESULT = "calls.result"
     const val CALLS_MISSED = "calls.missed"
     const val CALLS_AVAILABILITY = "calls.availability"
+    const val CLIPBOARD_TEXT = "clipboard.text"
+    const val CLIPBOARD_AVAILABILITY = "clipboard.availability"
+    const val SHARE_LINK = "share.link"
+    const val SHARE_TEXT = "share.text"
+    const val FILES_ENDPOINT = "files.endpoint"
+    const val FILES_OFFER = "files.offer"
+    const val FILES_ACCEPT = "files.accept"
+    const val FILES_REJECT = "files.reject"
+    const val FILES_PROGRESS = "files.progress"
+    const val FILES_COMPLETE = "files.complete"
+    const val FILES_RECEIVED = "files.received"
+    const val FILES_CANCEL = "files.cancel"
+    const val FILES_FAILED = "files.failed"
+    const val BULK_HELLO = "bulk.hello"
+    const val SCREENSHOTS_AVAILABILITY = "screenshots.availability"
+    const val PHOTOS_LIST = "photos.list"
+    const val PHOTOS_ITEMS = "photos.items"
+    const val PHOTOS_THUMBS = "photos.thumbs"
+    const val PHOTOS_FETCH = "photos.fetch"
+    const val PHOTOS_AVAILABILITY = "photos.availability"
+    const val BROWSE_ROOTS_REQUEST = "browse.roots_request"
+    const val BROWSE_ROOTS = "browse.roots"
+    const val BROWSE_LIST = "browse.list"
+    const val BROWSE_LISTING = "browse.listing"
+    const val BROWSE_STAT = "browse.stat"
+    const val BROWSE_MKDIR = "browse.mkdir"
+    const val BROWSE_DELETE = "browse.delete"
+    const val BROWSE_READ = "browse.read"
+    const val BROWSE_RENAME = "browse.rename"
+    const val BROWSE_RESULT = "browse.result"
+    const val BROWSE_AVAILABILITY = "browse.availability"
 
     val ALL: List<String> = listOf(
         HELLO, PING, PONG, ERROR, GOODBYE, PAIR_REQUEST, PAIR_VERIFIED, PAIR_CONFIRM,
@@ -41,5 +72,11 @@ object MessageType {
         NOTIFY_RESULT, NOTIFY_FILTER, NOTIFY_ICON_REQUEST, NOTIFY_ICON, NOTIFY_AVAILABILITY,
         CONTACTS_SYNC, CONTACTS_BATCH, CONTACTS_AVAILABILITY, CALLS_STATE, CALLS_COMMAND,
         CALLS_RESULT, CALLS_MISSED, CALLS_AVAILABILITY,
+        CLIPBOARD_TEXT, CLIPBOARD_AVAILABILITY, SHARE_LINK, SHARE_TEXT, FILES_ENDPOINT, FILES_OFFER,
+        FILES_ACCEPT, FILES_REJECT, FILES_PROGRESS, FILES_COMPLETE, FILES_RECEIVED, FILES_CANCEL,
+        FILES_FAILED, BULK_HELLO, SCREENSHOTS_AVAILABILITY, PHOTOS_LIST, PHOTOS_ITEMS,
+        PHOTOS_THUMBS, PHOTOS_FETCH, PHOTOS_AVAILABILITY, BROWSE_ROOTS_REQUEST, BROWSE_ROOTS,
+        BROWSE_LIST, BROWSE_LISTING, BROWSE_STAT, BROWSE_MKDIR, BROWSE_DELETE, BROWSE_READ,
+        BROWSE_RENAME, BROWSE_RESULT, BROWSE_AVAILABILITY,
     )
 }
