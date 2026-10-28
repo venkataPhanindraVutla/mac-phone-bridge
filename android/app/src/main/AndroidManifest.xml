@@ -14,6 +14,8 @@
     <!-- Find my phone: vibrate while ringing, and (user-granted special access) lift Do Not Disturb's Total silence. -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!-- Contacts for caller names on the Mac: asked only when "Share contacts with your Mac" is turned on. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

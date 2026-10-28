@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "FeatureStatus", targets: ["FeatureStatus"]),
         .library(name: "FeatureFind", targets: ["FeatureFind"]),
         .library(name: "FeatureNotify", targets: ["FeatureNotify"]),
+        .library(name: "FeatureContacts", targets: ["FeatureContacts"]),
         .executable(name: "am-mac-sim", targets: ["am-mac-sim"]),
     ],
     dependencies: [
@@ -37,6 +38,10 @@ let package = Package(
             name: "FeatureNotify",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
+        .target(
+            name: "FeatureContacts",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
@@ -57,6 +62,10 @@ let package = Package(
         .testTarget(
             name: "FeatureNotifyTests",
             dependencies: ["FeatureNotify", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .testTarget(
+            name: "FeatureContactsTests",
+            dependencies: ["FeatureContacts", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
     ]
 )

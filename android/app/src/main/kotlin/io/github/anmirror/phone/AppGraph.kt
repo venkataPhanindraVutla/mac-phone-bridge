@@ -1,5 +1,6 @@
 package io.github.anmirror.phone
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
@@ -16,6 +17,8 @@ import io.github.anmirror.connection.PairedMacStore
 import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.connection.TlsConnector
 import io.github.anmirror.connection.TlsIdentity
+import io.github.anmirror.feature.contacts.AndroidContactsSource
+import io.github.anmirror.feature.contacts.ContactsSync
 import io.github.anmirror.feature.notify.ActionInvoker
 import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
@@ -23,6 +26,7 @@ import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
 import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.NsdMacDiscovery
+import io.github.anmirror.phone.ui.isGranted
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.protocol.v1.ActionOutcome
 import io.github.anmirror.protocol.v1.Channel as ProtoChannel
@@ -147,6 +151,47 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendNotify(type: String, payload: MessageLite, replyTo: Long = 0): Boolean =
         notifyOpen() && manager.send(ProtoChannel.CHANNEL_NOTIFY, type, payload, replyTo)
 
+    /** Reads the address book live and sends it to the Mac; serializes its own sends. */
+    val contactsSync = ContactsSync(
+        source = AndroidContactsSource(app),
+        send = { type, payload -> sendContacts(type, payload) },
+    )
+
+    private val contactsPrefs = app.getSharedPreferences("contacts", Context.MODE_PRIVATE)
+    private val _contactsOn = MutableStateFlow(contactsPrefs.getBoolean(KEY_CONTACTS_ON, false))
+
+    /** The user's "Share contacts with your Mac" switch. Off until they turn it on. */
+    val contactsOn: StateFlow<Boolean> = _contactsOn.asStateFlow()
+
+    private val _contactsGranted = MutableStateFlow(readContactsGranted())
+
+    /** Whether READ_CONTACTS is granted (re-read on resume and after the permission prompt). */
+    val contactsGranted: StateFlow<Boolean> = _contactsGranted.asStateFlow()
+
+    fun setContactsOn(on: Boolean) {
+        contactsPrefs.edit().putBoolean(KEY_CONTACTS_ON, on).apply()
+        _contactsOn.value = on
+    }
+
+    fun refreshContactsGranted() {
+        _contactsGranted.value = readContactsGranted()
+    }
+
+    private fun readContactsGranted(): Boolean = app.isGranted(Manifest.permission.READ_CONTACTS)
+
+    /** The connected Mac shares contacts.v1. */
+    fun contactsShared(): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && "contacts.v1" in s.shared
+    }
+
+    /** The phone sends no contacts content unless the Mac shares contacts.v1, the switch is on and READ_CONTACTS is granted. */
+    fun contactsOpen(): Boolean = contactsShared() && _contactsOn.value && readContactsGranted()
+
+    /** Sends a `contacts.*` message when [contactsOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendContacts(type: String, payload: MessageLite): Boolean =
+        contactsOpen() && manager.send(ProtoChannel.CHANNEL_CONTACTS, type, payload)
+
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     /** Queues a listener event; they run one at a time, in the order the listener saw them. */
@@ -189,8 +234,9 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
+        private const val KEY_CONTACTS_ON = "share_with_mac"
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")

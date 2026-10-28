@@ -1,7 +1,9 @@
 package io.github.anmirror.phone.ui
 
+import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,6 +56,10 @@ fun HomeScreen(
     notifyOn: Boolean,
     notifyAccess: Boolean,
     onNotifyToggle: (Boolean) -> Unit,
+    contactsOn: Boolean,
+    contactsGranted: Boolean,
+    onContactsToggle: (Boolean) -> Unit,
+    onContactsPermissionResult: () -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -94,6 +100,7 @@ fun HomeScreen(
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
+        ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -198,6 +205,49 @@ private fun NotifyRow(on: Boolean, access: Boolean, onToggle: (Boolean) -> Unit)
                 onClick = { context.openNotificationAccessSettings() },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_notify_allow)) }
+        }
+    }
+}
+
+/**
+ * "Share contacts with your Mac": READ_CONTACTS is asked for only when the switch is turned on. If
+ * it was refused, the way back is the app's page in Settings.
+ */
+@Composable
+private fun ContactsRow(on: Boolean, granted: Boolean, onToggle: (Boolean) -> Unit, onPermissionResult: () -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_contacts_title)
+    val (chain, _) = rememberPermissionChain(listOf(Manifest.permission.READ_CONTACTS), onDone = onPermissionResult)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked) chain.start()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && !granted) {
+            Text(stringResource(R.string.home_contacts_needs_permission), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_contacts_allow)) }
         }
     }
 }

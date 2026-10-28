@@ -3,9 +3,14 @@ import Foundation
 import Security
 
 /// One generic-password item in the login keychain (legacy file keychain).
-struct KeychainItem: Sendable {
+public struct KeychainItem: Sendable {
     let service: String
     let account: String
+
+    public init(service: String, account: String) {
+        self.service = service
+        self.account = account
+    }
 
     private var query: [String: Any] {
         [
@@ -16,7 +21,7 @@ struct KeychainItem: Sendable {
         ]
     }
 
-    func read() throws -> Data? {
+    public func read() throws -> Data? {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -27,7 +32,7 @@ struct KeychainItem: Sendable {
         return result as? Data
     }
 
-    func write(_ data: Data) throws {
+    public func write(_ data: Data) throws {
         let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if update == errSecSuccess { return }
         guard update == errSecItemNotFound else { throw IdentityError.keychain(update) }
@@ -36,6 +41,12 @@ struct KeychainItem: Sendable {
         add[kSecAttrLabel as String] = "Android Mirroring (\(account))"
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else { throw IdentityError.keychain(status) }
+    }
+
+    /// Removes the item; nothing to do if it is not there.
+    public func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw IdentityError.keychain(status) }
     }
 }
 

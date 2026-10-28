@@ -1,6 +1,8 @@
 import AppKit
 import AMProtocol
 import ConnectionCore
+import CryptoKit
+import FeatureContacts
 import FeatureFind
 import FeatureNotify
 import FeatureStatus
@@ -13,7 +15,7 @@ import os
 @MainActor
 @Observable
 final class AppModel {
-    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1"]
+    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1"]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
 
@@ -21,6 +23,8 @@ final class AppModel {
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
     let notifications: NotificationsModel
+    /// Whether phone contacts name callers and notification titles (default on). Turning it off wipes the stores.
+    private(set) var contactsForNames: Bool = AppModel.savedContactsForNames
     private(set) var pairedPhones: [PairedPhone] = []
     /// When the current QR code expires; nil when no pairing window is open.
     private(set) var pairingDeadline: Date?
@@ -32,6 +36,10 @@ final class AppModel {
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
     @ObservationIgnored private let notificationPresenter: UserNotificationPresenter
     @ObservationIgnored private let icons: IconCache
+    /// The connected phone's contacts, loaded while it is connected and shares contacts.v1.
+    @ObservationIgnored private let contactsSlot = ContactsSlot()
+    /// The phone's last `contacts.availability`; nil until the first one of this connection.
+    @ObservationIgnored private var contactsPhoneEnabled: Bool?
     /// Everything that reaches `notifications` goes through here, so it is handled one at a time in arrival order.
     @ObservationIgnored private let notifyWork: AsyncStream<NotifyWork>.Continuation
     @ObservationIgnored private var notifyDrain: Task<Void, Never>?
@@ -39,6 +47,10 @@ final class AppModel {
     /// Held for the life of the process (the model is never deallocated).
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private static let portKey = "listenPort"
+    @ObservationIgnored private static let contactsKey = "contactsForNames"
+    private static var savedContactsForNames: Bool {
+        UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
+    }
     #if DEBUG
     private static func debugLine(_ text: String) {
         FileHandle.standardError.write(Data((text + "\n").utf8))
@@ -66,6 +78,7 @@ final class AppModel {
         let icons = IconCache(directory: caches.appendingPathComponent("io.github.anmirror.mac/notify-icons"))
         notificationPresenter = presenter
         self.icons = icons
+        let slot = contactsSlot
         notifications = NotificationsModel(
             presenter: presenter, icons: icons,
             load: { Self.loadNotifySettings(phoneID: $0) },
@@ -74,6 +87,7 @@ final class AppModel {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             },
+            nameFor: { slot.store?.name(forNumber: $0) },
             send: { type, message in
                 // Only a phone that shares notify.v1 gets notify messages.
                 guard server.activePhone?.shared.contains("notify.v1") == true else { return }
@@ -85,12 +99,17 @@ final class AppModel {
         server.onEvent = { [weak self] event in self?.handle(event) }
         server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
         let model = notifications
-        notifyDrain = Task { @MainActor in
+        notifyDrain = Task { @MainActor [weak self] in
             for await work in stream {
                 switch work {
                 case let .connected(phoneID): await model.connected(phoneID: phoneID)
                 case .disconnected: model.disconnected()
                 case let .message(envelope): _ = await NotifyRouter.route(envelope, to: model)
+                case let .contactsConnected(phoneID): await self?.contactsConnected(phoneID: phoneID)
+                case .contactsDisconnected: self?.contactsDisconnected()
+                case let .contactsMessage(envelope): await self?.contactsMessage(envelope)
+                case .contactsToggled: await self?.contactsToggled()
+                case let .contactsForget(phoneID): self?.contactsForget(phoneID: phoneID)
                 }
             }
         }
@@ -142,6 +161,17 @@ final class AppModel {
 
     /// Phone notifications are offered only while the connected phone shares `notify.v1`.
     var canNotify: Bool { server.activePhone?.shared.contains("notify.v1") ?? false }
+
+    /// How many contacts the connected phone has shared; 0 when none are loaded.
+    var contactsCount: Int { contactsSlot.store?.count ?? 0 }
+
+    /// The "Use phone contacts for caller names" switch in Settings.
+    func setContactsForNames(_ on: Bool) {
+        guard on != contactsForNames else { return }
+        contactsForNames = on
+        UserDefaults.standard.set(on, forKey: Self.contactsKey)
+        notifyWork.yield(.contactsToggled)
+    }
 
     /// The cached app icon for the Settings list.
     func appIconURL(package: String) -> URL? { icons.url(for: package) }
@@ -244,6 +274,8 @@ final class AppModel {
         case let .connected(phone, shared):
             phoneStatus.reset() // never show the previous session's values
             ring.clearHint()
+            // Contacts first, so the store is there when the phone's first notifications are shown.
+            if shared.contains("contacts.v1") { notifyWork.yield(.contactsConnected(phone.id)) }
             if shared.contains("notify.v1") { notifyWork.yield(.connected(phone.id)) }
             refreshPhones()
             #if DEBUG
@@ -253,6 +285,7 @@ final class AppModel {
             phoneStatus.reset()
             ring.reset()
             notifyWork.yield(.disconnected)
+            notifyWork.yield(.contactsDisconnected)
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
@@ -260,6 +293,8 @@ final class AppModel {
             phoneStatus.reset()
             ring.reset()
             notifyWork.yield(.disconnected)
+            notifyWork.yield(.contactsDisconnected)
+            notifyWork.yield(.contactsForget(phone.id)) // a forgotten phone leaves no contacts behind
             UserDefaults.standard.removeObject(forKey: Self.notifySettingsKey(phoneID: phone.id))
             refreshPhones()
         case let .rejected(reason):
@@ -279,6 +314,10 @@ final class AppModel {
             notifyWork.yield(.message(envelope))
             return
         }
+        if envelope.type.hasPrefix("contacts.") {
+            notifyWork.yield(.contactsMessage(envelope))
+            return
+        }
         switch envelope.type {
         case MessageType.statusUpdate.rawValue:
             if let update = try? AMStatusUpdate(serializedBytes: envelope.payload) { phoneStatus.apply(update) }
@@ -288,6 +327,87 @@ final class AppModel {
             break
         }
     }
+
+    // MARK: contacts (all run on the ordered work stream)
+
+    private func contactsConnected(phoneID: String) async {
+        contactsPhoneEnabled = nil
+        guard contactsForNames else { return }
+        await openContacts(phoneID: phoneID)
+    }
+
+    /// Loads the phone's store and asks for what it lacks.
+    private func openContacts(phoneID: String) async {
+        if contactsSlot.store == nil {
+            do {
+                let key = try ContactsKey.load(phoneID: phoneID)
+                let url = ContactsStore.fileURL(phoneID: phoneID, in: ContactsStore.defaultDirectory)
+                contactsSlot.store = ContactsStore(file: EncryptedFile(url: url, key: key))
+            } catch {
+                Self.contactsLog.error("contacts store unavailable: \(String(describing: error), privacy: .public)")
+                return
+            }
+        }
+        await requestContacts()
+    }
+
+    private func requestContacts() async {
+        guard let store = contactsSlot.store, server.activePhone?.shared.contains("contacts.v1") == true else { return }
+        var request = AMContactsSyncRequest()
+        request.sinceMs = store.syncMs
+        try? await server.send(.contactsSync, request, channel: .contacts)
+    }
+
+    private func contactsDisconnected() {
+        // Decrypted contacts stay in memory only while the phone is connected.
+        contactsSlot.store?.abandonSync()
+        contactsSlot.store = nil
+        contactsPhoneEnabled = nil
+    }
+
+    private func contactsMessage(_ envelope: AMEnvelope) async {
+        guard contactsForNames else { return }
+        switch envelope.type {
+        case MessageType.contactsBatch.rawValue:
+            guard let store = contactsSlot.store, let batch = try? AMContactsBatch(serializedBytes: envelope.payload) else { return }
+            do { try store.apply(batch) } catch {
+                Self.contactsLog.error("contacts batch not stored: \(String(describing: error), privacy: .public)")
+            }
+        case MessageType.contactsAvailability.rawValue:
+            guard let a = try? AMFeatureAvailability(serializedBytes: envelope.payload) else { return }
+            let before = contactsPhoneEnabled
+            contactsPhoneEnabled = a.enabled
+            // The user turned sharing on (or allowed the permission) on the phone mid-session: ask now.
+            if a.enabled, before == false { await requestContacts() }
+        default:
+            break
+        }
+    }
+
+    private func contactsToggled() async {
+        if contactsForNames {
+            if let phone = server.activePhone, phone.shared.contains("contacts.v1") {
+                await openContacts(phoneID: phone.phone.id)
+            }
+        } else {
+            for phone in pairedPhones { Self.removeContacts(phoneID: phone.id, store: contactsSlot.store) }
+            contactsSlot.store = nil
+        }
+    }
+
+    private func contactsForget(phoneID: String) {
+        Self.removeContacts(phoneID: phoneID, store: contactsSlot.store)
+        contactsSlot.store = nil
+    }
+
+    /// Deletes a phone's store file and its key, whether or not the store is loaded.
+    private static func removeContacts(phoneID: String, store: ContactsStore?) {
+        try? store?.wipe()
+        try? FileManager.default.removeItem(at: ContactsStore.fileURL(phoneID: phoneID, in: ContactsStore.defaultDirectory))
+        try? ContactsKey.delete(phoneID: phoneID)
+    }
+
+    private static let contactsLog = Logger(subsystem: "io.github.anmirror.mac", category: "contacts")
 
     private static func notifySettingsKey(phoneID: String) -> String { "notifySettings." + phoneID }
 
@@ -312,4 +432,16 @@ private enum NotifyWork: Sendable {
     case connected(String)
     case disconnected
     case message(AMEnvelope)
+    case contactsConnected(String)
+    case contactsDisconnected
+    case contactsMessage(AMEnvelope)
+    case contactsToggled
+    case contactsForget(String)
+}
+
+/// Holds the connected phone's contacts for the notification model's name lookup.
+@MainActor
+@Observable
+private final class ContactsSlot {
+    var store: ContactsStore?
 }

@@ -19,6 +19,17 @@ struct SettingsView: View {
                 Text(errorText).foregroundStyle(.red)
             }
             if let phone = model.currentPhone {
+                Section("Contacts") {
+                    Toggle("Use phone contacts for caller names", isOn: Binding(
+                        get: { model.contactsForNames },
+                        set: { model.setContactsForNames($0) }
+                    ))
+                    .accessibilityLabel(Text("Use phone contacts for caller names"))
+                    if model.contactsForNames, model.contactsCount > 0 {
+                        Text("\(model.contactsCount) contacts")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("Notifications") {
                     Toggle("Show phone notifications", isOn: binding(\.enabled, phone: phone))
                         .accessibilityLabel(Text("Show phone notifications"))

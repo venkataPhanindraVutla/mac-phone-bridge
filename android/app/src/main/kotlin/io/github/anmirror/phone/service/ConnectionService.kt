@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.ContactsContract
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
@@ -39,10 +43,14 @@ import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.Channel
+import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NotificationFilter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -80,6 +88,7 @@ class ConnectionService : LifecycleService() {
         ).launchIn(lifecycleScope)
         setUpFindMyPhone()
         setUpNotifications()
+        setUpContacts()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -103,6 +112,7 @@ class ConnectionService : LifecycleService() {
         running = false
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
+        stopContactsObserver()
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
@@ -209,6 +219,73 @@ class ConnectionService : LifecycleService() {
         }
     }
 
+    /**
+     * Contacts: sent only while [AppGraph.contactsOpen]; `contacts.availability` is the one message
+     * that is sent regardless, while the Mac shares contacts.v1. The Mac asks (`contacts.sync`)
+     * on connect; a ContentObserver, debounced by 5 s, pushes changes while open.
+     */
+    private fun setUpContacts() {
+        graph.manager.on(MessageType.CONTACTS_SYNC) { env ->
+            val request = ContactsSyncRequest.parseFrom(env.payload)
+            graph.scope.launch {
+                if (!graph.contactsOpen()) return@launch
+                try {
+                    graph.contactsSync.onSyncRequest(request)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) { // e.g. permission revoked between the check and the read
+                    Log.e(TAG, "contacts: sync failed", e)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "contacts.v1" in it.shared }.distinctUntilChanged(),
+                graph.contactsOn,
+                graph.contactsGranted,
+            ) { shared, on, granted -> Triple(shared, on, granted) }
+                .distinctUntilChanged()
+                .collect { (shared, on, granted) ->
+                    if (shared) {
+                        graph.manager.send(Channel.CHANNEL_CONTACTS, MessageType.CONTACTS_AVAILABILITY, featureAvailability(granted, on))
+                    }
+                    if (shared && on && granted) startContactsObserver() else stopContactsObserver()
+                }
+        }
+    }
+
+    private var contactsObserver: ContentObserver? = null
+    private var contactsDebounce: Job? = null
+
+    private fun startContactsObserver() {
+        if (contactsObserver != null) return
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                contactsDebounce?.cancel()
+                contactsDebounce = lifecycleScope.launch {
+                    delay(CONTACTS_DEBOUNCE_MS)
+                    if (!graph.contactsOpen()) return@launch
+                    try {
+                        graph.contactsSync.onChanged()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e(TAG, "contacts: push failed", e)
+                    }
+                }
+            }
+        }
+        contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, observer)
+        contactsObserver = observer
+    }
+
+    private fun stopContactsObserver() {
+        contactsObserver?.let { contentResolver.unregisterContentObserver(it) }
+        contactsObserver = null
+        contactsDebounce?.cancel()
+        contactsDebounce = null
+    }
+
     private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?, pairing: Boolean) {
         Log.i(TAG, "state: ${state.describe()}")
         if (state == PhoneConnectionState.NotPaired) {
@@ -282,6 +359,7 @@ class ConnectionService : LifecycleService() {
 
     companion object {
         const val CHANNEL_ID = "connection"
+        private const val CONTACTS_DEBOUNCE_MS = 5_000L
         const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
 
         private val _ringing = MutableStateFlow(false)

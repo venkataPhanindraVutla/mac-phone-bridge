@@ -33,6 +33,8 @@ targets:
         product: FeatureFind
       - package: AMKit
         product: FeatureNotify
+      - package: AMKit
+        product: FeatureContacts
     settings:
       base:
         PRODUCT_NAME: Android Mirroring
