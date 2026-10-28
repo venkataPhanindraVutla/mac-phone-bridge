@@ -107,8 +107,17 @@ class AppGraph private constructor(context: Context) {
     /** Whether the user has granted notification access (re-read on resume and by the listener). */
     val notifyAccess: StateFlow<Boolean> = _notifyAccess.asStateFlow()
 
-    /** True once this session's first `notify.filter` has been applied (controller ruling R7). Touched only by the ordered event queue. */
-    var notifyFilterApplied = false
+    /** This connection's handshake state (R7). Used only from the ordered event queue. */
+    val notifySession = NotifySession { notifyBridge.onConnected() }
+
+    private val _listenerBound = MutableStateFlow(false)
+
+    /** True while the notification listener service is bound, i.e. while the active list is readable. */
+    val listenerBound: StateFlow<Boolean> = _listenerBound.asStateFlow()
+
+    fun setListenerBound(bound: Boolean) {
+        _listenerBound.value = bound
+    }
 
     fun setNotifyOn(on: Boolean) {
         notifyPrefs.edit().putBoolean(KEY_NOTIFY_ON, on).apply()
@@ -119,19 +128,20 @@ class AppGraph private constructor(context: Context) {
         _notifyAccess.value = readNotifyAccess()
     }
 
-    /** The listener knows first: it is bound only while access is granted. */
-    fun setNotifyAccess(granted: Boolean) {
-        _notifyAccess.value = granted
-    }
-
     private fun readNotifyAccess(): Boolean =
         NotificationManagerCompat.getEnabledListenerPackages(app).contains(app.packageName)
 
-    /** The phone sends no `notify.*` content unless the Mac shares notify.v1, the switch is on and access is granted. */
-    fun notifyOpen(): Boolean {
+    /** The connected Mac shares notify.v1. */
+    fun notifyShared(): Boolean {
         val s = manager.state.value
-        return s is PhoneConnectionState.Connected && "notify.v1" in s.shared && _notifyOn.value && _notifyAccess.value
+        return s is PhoneConnectionState.Connected && "notify.v1" in s.shared
     }
+
+    /**
+     * The phone sends no `notify.*` content unless the Mac shares notify.v1, the switch is on,
+     * access is granted and the listener is bound (without it there is nothing to read or act on).
+     */
+    fun notifyOpen(): Boolean = notifyShared() && _notifyOn.value && _notifyAccess.value && _listenerBound.value
 
     /** Sends a `notify.*` message when [notifyOpen]; false (and nothing sent) otherwise. */
     suspend fun sendNotify(type: String, payload: MessageLite, replyTo: Long = 0): Boolean =

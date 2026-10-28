@@ -23,6 +23,7 @@ import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
+import io.github.anmirror.phone.answerInvoke
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
@@ -155,10 +156,7 @@ class ConnectionService : LifecycleService() {
             graph.postNotifyEvent {
                 bridge.onFilter(filter)
                 // The Mac sends a filter right after connecting (SPEC 10): the first one starts the session.
-                if (!graph.notifyFilterApplied) {
-                    graph.notifyFilterApplied = true
-                    bridge.onConnected()
-                }
+                graph.notifySession.filterApplied(graph.listenerBound.value)
             }
         }
         graph.manager.on(MessageType.NOTIFY_DISMISS) { env ->
@@ -172,11 +170,15 @@ class ConnectionService : LifecycleService() {
         graph.manager.on(MessageType.NOTIFY_INVOKE) { env ->
             val invoke = InvokeAction.parseFrom(env.payload)
             graph.postNotifyEvent {
-                // Exactly one result per invoke, answering this envelope.
-                if (graph.notifyOpen()) {
-                    val result = bridge.onInvoke(env.id, invoke)
-                    graph.sendNotify(MessageType.NOTIFY_RESULT, result, replyTo = env.id)
-                }
+                // Exactly one result per invoke, answering this envelope; FAILED while the feature is closed.
+                val result = answerInvoke(invoke.key, graph.notifyShared(), graph.notifyOpen()) { bridge.onInvoke(env.id, invoke) }
+                if (result != null) graph.manager.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_RESULT, result, env.id)
+            }
+        }
+        // The listener binding mid-session (boot, restart, access re-granted): catch the Mac up.
+        lifecycleScope.launch {
+            graph.listenerBound.collect { bound ->
+                if (bound) graph.postNotifyEvent { graph.notifySession.listenerBound() }
             }
         }
         lifecycleScope.launch {
@@ -190,17 +192,17 @@ class ConnectionService : LifecycleService() {
                     if (!connected) {
                         lastNotifyEnabled = null
                         graph.postNotifyEvent {
-                            graph.notifyFilterApplied = false
+                            graph.notifySession.reset()
                             bridge.onDisconnected()
                         }
                         return@collect
                     }
                     val availability = featureAvailability(granted = access, userOn = on)
-                    if (lastNotifyEnabled == null) graph.postNotifyEvent { graph.notifyFilterApplied = false }
+                    if (lastNotifyEnabled == null) graph.postNotifyEvent { graph.notifySession.reset() }
                     graph.manager.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_AVAILABILITY, availability)
                     // Switched on (or access granted) mid-session: catch the Mac up.
                     if (availability.enabled && lastNotifyEnabled == false) {
-                        graph.postNotifyEvent { if (graph.notifyFilterApplied) bridge.onConnected() }
+                        graph.postNotifyEvent { graph.notifySession.enabled(graph.listenerBound.value) }
                     }
                     lastNotifyEnabled = availability.enabled
                 }

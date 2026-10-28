@@ -40,6 +40,12 @@ struct AndroidMirroringApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var model = AppModel()
 
+    /// The notification centre's delegate must be set before launch finishes, or a click that
+    /// relaunched the app is lost: creating the model creates the presenter that sets it.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        _ = model
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
