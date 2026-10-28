@@ -1,0 +1,60 @@
+// Calls channel: call state and control. See protocol/SPEC.md section 12.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum CallPhase {
+  CALL_PHASE_UNSPECIFIED = 0;
+  CALL_PHASE_RINGING = 1;
+  CALL_PHASE_ACTIVE = 2;
+  CALL_PHASE_ENDED = 3;
+}
+
+message CallState {
+  string call_id = 1;
+  CallPhase phase = 2;
+  string number = 3;
+  string display_name = 4;
+  bool muted = 5;
+  bool mute_supported = 6;
+  bool can_answer = 7;
+  int64 since_ms = 8;
+  bool incoming = 9;
+}
+
+enum CallAction {
+  CALL_ACTION_UNSPECIFIED = 0;
+  CALL_ACTION_ANSWER = 1;
+  CALL_ACTION_DECLINE = 2;
+  CALL_ACTION_HANG_UP = 3;
+  CALL_ACTION_MUTE = 4;
+  CALL_ACTION_UNMUTE = 5;
+}
+
+message CallCommand {
+  string call_id = 1;
+  CallAction action = 2;
+}
+
+enum CallCommandOutcome {
+  CALL_COMMAND_OUTCOME_UNSPECIFIED = 0;
+  CALL_COMMAND_OUTCOME_OK = 1;
+  CALL_COMMAND_OUTCOME_NO_SUCH_CALL = 2;
+  CALL_COMMAND_OUTCOME_NOT_ALLOWED = 3;
+  CALL_COMMAND_OUTCOME_FAILED = 4;
+}
+
+message CallCommandResult {
+  string call_id = 1;
+  CallCommandOutcome outcome = 2;
+}
+
+message MissedCall {
+  string number = 1;
+  string display_name = 2;
+  int64 at_ms = 3;
+}

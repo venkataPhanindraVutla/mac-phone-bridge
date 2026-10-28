@@ -9,6 +9,7 @@
 //   EVENT connected shared=<a,b>
 //   EVENT ring
 //   EVENT stop
+//   EVENT notify-invoke key=<key> action=<n> reply=<text>   (with --notify; the process then exits 0)
 //   EVENT unpaired <mac-id>
 //   EVENT disconnected <reason>
 //   EVENT failed <reason>
@@ -35,7 +36,9 @@ import io.github.anmirror.protocol.PairingUri
 import io.github.anmirror.protocol.PairingUriException
 import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.Hello
+import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NetworkKind
+import io.github.anmirror.protocol.v1.PhoneNotification
 import io.github.anmirror.protocol.v1.RingState
 import io.github.anmirror.protocol.v1.SetupLevel
 import io.github.anmirror.protocol.v1.StatusUpdate
@@ -46,11 +49,12 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.channels.Channel as KChannel
 
 private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> --state-dir <dir> [--auto-confirm]
-                      [--status <battery>,<charging>,<signal>,<network>] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [common options]
        phone-sim connect --state-dir <dir> --identity <p12>
-                      [--status <battery>,<charging>,<signal>,<network>] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [common options]
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
+  --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 
 private val CAPABILITIES = listOf("find.v1", "status.v1")
@@ -80,6 +84,7 @@ private class Options(
     val stateDir: String,
     val autoConfirm: Boolean,
     val status: StatusUpdate?,
+    val notify: Boolean,
     val name: String,
     val model: String,
 )
@@ -119,6 +124,7 @@ private fun parse(args: Array<String>): Options {
     var stateDir: String? = null
     var autoConfirm = false
     var status: StatusUpdate? = null
+    var notify = false
     var name = "phone-sim"
     var model = "phone-sim"
     var i = 1
@@ -131,6 +137,7 @@ private fun parse(args: Array<String>): Options {
             "--state-dir" -> stateDir = value(arg)
             "--auto-confirm" -> autoConfirm = true
             "--status" -> status = parseStatus(value(arg))
+            "--notify" -> notify = true
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
             "-h", "--help" -> {
@@ -147,7 +154,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, name, model,
+        autoConfirm, status, notify, name, model,
     )
 }
 
@@ -178,7 +185,7 @@ fun main(args: Array<String>) {
     val hello = Hello.newBuilder()
         .setProtocolVersion(PROTOCOL_VERSION)
         .setAppVersion("0.1.0-sim")
-        .addAllCapabilities(CAPABILITIES)
+        .addAllCapabilities(if (options.notify) (CAPABILITIES + "notify.v1").sorted() else CAPABILITIES)
         .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
         .setDeviceName(options.name)
         .setDeviceModel(options.model)
@@ -234,7 +241,7 @@ fun main(args: Array<String>) {
                 mac to channel
             }
         }
-        val end = session(mac, channel, hello, options.status, store)
+        val end = session(mac, channel, hello, options.status, options.notify, store)
         if (end == SessionEnd.UNPAIRED) {
             store.remove(mac.id)
             emit("EVENT unpaired ${mac.id}")
@@ -245,12 +252,24 @@ fun main(args: Array<String>) {
     exitProcess(0)
 }
 
+private const val SAMPLE_KEY = "0|com.whatsapp|1|null|10123"
+
+/** The `notify_posted_minimal` vector from protocol/vectors/framing.json. */
+private fun sampleNotification(): PhoneNotification = PhoneNotification.newBuilder()
+    .setKey(SAMPLE_KEY)
+    .setPackage("com.whatsapp")
+    .setTitle("Ana")
+    .setText("hi \uD83D\uDC4B")
+    .setAlert(true)
+    .build()
+
 /** Hello, optional status, then answers find.ring/find.stop until the connection ends. */
 private suspend fun session(
     mac: PairedMac,
     channel: ControlChannel,
     hello: Hello,
     status: StatusUpdate?,
+    notify: Boolean,
     store: JsonFilePairedMacStore,
 ): SessionEnd {
     val shared = when (val r = exchangeHello(channel, hello)) {
@@ -263,8 +282,22 @@ private suspend fun session(
     if (status != null && "status.v1" in shared) {
         channel.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, status)
     }
+    if (notify && "notify.v1" in shared) {
+        // Success is the Mac's invoke; give up after 10 s.
+        thread(isDaemon = true, name = "phone-sim-notify-timeout") {
+            Thread.sleep(10_000)
+            failed("NO_INVOKE")
+        }
+        channel.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_POSTED, sampleNotification())
+    }
     return PhoneSession(channel, shared).run { env ->
         when (env.type) {
+            MessageType.NOTIFY_INVOKE -> {
+                val i = InvokeAction.parseFrom(env.payload)
+                emit("EVENT notify-invoke key=${i.key} action=${i.actionIndex} reply=${i.replyText}")
+                if (i.key == SAMPLE_KEY && i.actionIndex == 0 && i.replyText == "hi") exitProcess(0)
+                failed("BAD_INVOKE")
+            }
             MessageType.FIND_RING -> {
                 if ("find.v1" in shared) {
                     channel.send(Channel.CHANNEL_FIND, MessageType.FIND_STATE, RingState.newBuilder().setRinging(true).build(), env.id)

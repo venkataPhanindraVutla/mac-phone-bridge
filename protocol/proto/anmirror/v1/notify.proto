@@ -1,0 +1,65 @@
+// Notifications channel: phone notifications mirrored to the Mac. See protocol/SPEC.md section 10.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message NotificationAction {
+  uint32 index = 1;
+  string title = 2;
+  bool is_reply = 3;
+  string reply_hint = 4;
+}
+
+message PhoneNotification {
+  string key = 1;
+  string package = 2;
+  string app_name = 3;
+  string title = 4;
+  string text = 5;
+  string sub_text = 6;
+  int64 posted_at_ms = 7;
+  repeated NotificationAction actions = 8;
+  bytes image_jpeg = 9;
+  bool alert = 10;
+  bool clearable = 11;
+}
+
+message NotificationRemoved { string key = 1; }
+
+message ActiveNotifications { repeated string keys = 1; }
+
+message DismissNotification { string key = 1; }
+
+message InvokeAction {
+  string key = 1;
+  uint32 action_index = 2;
+  string reply_text = 3;
+}
+
+enum ActionOutcome {
+  ACTION_OUTCOME_UNSPECIFIED = 0;
+  ACTION_OUTCOME_OK = 1;
+  ACTION_OUTCOME_GONE = 2;
+  ACTION_OUTCOME_FAILED = 3;
+}
+
+message ActionResult {
+  string key = 1;
+  ActionOutcome outcome = 2;
+}
+
+message NotificationFilter {
+  bool enabled = 1;
+  repeated string muted_packages = 2;
+}
+
+message IconRequest { string package = 1; }
+
+message AppIcon {
+  string package = 1;
+  bytes png = 2;
+}

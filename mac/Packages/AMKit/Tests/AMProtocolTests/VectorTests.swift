@@ -214,10 +214,42 @@ private struct URIFile: Decodable {
     #expect(throws: ProtocolError.malformed) { try dec.next() }
 }
 
+@Test func notifyPostedVectorDecodesToPhoneNotification() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "notify_posted_minimal" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .notify)
+    #expect(env.type == MessageType.notifyPosted.rawValue)
+    let n = try AMPhoneNotification(serializedBytes: env.payload)
+    #expect(n.key == "0|com.whatsapp|1|null|10123")
+    #expect(n.package == "com.whatsapp")
+    #expect(n.title == "Ana")
+    #expect(n.text == "hi \u{1F44B}")
+    #expect(n.alert)
+    #expect(n.actions.isEmpty)
+    #expect(try n.serializedData() == env.payload)
+}
+
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 13)
+    #expect(MessageType.allCases.count == 31)
+    let expected: [MessageType: String] = [
+        .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
+        .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
+        .notifyInvoke: "notify.invoke", .notifyResult: "notify.result",
+        .notifyFilter: "notify.filter", .notifyIconRequest: "notify.icon_request",
+        .notifyIcon: "notify.icon", .notifyAvailability: "notify.availability",
+        .contactsSync: "contacts.sync", .contactsBatch: "contacts.batch",
+        .contactsAvailability: "contacts.availability",
+        .callsState: "calls.state", .callsCommand: "calls.command",
+        .callsResult: "calls.result", .callsMissed: "calls.missed",
+        .callsAvailability: "calls.availability",
+    ]
+    for (type, raw) in expected { #expect(type.rawValue == raw) }
+    #expect(AMChannel.notify.rawValue == 5)
+    #expect(AMChannel.contacts.rawValue == 6)
+    #expect(AMChannel.calls.rawValue == 7)
 }
 
 @Test func envelopeInitSerializesPayload() throws {

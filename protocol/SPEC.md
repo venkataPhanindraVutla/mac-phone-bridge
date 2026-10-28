@@ -82,6 +82,24 @@ message Envelope {
 | `status.update` | phone to Mac | `StatusUpdate` | STATUS |
 | `find.ring` / `find.stop` | Mac to phone | `RingRequest` / `StopRingRequest` | FIND |
 | `find.state` | phone to Mac | `RingState` | FIND |
+| `notify.posted` | phone to Mac | `PhoneNotification` | NOTIFY |
+| `notify.removed` | phone to Mac | `NotificationRemoved` | NOTIFY |
+| `notify.snapshot` | phone to Mac | `ActiveNotifications` | NOTIFY |
+| `notify.dismiss` | Mac to phone | `DismissNotification` | NOTIFY |
+| `notify.invoke` | Mac to phone | `InvokeAction` | NOTIFY |
+| `notify.result` | phone to Mac (`reply_to` = invoke id) | `ActionResult` | NOTIFY |
+| `notify.filter` | Mac to phone | `NotificationFilter` | NOTIFY |
+| `notify.icon_request` | Mac to phone | `IconRequest` | NOTIFY |
+| `notify.icon` | phone to Mac | `AppIcon` | NOTIFY |
+| `notify.availability` | phone to Mac | `FeatureAvailability` | NOTIFY |
+| `contacts.sync` | Mac to phone | `ContactsSyncRequest` | CONTACTS |
+| `contacts.batch` | phone to Mac | `ContactsBatch` | CONTACTS |
+| `contacts.availability` | phone to Mac | `FeatureAvailability` | CONTACTS |
+| `calls.state` | phone to Mac | `CallState` | CALLS |
+| `calls.command` | Mac to phone | `CallCommand` | CALLS |
+| `calls.result` | phone to Mac (`reply_to` = command id) | `CallCommandResult` | CALLS |
+| `calls.missed` | phone to Mac | `MissedCall` | CALLS |
+| `calls.availability` | phone to Mac | `FeatureAvailability` | CALLS |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -90,7 +108,8 @@ encoded, so `0` and `-1` stay distinct.
 ### Capabilities
 
 `Hello.capabilities` lists feature strings the sender supports. Version 0.1 defines
-`status.v1` and `find.v1`. A side MUST NOT send messages of a feature the peer did not list.
+`status.v1` and `find.v1`. Version 0.2 adds `notify.v1`, `contacts.v1` and `calls.v1`
+(sections 10 to 12). A side MUST NOT send messages of a feature the peer did not list.
 
 `Hello.protocol_version` is the integer **1**. If versions differ, the receiver answers
 `system.error` with `ERROR_CODE_PROTOCOL_MISMATCH` and closes.
@@ -243,3 +262,54 @@ sender closes the connection. Framing errors (section 2) close the connection wi
   `test`). **Re-running it creates new keys, which changes the fingerprints**, so the vectors
   must be regenerated and every implementation's tests re-run. The identities are for tests
   only and never ship in any app.
+
+## 10. Notifications (`notify.v1`)
+
+Channel `NOTIFY`. Messages are listed in section 3.
+
+- `PhoneNotification.key` is the Android `StatusBarNotification.key`. The Mac replaces its
+  notification by key.
+- `alert = false` means "update silently": the Mac refreshes the content without alerting.
+- On connect, the phone sends each still-active, eligible notification that this Mac has not
+  received during this phone process, then one `notify.snapshot` listing every active key.
+  The Mac removes any notification it shows whose key is not in the snapshot.
+- A failed `notify.invoke` is answered by `notify.result` with `reply_to` set to the invoke's
+  `id` and an `ActionOutcome` (`OK`, `GONE` or `FAILED`). The Mac does not retry.
+- `notify.filter` is sent by the Mac after every connect and on every settings change. The
+  phone sends nothing for muted packages, or for anything at all when `enabled = false`.
+- Icons go request to response (`notify.icon_request`, `notify.icon`), once per package per
+  Mac cache.
+- `notify.availability` reports whether the feature works on the phone: `enabled` and, when
+  not, a `reason` (`OFF_BY_USER` or `NEEDS_PERMISSION`). It is sent on connect and on change.
+- Wire limits:
+  - `image_jpeg`: long edge at most 720 px, at most 300 KB; dropped if it does not fit.
+  - `AppIcon.png`: 96x96, at most 32 KB.
+  - `title` at most 256 bytes, `text` at most 4,096 bytes, `sub_text` at most 256 bytes, each
+    cut at a UTF-8 character boundary with "…" appended when cut.
+
+## 11. Contacts (`contacts.v1`)
+
+Channel `CONTACTS`.
+
+- `ContactsSyncRequest.since_ms` is the phone's `CONTACT_LAST_UPDATED_TIMESTAMP` high-water
+  mark, taken from the `sync_ms` of the last batch the Mac received; `0` asks for a full sync.
+- Batches hold at most 200 contacts. A `full = true` sequence replaces the Mac's whole store
+  when the batch with `last = true` arrives; until then the old store stays in use.
+- While connected, the phone pushes `full = false` batches on change, debounced by 5 s.
+  `deleted_ids` lists removed contacts.
+- `contacts.availability` is as in section 10.
+
+## 12. Calls (`calls.v1`)
+
+Channel `CALLS`.
+
+- `CallState.call_id` is a random UUID per call, made by the phone.
+- `calls.state` is sent on every phase or mute change, and on connect if a call is in
+  progress. `ENDED` is sent once per call.
+- `can_answer` is true only when the phone can answer that call; `mute_supported` says whether
+  muting works.
+- `calls.command` is answered by `calls.result` with `reply_to` set to the command's `id`.
+  A command for a call that is not (or no longer) in progress gets `NO_SUCH_CALL`.
+- `calls.missed` is sent when a call rang, was never answered, and was not declined through
+  `calls.command` (confirmed with the call log, type `MISSED`, where available).
+- `calls.availability` is as in section 10.

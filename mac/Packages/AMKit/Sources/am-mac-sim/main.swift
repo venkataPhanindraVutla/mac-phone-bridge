@@ -10,6 +10,7 @@
 //   EVENT connected <phone-id> shared=<a,b>
 //   EVENT status battery=<n> charging=<true|false> signal=<n> network=<kind>
 //   EVENT ring-state ringing=<true|false> silent=<true|false>
+//   EVENT notify-posted key=<key> title=<title> text=<text> alert=<true|false>
 //   EVENT rejected <reason>
 //   EVENT disconnected <phone-id>
 //   EVENT unpaired <phone-id>
@@ -24,7 +25,7 @@ setvbuf(stdout, nil, _IOLBF, 0)
 
 let usage = """
     usage: am-mac-sim --identity <p12> --state-dir <dir> [--port <n|0>] [--password <pw>]
-                      [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--no-bonjour]
+                      [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--echo-notify] [--no-bonjour]
     """
 
 struct Options {
@@ -35,6 +36,7 @@ struct Options {
     var name = "am-mac-sim"
     var autoConfirm = false
     var ringAfterConnect = false
+    var echoNotify = false
     var bonjour = true
 }
 
@@ -61,6 +63,7 @@ func parse(_ args: [String]) -> Options {
         case "--name": o.name = value(arg)
         case "--auto-confirm": o.autoConfirm = true
         case "--ring-after-connect": o.ringAfterConnect = true
+        case "--echo-notify": o.echoNotify = true
         case "--no-bonjour": o.bonjour = false
         case "-h", "--help":
             print(usage)
@@ -187,7 +190,7 @@ let server = MacServer(
     secrets: FileSecretStore(directory: stateDir),
     macName: options.name,
     appVersion: "0.1.0-sim",
-    capabilities: ["status.v1", "find.v1"],
+    capabilities: options.echoNotify ? ["status.v1", "find.v1", "notify.v1"] : ["status.v1", "find.v1"],
     advertise: options.bonjour
 )
 
@@ -231,6 +234,16 @@ server.onMessage = { envelope in
     case MessageType.findState.rawValue:
         guard let r = try? AMRingState(serializedBytes: envelope.payload) else { return }
         emit("EVENT ring-state ringing=\(r.ringing) silent=\(r.mayBeSilent)")
+    case MessageType.notifyPosted.rawValue:
+        guard let n = try? AMPhoneNotification(serializedBytes: envelope.payload) else { return }
+        emit("EVENT notify-posted key=\(n.key) title=\(n.title) text=\(n.text) alert=\(n.alert)")
+        if options.echoNotify {
+            var invoke = AMInvokeAction()
+            invoke.key = n.key
+            invoke.actionIndex = 0
+            invoke.replyText = "hi"
+            Task { try? await server.send(.notifyInvoke, invoke, channel: .notify) }
+        }
     default:
         break
     }

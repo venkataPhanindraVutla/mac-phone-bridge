@@ -30,7 +30,8 @@ SAS_LABEL = b"anmirror-sas-v1"
 RID_LABEL = b"anmirror-rid-v1"
 RID_EPOCH_SECONDS = 900
 
-CHANNELS = {"SYSTEM": 1, "PAIRING": 2, "STATUS": 3, "FIND": 4}
+CHANNELS = {"SYSTEM": 1, "PAIRING": 2, "STATUS": 3, "FIND": 4,
+            "NOTIFY": 5, "CONTACTS": 6, "CALLS": 7}
 
 
 # ---------------------------------------------------------------- protobuf encoding
@@ -256,6 +257,9 @@ def build_framing() -> dict:
         ("find_ring", CHANNELS["FIND"], 6, 0, "find.ring", b""),
         ("find_state_reply", CHANNELS["FIND"], 7, 6, "find.state",
          f_varint(1, 1) + f_varint(2, 1)),
+        ("notify_posted_minimal", CHANNELS["NOTIFY"], 1, 0, "notify.posted",
+         f_string(1, "0|com.whatsapp|1|null|10123") + f_string(2, "com.whatsapp")
+         + f_string(4, "Ana") + f_string(5, "hi \U0001F44B") + f_varint(10, 1)),
         ("large_ids_multibyte_varint", CHANNELS["STATUS"], 300, 16384, "status.update",
          f_varint(1, 100)),
         ("unicode_type_and_payload_bytes", CHANNELS["SYSTEM"], 1, 0, "system.pongé",

@@ -215,6 +215,18 @@ case5() {
   [[ "$EXIT_CODE" -eq 1 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 1"; return 1; }
 }
 
+case6() {
+  begin_case "6 notify (post, invoke with reply)"
+  local pstate; pstate="$(new_dir c6-phone)"
+  start_mac c6 --auto-confirm --echo-notify || return 1
+  start_phone c6 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --notify
+  need "$PHONE_LOG" '^EVENT connected shared=find\.v1,notify\.v1,status\.v1$' "phone EVENT connected shared=find.v1,notify.v1,status.v1" || return 1
+  need "$MAC_LOG" '^EVENT notify-posted key=0\|com\.whatsapp\|1\|null\|10123 title=Ana text=hi .* alert=true$' "mac EVENT notify-posted for the vector's notification" || return 1
+  need "$PHONE_LOG" '^EVENT notify-invoke key=0\|com\.whatsapp\|1\|null\|10123 action=0 reply=hi$' "phone EVENT notify-invoke action=0 reply=hi" || return 1
+  wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit"; return 1; }
+  [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
+}
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -226,10 +238,11 @@ run_case case2
 run_case case3
 run_case case4
 run_case case5
+run_case case6
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 5 cases passed"
+  echo "interop: all 6 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1

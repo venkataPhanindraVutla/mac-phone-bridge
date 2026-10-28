@@ -1,0 +1,31 @@
+// Contacts channel: read-only contact sync to the Mac. See protocol/SPEC.md section 11.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message ContactPhone {
+  string number = 1;
+  string label = 2;
+}
+
+message Contact {
+  string id = 1;
+  string display_name = 2;
+  repeated ContactPhone phones = 3;
+}
+
+message ContactsSyncRequest {
+  int64 since_ms = 1;  // 0 = full sync
+}
+
+message ContactsBatch {
+  repeated Contact upserts = 1;
+  repeated string deleted_ids = 2;
+  bool full = 3;
+  bool last = 4;
+  int64 sync_ms = 5;
+}

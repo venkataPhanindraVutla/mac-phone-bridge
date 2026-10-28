@@ -13,6 +13,9 @@ enum Channel {
   CHANNEL_PAIRING = 2;
   CHANNEL_STATUS = 3;
   CHANNEL_FIND = 4;
+  CHANNEL_NOTIFY = 5;
+  CHANNEL_CONTACTS = 6;
+  CHANNEL_CALLS = 7;
 }
 
 message Envelope {

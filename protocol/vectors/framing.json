@@ -123,6 +123,17 @@
       "frame_hex": "00000018080410071806220a66696e642e73746174652a0408011001"
     },
     {
+      "name": "notify_posted_minimal",
+      "envelope": {
+        "channel": 5,
+        "id": 1,
+        "reply_to": 0,
+        "type": "notify.posted",
+        "payload_hex": "0a1b307c636f6d2e77686174736170707c317c6e756c6c7c3130313233120c636f6d2e77686174736170702203416e612a07686920f09f918b5001"
+      },
+      "frame_hex": "0000005008051001220d6e6f746966792e706f737465642a3b0a1b307c636f6d2e77686174736170707c317c6e756c6c7c3130313233120c636f6d2e77686174736170702203416e612a07686920f09f918b5001"
+    },
+    {
       "name": "large_ids_multibyte_varint",
       "envelope": {
         "channel": 3,

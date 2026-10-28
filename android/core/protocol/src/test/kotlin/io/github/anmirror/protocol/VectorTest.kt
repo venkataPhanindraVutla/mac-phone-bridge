@@ -121,9 +121,46 @@ class VectorTest {
     }
 
     @Test
+    fun notifyPostedVectorDecodesToPhoneNotification() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "notify_posted_minimal" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_NOTIFY, env.channel)
+        assertEquals(MessageType.NOTIFY_POSTED, env.type)
+        val n = io.github.anmirror.protocol.v1.PhoneNotification.parseFrom(env.payload)
+        assertEquals("0|com.whatsapp|1|null|10123", n.key)
+        assertEquals("com.whatsapp", n.`package`)
+        assertEquals("Ana", n.title)
+        assertEquals("hi \uD83D\uDC4B", n.text)
+        assertTrue(n.alert)
+        assertEquals(0, n.actionsCount)
+        assertEquals(env.payload, n.toByteString())
+    }
+
+    @Test
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
+        assertEquals(31, MessageType.ALL.size)
+        assertEquals(31, MessageType.ALL.toSet().size)
+        val expected = mapOf(
+            MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
+            MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",
+            MessageType.NOTIFY_INVOKE to "notify.invoke", MessageType.NOTIFY_RESULT to "notify.result",
+            MessageType.NOTIFY_FILTER to "notify.filter", MessageType.NOTIFY_ICON_REQUEST to "notify.icon_request",
+            MessageType.NOTIFY_ICON to "notify.icon", MessageType.NOTIFY_AVAILABILITY to "notify.availability",
+            MessageType.CONTACTS_SYNC to "contacts.sync", MessageType.CONTACTS_BATCH to "contacts.batch",
+            MessageType.CONTACTS_AVAILABILITY to "contacts.availability",
+            MessageType.CALLS_STATE to "calls.state", MessageType.CALLS_COMMAND to "calls.command",
+            MessageType.CALLS_RESULT to "calls.result", MessageType.CALLS_MISSED to "calls.missed",
+            MessageType.CALLS_AVAILABILITY to "calls.availability",
+        )
+        for ((const, raw) in expected) {
+            assertEquals(raw, const)
+            assertTrue(raw in MessageType.ALL, raw)
+        }
+        assertEquals(5, Channel.CHANNEL_NOTIFY_VALUE)
+        assertEquals(6, Channel.CHANNEL_CONTACTS_VALUE)
+        assertEquals(7, Channel.CHANNEL_CALLS_VALUE)
         val env = envelope(Channel.CHANNEL_FIND, 6, MessageType.FIND_RING, RingRequest.getDefaultInstance())
         assertEquals("find.ring", env.type)
         assertEquals(Channel.CHANNEL_FIND, env.channel)

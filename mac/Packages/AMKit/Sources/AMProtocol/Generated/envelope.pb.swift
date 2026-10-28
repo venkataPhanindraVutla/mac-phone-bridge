@@ -34,6 +34,9 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
   case pairing // = 2
   case status // = 3
   case find // = 4
+  case notify // = 5
+  case contacts // = 6
+  case calls // = 7
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -47,6 +50,9 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 2: self = .pairing
     case 3: self = .status
     case 4: self = .find
+    case 5: self = .notify
+    case 6: self = .contacts
+    case 7: self = .calls
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -58,6 +64,9 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .pairing: return 2
     case .status: return 3
     case .find: return 4
+    case .notify: return 5
+    case .contacts: return 6
+    case .calls: return 7
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -69,6 +78,9 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     .pairing,
     .status,
     .find,
+    .notify,
+    .contacts,
+    .calls,
   ]
 
 }
@@ -102,7 +114,7 @@ public nonisolated struct AMEnvelope: Sendable {
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
 
 nonisolated extension AMChannel: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0\u{1}CHANNEL_NOTIFY\0\u{1}CHANNEL_CONTACTS\0\u{1}CHANNEL_CALLS\0")
 }
 
 nonisolated extension AMEnvelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

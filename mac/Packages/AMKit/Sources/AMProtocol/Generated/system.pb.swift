@@ -156,6 +156,44 @@ public nonisolated enum AMGoodbyeReason: SwiftProtobuf.Enum, Swift.CaseIterable 
 
 }
 
+public nonisolated enum AMAvailabilityReason: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case unspecified // = 0
+  case offByUser // = 1
+  case needsPermission // = 2
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .unspecified
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .unspecified
+    case 1: self = .offByUser
+    case 2: self = .needsPermission
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .unspecified: return 0
+    case .offByUser: return 1
+    case .needsPermission: return 2
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [AMAvailabilityReason] = [
+    .unspecified,
+    .offByUser,
+    .needsPermission,
+  ]
+
+}
+
 public nonisolated struct AMHello: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -224,6 +262,21 @@ public nonisolated struct AMGoodbye: Sendable {
   public init() {}
 }
 
+/// Whether a feature works on the phone right now (notify/contacts/calls availability messages).
+public nonisolated struct AMFeatureAvailability: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var enabled: Bool = false
+
+  public var reason: AMAvailabilityReason = .unspecified
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
@@ -238,6 +291,10 @@ nonisolated extension AMErrorCode: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension AMGoodbyeReason: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0GOODBYE_REASON_UNSPECIFIED\0\u{1}GOODBYE_REASON_UNPAIRED\0\u{1}GOODBYE_REASON_SWITCHING_MAC\0\u{1}GOODBYE_REASON_SHUTDOWN\0")
+}
+
+nonisolated extension AMAvailabilityReason: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AVAILABILITY_REASON_UNSPECIFIED\0\u{1}AVAILABILITY_REASON_OFF_BY_USER\0\u{1}AVAILABILITY_REASON_NEEDS_PERMISSION\0")
 }
 
 nonisolated extension AMHello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -392,6 +449,41 @@ nonisolated extension AMGoodbye: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
   }
 
   public static func ==(lhs: AMGoodbye, rhs: AMGoodbye) -> Bool {
+    if lhs.reason != rhs.reason {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension AMFeatureAvailability: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".FeatureAvailability"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}enabled\0\u{1}reason\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.enabled) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.reason) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.enabled != false {
+      try visitor.visitSingularBoolField(value: self.enabled, fieldNumber: 1)
+    }
+    if self.reason != .unspecified {
+      try visitor.visitSingularEnumField(value: self.reason, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: AMFeatureAvailability, rhs: AMFeatureAvailability) -> Bool {
+    if lhs.enabled != rhs.enabled {return false}
     if lhs.reason != rhs.reason {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
