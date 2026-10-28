@@ -273,8 +273,9 @@ Channel `NOTIFY`. Messages are listed in section 3.
 - On connect, the phone sends each still-active, eligible notification that this Mac has not
   received during this phone process, then one `notify.snapshot` listing every active key.
   The Mac removes any notification it shows whose key is not in the snapshot.
-- A failed `notify.invoke` is answered by `notify.result` with `reply_to` set to the invoke's
-  `id` and an `ActionOutcome` (`OK`, `GONE` or `FAILED`). The Mac does not retry.
+- Every `notify.invoke` is answered by one `notify.result`: `OK` on success, `GONE` or `FAILED`
+  otherwise. It carries `reply_to` set to the invoke's `id` and an `ActionOutcome`. The Mac does
+  not retry.
 - `notify.filter` is sent by the Mac after every connect and on every settings change. The
   phone sends nothing for muted packages, or for anything at all when `enabled = false`.
 - Icons go request to response (`notify.icon_request`, `notify.icon`), once per package per

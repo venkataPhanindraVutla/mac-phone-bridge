@@ -56,6 +56,7 @@ dependencies {
     implementation(project(":core:connection"))
     implementation(project(":feature:status"))
     implementation(project(":feature:find"))
+    implementation(project(":feature:notify"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

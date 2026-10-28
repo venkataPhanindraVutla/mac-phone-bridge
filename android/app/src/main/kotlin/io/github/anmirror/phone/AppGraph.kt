@@ -13,11 +13,16 @@ import io.github.anmirror.connection.PairedMacStore
 import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.connection.TlsConnector
 import io.github.anmirror.connection.TlsIdentity
+import io.github.anmirror.feature.notify.ActionInvoker
+import io.github.anmirror.feature.notify.NotificationSnapshot
+import io.github.anmirror.feature.notify.NotifyBridge
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
 import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.service.ConnectionService
+import io.github.anmirror.protocol.v1.ActionOutcome
+import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.Hello
 import io.github.anmirror.protocol.v1.SetupLevel
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -76,6 +81,14 @@ class AppGraph private constructor(context: Context) {
         startService = { ConnectionService.start(app) },
     )
 
+    /** Points at the notification listener while it is connected; empty answers otherwise. */
+    val notifyInvoker = DelegatingActionInvoker()
+
+    /** Fed by [io.github.anmirror.phone.service.PhoneNotificationListener]; Mac-side wiring is added with the feature toggle. */
+    val notifyBridge = NotifyBridge(app.packageName, notifyInvoker) { type, payload ->
+        manager.send(Channel.CHANNEL_NOTIFY, type, payload)
+    }
+
     init {
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
     }
@@ -129,4 +142,17 @@ class ObservablePairedMacStore(private val inner: PairedMacStore) : PairedMacSto
         inner.remove(id)
         _macs.value = inner.all()
     }
+}
+
+/** The listener service comes and goes; this lets the process-wide bridge outlive it. */
+class DelegatingActionInvoker : ActionInvoker {
+    @Volatile var target: ActionInvoker? = null
+
+    override fun invoke(key: String, actionIndex: Int, replyText: String?): ActionOutcome =
+        target?.invoke(key, actionIndex, replyText) ?: ActionOutcome.ACTION_OUTCOME_GONE
+
+    override fun dismiss(key: String) { target?.dismiss(key) }
+    override fun active(): List<NotificationSnapshot> = target?.active().orEmpty()
+    override fun image(key: String): ByteArray? = target?.image(key)
+    override fun icon(packageName: String): ByteArray? = target?.icon(packageName)
 }
