@@ -451,6 +451,149 @@
           }
         }
       }
+    },
+    "Battery %lld%%, charging": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Battery %lld%%, charging"
+          }
+        }
+      }
+    },
+    "Battery %lld%%, not charging": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Battery %lld%%, not charging"
+          }
+        }
+      }
+    },
+    "No service": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No service"
+          }
+        }
+      }
+    },
+    "Signal %lld of 4": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signal %lld of 4"
+          }
+        }
+      }
+    },
+    "Wi-Fi": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi"
+          }
+        }
+      }
+    },
+    "Mobile data": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mobile data"
+          }
+        }
+      }
+    },
+    "No network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No network"
+          }
+        }
+      }
+    },
+    "Other network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other network"
+          }
+        }
+      }
+    },
+    "Network unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network unknown"
+          }
+        }
+      }
+    },
+    "Phone battery %lld percent, charging": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone battery %lld percent, charging"
+          }
+        }
+      }
+    },
+    "Phone battery %lld percent, not charging": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone battery %lld percent, not charging"
+          }
+        }
+      }
+    },
+    "no cellular service": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no cellular service"
+          }
+        }
+      }
+    },
+    "signal %lld of 4 bars": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "signal %lld of 4 bars"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

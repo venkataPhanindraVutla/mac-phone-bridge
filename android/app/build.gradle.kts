@@ -54,6 +54,7 @@ android {
 
 dependencies {
     implementation(project(":core:connection"))
+    implementation(project(":feature:status"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

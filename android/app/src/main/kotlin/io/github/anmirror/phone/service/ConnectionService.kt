@@ -27,7 +27,13 @@ import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
+import io.github.anmirror.connection.PhoneConnectionState.Connected
+import io.github.anmirror.feature.status.AndroidStatusSource
+import io.github.anmirror.feature.status.StatusPublisher
+import io.github.anmirror.protocol.MessageType
+import io.github.anmirror.protocol.v1.Channel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -50,6 +56,12 @@ class ConnectionService : LifecycleService() {
         network = NetworkWatcher(this) { graph.manager.kick() }
         network.start()
         graph.manager.start()
+        // Phone status goes out only while the Mac shares status.v1.
+        StatusPublisher(
+            source = AndroidStatusSource(this),
+            connected = graph.manager.state.map { it is Connected && "status.v1" in it.shared },
+            send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
+        ).launchIn(lifecycleScope)
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())

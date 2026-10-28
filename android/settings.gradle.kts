@@ -19,4 +19,5 @@ rootProject.name = "android-mirroring"
 include(":app")
 include(":core:protocol")
 include(":core:connection")
+include(":feature:status")
 include(":tools:phone-sim")

@@ -27,6 +27,8 @@ targets:
         product: AMProtocol
       - package: AMKit
         product: ConnectionCore
+      - package: AMKit
+        product: FeatureStatus
     settings:
       base:
         PRODUCT_NAME: Android Mirroring

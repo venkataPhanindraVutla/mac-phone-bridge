@@ -1,6 +1,7 @@
 import AppKit
 import AMProtocol
 import ConnectionCore
+import FeatureStatus
 import Foundation
 import Observation
 import os
@@ -15,6 +16,7 @@ final class AppModel {
     static let pairingLifetime: TimeInterval = 300
 
     let server: MacServer
+    let phoneStatus = PhoneStatusModel()
     private(set) var pairedPhones: [PairedPhone] = []
     /// When the current QR code expires; nil when no pairing window is open.
     private(set) var pairingDeadline: Date?
@@ -47,6 +49,7 @@ final class AppModel {
             capabilities: Self.capabilities
         )
         server.onEvent = { [weak self] event in self?.handle(event) }
+        server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
         refreshPhones()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -80,6 +83,18 @@ final class AppModel {
 
     var menuBarAccessibilityLabel: LocalizedStringResource {
         isConnected ? "Android Mirroring, phone connected" : "Android Mirroring, phone not connected"
+    }
+
+    /// Status text for the menu-bar icon; nil unless a phone is connected and has reported.
+    var menuBarStatusTitle: String? {
+        guard isConnected, let status = phoneStatus.status else { return nil }
+        return StatusFormatter.menuTitle(status)
+    }
+
+    /// Spoken label for the menu-bar item when status is showing.
+    var menuBarStatusAccessibilityLabel: String? {
+        guard isConnected, let status = phoneStatus.status else { return nil }
+        return String(localized: "Android Mirroring, phone connected") + ", " + StatusFormatter.accessibilityLabel(status)
     }
 
     // MARK: pairing
@@ -158,15 +173,18 @@ final class AppModel {
             pairingDeadline = nil
             refreshPhones()
         case let .connected(phone, shared):
+            phoneStatus.reset() // never show the previous session's values
             refreshPhones()
             #if DEBUG
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
             #endif
         case let .disconnected(phone):
+            phoneStatus.reset()
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
         case .unpaired:
+            phoneStatus.reset()
             refreshPhones()
         case let .rejected(reason):
             switch reason {
@@ -177,6 +195,15 @@ final class AppModel {
             default:
                 break
             }
+        }
+    }
+
+    private func handle(message envelope: AMEnvelope) {
+        switch envelope.type {
+        case MessageType.statusUpdate.rawValue:
+            if let update = try? AMStatusUpdate(serializedBytes: envelope.payload) { phoneStatus.apply(update) }
+        default:
+            break
         }
     }
 

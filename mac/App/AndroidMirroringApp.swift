@@ -8,10 +8,17 @@ struct AndroidMirroringApp: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            // Template symbol; dimmed while no phone is connected.
-            Image(systemName: model.isConnected ? "iphone" : "iphone.slash")
-                .opacity(model.isConnected ? 1 : 0.55)
-                .accessibilityLabel(Text(model.menuBarAccessibilityLabel))
+            // Template symbol, dimmed while no phone is connected; battery text beside it once the
+            // phone has reported.
+            HStack(spacing: 4) {
+                Image(systemName: model.isConnected ? "iphone" : "iphone.slash")
+                    .opacity(model.isConnected ? 1 : 0.55)
+                if let title = model.menuBarStatusTitle { Text(title) }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                model.menuBarStatusAccessibilityLabel.map { Text($0) } ?? Text(model.menuBarAccessibilityLabel)
+            )
         }
 
         Window("Pair a phone", id: WindowID.pairing) {

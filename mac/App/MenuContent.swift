@@ -1,4 +1,5 @@
 import AppKit
+import FeatureStatus
 import SwiftUI
 
 struct MenuContent: View {
@@ -52,7 +53,10 @@ struct MenuContent: View {
     }
 
     @ViewBuilder private var featureSection: some View {
-        EmptyView()
+        if model.isConnected, let status = model.phoneStatus.status {
+            Text(StatusFormatter.detail(status))
+                .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))
+        }
     }
 
     private func show(_ id: String) {
