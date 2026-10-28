@@ -57,7 +57,7 @@ final class IncomingCallPanels {
 
     /// Newest at the bottom of the stack, so the oldest sits nearest the corner.
     private func layout(order: [String]) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let area = screen.visibleFrame
         var top = area.maxY - Self.gap
         for id in order {
@@ -91,6 +91,7 @@ private struct IncomingCallView: View {
             .frame(width: 320, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text("Incoming call from \(model.displayName(call))"))
         }
     }
 

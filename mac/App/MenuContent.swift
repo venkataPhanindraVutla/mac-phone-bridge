@@ -78,7 +78,7 @@ struct MenuContent: View {
             }
         }
         if model.isConnected, model.canCall, let call = model.calls.active {
-            Text("On a call with \(model.calls.displayName(call)) · \(model.calls.elapsed() ?? "00:00")")
+            Text("On a call with \(model.calls.displayName(call)) · \(model.calls.elapsedText ?? "00:00")")
             if call.muteSupported {
                 if call.muted {
                     Button("Unmute") { Task { await model.calls.toggleMute() } }

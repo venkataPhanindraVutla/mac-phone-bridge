@@ -17,18 +17,27 @@ private final class FakePresenter: NotificationPresenter {
     func deliveredIDs() async -> [String] { [] }
 }
 
+private final class SendableBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
+
 @MainActor
 private final class Harness {
     let presenter = FakePresenter()
     var sent: [(MessageType, any SwiftProtobuf.Message)] = []
     var contacts: [String: String] = [:]
     var model: CallModel!
+    var clock = Date(timeIntervalSince1970: 1_000)
+    let ticks = AsyncStream.makeStream(of: Void.self)
 
     init() {
+        let stream = SendableBox(ticks.stream.makeAsyncIterator())
         model = CallModel(
             nameFor: { [unowned self] in self.contacts[$0] }, presenter: presenter,
             send: { [unowned self] type, message in self.sent.append((type, message)) },
-            now: { Date(timeIntervalSince1970: 1_000) })
+            now: { [unowned self] in self.clock },
+            ticker: { var it = stream.value; _ = await it.next(); stream.value = it })
         model.connected(phoneID: "P1")
     }
 
@@ -180,10 +189,44 @@ struct CallModelTests {
 
     @Test func elapsedFormatsMinutesSeconds() {
         let h = Harness()
-        #expect(h.model.elapsed(now: Date(timeIntervalSince1970: 10)) == nil)
-        h.model.apply(call("c1", .active, since: 1_000_000))
-        #expect(h.model.elapsed(now: Date(timeIntervalSince1970: 1_000 + 133)) == "02:13")
-        #expect(h.model.elapsed(now: Date(timeIntervalSince1970: 900)) == "00:00")
-        #expect(h.model.elapsed(now: Date(timeIntervalSince1970: 1_000 + 3_725)) == "1:02:05")
+        #expect(h.model.elapsed(now: h.clock) == nil)
+        h.model.apply(call("c1", .active, since: 5))        // the phone's clock is ignored
+        #expect(h.model.elapsed(now: h.clock.addingTimeInterval(133)) == "02:13")
+        #expect(h.model.elapsed(now: h.clock.addingTimeInterval(-50)) == "00:00")
+        #expect(h.model.elapsed(now: h.clock.addingTimeInterval(3_725)) == "1:02:05")
+        h.clock = h.clock.addingTimeInterval(60)
+        h.model.apply(call("c1", .active, muted: true, since: 9))   // same id: start time is kept
+        #expect(h.model.elapsed(now: h.clock) == "01:00")
+    }
+
+    private func settle(_ cond: () -> Bool) async {
+        for _ in 0..<200 where !cond() { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+
+    @Test func elapsedTicksWhileActive() async {
+        let h = Harness()
+        h.model.apply(call("c1", .active))
+        #expect(h.model.elapsedText == "00:00")
+        h.clock = h.clock.addingTimeInterval(7)
+        h.ticks.continuation.yield()
+        await settle { h.model.elapsedText == "00:07" }
+        #expect(h.model.elapsedText == "00:07")
+    }
+
+    @Test func tickStopsOnEndAndReset() async {
+        let h = Harness()
+        h.model.apply(call("c1", .active))
+        h.model.apply(call("c1", .ended))
+        #expect(h.model.elapsedText == nil)
+        h.clock = h.clock.addingTimeInterval(5)
+        h.ticks.continuation.yield()
+        await settle { false }
+        #expect(h.model.elapsedText == nil)
+        h.model.apply(call("c2", .active))
+        h.model.reset()
+        #expect(h.model.elapsedText == nil)
+        h.ticks.continuation.yield()
+        await settle { false }
+        #expect(h.model.elapsedText == nil)
     }
 }

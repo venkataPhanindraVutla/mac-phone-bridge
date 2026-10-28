@@ -26,6 +26,8 @@ public final class CallModel {
     /// Incoming calls that are ringing, newest last. Drives the panels.
     public private(set) var ringing: [AMCallState] = []
     public private(set) var active: AMCallState?
+    /// "02:13" for the active call, refreshed every second while a call is active; nil otherwise. The menu reads this.
+    public private(set) var elapsedText: String?
     public private(set) var lastError: CallError?
     /// The "Show phone calls" switch. Off: call states and missed calls are ignored.
     public var enabled: Bool = true {
@@ -36,6 +38,10 @@ public final class CallModel {
     @ObservationIgnored private let presenter: NotificationPresenter
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let ticker: @Sendable () async -> Void
+    /// The Mac's own time when the active call was first seen active (never the phone's clock).
+    @ObservationIgnored private var activeSince: Date?
+    @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var phoneID: String?
     /// Calls whose panel the user closed with "Close"; they stay closed until the call ends.
     @ObservationIgnored private var closed: Set<String> = []
@@ -43,8 +49,10 @@ public final class CallModel {
     public init(
         nameFor: @escaping (String) -> String?, presenter: NotificationPresenter,
         send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        ticker: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .seconds(1)) }
     ) {
+        self.ticker = ticker
         self.nameFor = nameFor
         self.presenter = presenter
         self.send = send
@@ -58,7 +66,7 @@ public final class CallModel {
     /// On disconnect: nothing of the call survives.
     public func reset() {
         ringing = []
-        active = nil
+        setActive(nil)
         lastError = nil
         closed = []
     }
@@ -88,16 +96,36 @@ public final class CallModel {
     }
 
     /// "02:13" for the active call, "1:02:05" past an hour; nil when no call is active.
+    /// Measured on the Mac's clock from when the call was first seen active.
     public func elapsed(now: Date) -> String? {
-        guard let active else { return nil }
-        let start = Date(timeIntervalSince1970: TimeInterval(active.sinceMs) / 1000)
-        let total = max(0, Int(now.timeIntervalSince(start)))
+        guard active != nil, let activeSince else { return nil }
+        let total = max(0, Int(now.timeIntervalSince(activeSince)))
         let (h, m, s) = (total / 3600, total % 3600 / 60, total % 60)
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
     }
 
-    /// `elapsed(now:)` at the model's clock.
-    public func elapsed() -> String? { elapsed(now: now()) }
+    /// Keeps `active` and its timer together: a tick loop runs only while a call is active.
+    private func setActive(_ s: AMCallState?) {
+        if s?.callID != active?.callID { activeSince = s == nil ? nil : now() }
+        active = s
+        guard s != nil else {
+            tickTask?.cancel()
+            tickTask = nil
+            elapsedText = nil
+            return
+        }
+        elapsedText = elapsed(now: now())
+        guard tickTask == nil else { return }
+        let ticker = ticker
+        tickTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await ticker()
+                if Task.isCancelled { break }
+                guard let self else { return }
+                self.elapsedText = self.elapsed(now: self.now())
+            }
+        }
+    }
 
     // MARK: From the phone
 
@@ -114,11 +142,11 @@ public final class CallModel {
         case .ringing, .active:
             // An outgoing call that is still ringing is shown like an active one: the menu offers Hang up.
             ringing.removeAll { $0.callID == s.callID }
-            active = s
+            setActive(s)
         case .ended:
             ringing.removeAll { $0.callID == s.callID }
             closed.remove(s.callID)
-            if active?.callID == s.callID { active = nil }
+            if active?.callID == s.callID { setActive(nil) }
         default:
             break
         }
@@ -131,7 +159,7 @@ public final class CallModel {
         case .noSuchCall:
             lastError = .noSuchCall
             ringing.removeAll { $0.callID == r.callID }
-            if active?.callID == r.callID { active = nil }
+            if active?.callID == r.callID { setActive(nil) }
         case .notAllowed:
             lastError = .notAllowed
         case .failed:

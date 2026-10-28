@@ -947,6 +947,17 @@
           }
         }
       }
+    },
+    "Incoming call from %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incoming call from %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
