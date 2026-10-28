@@ -42,11 +42,18 @@ You need a Mac (Apple silicon or Intel) to build both apps.
 
 - **Xcode 26 or later** (Swift 6).
 - **xcodegen:** `brew install xcodegen`
-- **protoc 4.36.2.** Download it from Maven Central and check the SHA-256. This is the same pinned version CI uses (Apple silicon shown; for Intel use the `osx-x86_64` file from the same directory and its own checksum):
+- **protoc 4.36.2.** Download it from Maven Central and check it. This is the same pinned version CI uses. Maven publishes only SHA-1 files, so the Intel check uses SHA-1 (from the `.sha1` file next to the download). The Apple silicon SHA-256 was computed from the downloaded file, and both binaries carry a valid Google Developer ID signature (`codesign --verify`).
   ```sh
-  curl -fsSL -o protoc "https://repo1.maven.org/maven2/com/google/protobuf/protoc/4.36.2/protoc-4.36.2-osx-aarch_64.exe"
-  echo "765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb  protoc" | shasum -a 256 -c -
+  U=https://repo1.maven.org/maven2/com/google/protobuf/protoc/4.36.2
+  if [ "$(uname -m)" = arm64 ]; then
+    curl -fsSL -o protoc "$U/protoc-4.36.2-osx-aarch_64.exe"
+    echo "765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb  protoc" | shasum -a 256 -c -
+  else
+    curl -fsSL -o protoc "$U/protoc-4.36.2-osx-x86_64.exe"
+    echo "9ca6235adbf070c0931273b809de5063e566c32f  protoc" | shasum -a 1 -c -
+  fi
   chmod +x protoc
+  codesign --verify -vv protoc                       # optional: Google signature check
   mkdir -p "$HOME/.local/bin" && mv protoc "$HOME/.local/bin/protoc"   # make sure this is on your PATH
   ```
 - **JDK 21,** any vendor. Point `JAVA_HOME` at it.
@@ -75,7 +82,7 @@ scripts/interop-test.sh                               # real Swift Mac server vs
 
 ### Signing the Mac app (optional)
 
-By default the Mac app is ad-hoc signed, so it builds with no Apple account. The catch: macOS treats every rebuild as a new app, so you get Keychain "Always Allow" prompts again after each rebuild.
+By default the Mac app is ad-hoc signed, so it builds with no Apple account. The catch: macOS treats every rebuild as a new app, so after each rebuild you get a Keychain prompt asking to use or access items: click "Always Allow". A prompt that mentions exporting a key should not appear; if it does, click Deny and report it.
 
 To avoid them, sign with a free Personal Team. Copy `mac/Config/Local.xcconfig.example` to `mac/Config/Local.xcconfig` (gitignored), set `DEVELOPMENT_TEAM` to your team ID, and run `xcodegen` again.
 
