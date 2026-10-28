@@ -75,7 +75,7 @@ swift test --package-path mac/Packages/AMKit          # Mac library tests
 
 xcodegen --spec mac/project.yml                       # generate the Xcode project (not committed)
 xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
-  -destination 'platform=macOS' build                 # build the Mac app
+  -configuration Release -destination 'platform=macOS' build   # build the Mac app
 
 (cd android && ./gradlew :app:assembleOssDebug)       # build the Android app
 # APK: android/app/build/outputs/apk/oss/debug/
@@ -84,6 +84,8 @@ scripts/interop-test.sh                               # real Swift Mac server vs
 ```
 
 `scripts/interop-test.sh` needs `JAVA_HOME` set to a JDK 21. Pass `--no-build` to skip rebuilding.
+
+Use the Release build for everyday use and for trying it with a phone. Debug builds (`-configuration Debug`, or Run in Xcode) are for development only: they add a "Copy pairing link" menu item and log the pairing URI, which contains the pairing secret.
 
 ### Signing the Mac app (optional)
 
