@@ -51,7 +51,9 @@ final class UserNotificationPresenter: NSObject, NotificationPresenter, UNUserNo
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound])
+        // A silent update (or anything else passive) goes to the list only, as it would in the background.
+        let passive = notification.request.content.interruptionLevel == .passive
+        completionHandler(passive ? [.list] : [.banner, .list, .sound])
     }
 
     nonisolated func userNotificationCenter(

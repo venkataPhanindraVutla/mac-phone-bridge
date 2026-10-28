@@ -16,8 +16,20 @@ final class FakePresenter: NotificationPresenter {
     var categories: Set<UNNotificationCategory> = []
     var categoryCalls = 0
     var failDelivery = false
+    /// When set, authorize() does not return until `answerAuthorization` is called.
+    var holdAuthorization = false
+    private var pending: [CheckedContinuation<Bool, Never>] = []
 
-    func authorize() async -> Bool { allow }
+    func authorize() async -> Bool {
+        guard holdAuthorization else { return allow }
+        return await withCheckedContinuation { pending.append($0) }
+    }
+    func answerAuthorization() {
+        holdAuthorization = false
+        let waiting = pending
+        pending = []
+        for c in waiting { c.resume(returning: allow) }
+    }
     func setCategories(_ categories: Set<UNNotificationCategory>) { self.categories = categories; categoryCalls += 1 }
     func deliver(id: String, content: UNNotificationContent) async throws {
         if failDelivery { throw URLError(.cannotConnectToHost) }
@@ -51,7 +63,11 @@ final class Harness {
             send: { [unowned self] type, message in self.sent.append((type, message)) })
     }
 
-    func connect(_ phone: String = "P1") async { await model.connected(phoneID: phone) }
+    /// Connects and lets the (separate) permission request finish.
+    func connect(_ phone: String = "P1") async {
+        await model.connected(phoneID: phone)
+        await model.authorization?.value
+    }
     func sent<T>(_ type: MessageType, as _: T.Type) -> [T] { sent.filter { $0.0 == type }.compactMap { $0.1 as? T } }
 }
 
@@ -233,18 +249,85 @@ private func info(_ phone: String = "P1", key: String = "k1", code: String? = ni
     var r = AMActionResult(); r.key = "k1"; r.outcome = .gone
     await h.model.result(r)
     #expect(h.presenter.removedIDs == ["n|P1|k1"])
-    #expect(h.presenter.delivered.last?.content.title == "This notification is no longer on the phone.")
+    let notice = h.presenter.delivered.last
+    #expect(notice?.content.title == "This notification is no longer on the phone.")
+    #expect(notice?.id.hasPrefix("i|P1|") == true)
+    // Shown as a banner, without a sound.
+    #expect(notice?.content.interruptionLevel == .active)
+    #expect(notice?.content.sound == nil)
 }
 
 @MainActor
-@Test func okAndFailedResultsDoNothingVisible() async {
+@Test func okResultDoesNothingVisible() async {
     let h = Harness(); await h.connect()
     var r = AMActionResult(); r.key = "k1"; r.outcome = .ok
     await h.model.result(r)
-    r.outcome = .failed
-    await h.model.result(r)
     #expect(h.presenter.removedIDs.isEmpty)
     #expect(h.presenter.delivered.isEmpty)
+}
+
+@MainActor
+@Test func failedResultShowsNotice() async {
+    let h = Harness(); await h.connect()
+    await h.model.posted(note())
+    var r = AMActionResult(); r.key = "k1"; r.outcome = .failed
+    await h.model.result(r)
+    #expect(h.presenter.removedIDs.isEmpty)   // the notification stays: the user can try again
+    let notice = h.presenter.delivered.last
+    #expect(notice?.id.hasPrefix("i|P1|") == true)
+    #expect(notice?.content.title == "Couldn't send that to your phone.")
+    #expect(notice?.content.interruptionLevel == .active)
+    #expect(notice?.content.sound == nil)
+}
+
+@MainActor
+@Test func replyWhileDisconnectedShowsNotice() async {
+    let h = Harness(); await h.connect()
+    h.model.disconnected()
+    let before = h.sent.count
+    await h.model.handleResponse(actionID: "a|0", userInfo: info(), replyText: "on my way")
+    #expect(h.sent.count == before)
+    let notice = h.presenter.delivered.last
+    #expect(notice?.id.hasPrefix("i|P1|") == true)
+    #expect(notice?.content.title == "Your phone isn't connected. Nothing was sent.")
+    #expect(notice?.content.interruptionLevel == .active)
+    #expect(notice?.content.sound == nil)
+}
+
+@MainActor
+@Test func dismissOrCopyWhileDisconnectedShowsNoNotice() async {
+    let h = Harness(); await h.connect()
+    h.model.disconnected()
+    await h.model.handleResponse(actionID: UNNotificationDismissActionIdentifier, userInfo: info(), replyText: nil)
+    await h.model.handleResponse(actionID: UNNotificationDefaultActionIdentifier, userInfo: info(), replyText: nil)
+    await h.model.handleResponse(actionID: "copy", userInfo: info(code: "482913"), replyText: nil)
+    #expect(h.presenter.delivered.isEmpty)
+    #expect(h.copied == ["482913"])   // copying needs no phone
+}
+
+@MainActor
+@Test func forgetRemovesThatPhonesContent() async {
+    let h = Harness(); await h.connect()
+    await h.model.posted(note(key: "a"))
+    var r = AMActionResult(); r.key = "gone"; r.outcome = .gone
+    await h.model.result(r)   // an i|P1| notice
+    h.presenter.shown += ["m|P1|1000", "n|P2|b", "m|P2|2000", "n|P10|c", "i|other"]
+    await h.model.forget(phoneID: "P1")
+    #expect(h.presenter.shown.sorted() == ["i|other", "m|P2|2000", "n|P10|c", "n|P2|b"])
+}
+
+@MainActor
+@Test func connectDoesNotWaitForPermissionAnswer() async {
+    let h = Harness()
+    h.presenter.holdAuthorization = true
+    await h.model.connected(phoneID: "P1")   // returns while the system prompt is still up
+    #expect(h.sent(.notifyFilter, as: AMNotificationFilter.self).count == 1)
+    #expect(h.model.authorized == nil)
+    await h.model.posted(note())               // not yet refused: delivered
+    #expect(h.presenter.shown == ["n|P1|k1"])
+    h.presenter.answerAuthorization()
+    await h.model.authorization?.value
+    #expect(h.model.authorized == true)
 }
 
 @MainActor

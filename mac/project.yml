@@ -37,6 +37,8 @@ targets:
         product: FeatureContacts
       - package: AMKit
         product: FeatureCalls
+      - package: AMKit
+        product: AppSession
     settings:
       base:
         PRODUCT_NAME: Android Mirroring

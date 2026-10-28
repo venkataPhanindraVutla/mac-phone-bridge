@@ -30,6 +30,9 @@ public final class NotificationsModel {
         try UNNotificationAttachment(identifier: "image", url: $0)
     }
     @ObservationIgnored private var requestedIcons: Set<String> = []
+    /// The permission request of the last connect. It runs on its own, so a system prompt the user
+    /// has not answered yet holds nothing else up.
+    @ObservationIgnored private(set) var authorization: Task<Void, Never>?
 
     public init(
         presenter: NotificationPresenter, icons: IconCache,
@@ -56,8 +59,9 @@ public final class NotificationsModel {
         self.phoneID = phoneID
         requestedIcons = []
         clearAttachments()
-        authorized = await presenter.authorize()
         await sendFilter(phoneID: phoneID)
+        authorization?.cancel()
+        authorization = Task { [weak self] in await self?.refreshAuthorization() }
     }
 
     /// Asks the system again, e.g. after the user changed the permission in System Settings.
@@ -69,6 +73,14 @@ public final class NotificationsModel {
         phoneID = nil
         phoneAvailability = nil
         requestedIcons = []
+    }
+
+    /// The phone was forgotten: everything of it leaves Notification Center (its notifications,
+    /// missed calls and notices).
+    public func forget(phoneID: String) async {
+        let prefixes = ["n|", "m|", "i|"].map { $0 + phoneID + "|" }
+        let ids = await presenter.deliveredIDs().filter { id in prefixes.contains { id.hasPrefix($0) } }
+        if !ids.isEmpty { presenter.remove(ids: ids) }
     }
 
     // MARK: From the phone
@@ -107,17 +119,16 @@ public final class NotificationsModel {
     }
 
     public func result(_ r: AMActionResult) async {
-        if r.outcome == .failed {
+        guard let phoneID else { return }
+        switch r.outcome {
+        case .failed:
             Self.log.error("phone could not run the action for key \(r.key, privacy: .private)")
-            return
-        }
-        guard r.outcome == .gone, let phoneID else { return }   // OK needs nothing
-        presenter.remove(ids: [Self.macID(phoneID: phoneID, key: r.key)])
-        let content = UNMutableNotificationContent()
-        content.title = String(localized: "This notification is no longer on the phone.", bundle: .main)
-        content.interruptionLevel = .passive
-        do { try await presenter.deliver(id: "i|" + UUID().uuidString, content: content) } catch {
-            Self.log.error("deliver of the gone notice failed: \(String(describing: type(of: error)), privacy: .public)")
+            await notice(String(localized: "Couldn't send that to your phone.", bundle: .main), phoneID: phoneID)
+        case .gone:
+            presenter.remove(ids: [Self.macID(phoneID: phoneID, key: r.key)])
+            await notice(String(localized: "This notification is no longer on the phone.", bundle: .main), phoneID: phoneID)
+        default:
+            break   // OK needs nothing
         }
     }
 
@@ -131,15 +142,24 @@ public final class NotificationsModel {
     // MARK: From the user
 
     public func handleResponse(actionID: String, userInfo: [AnyHashable: Any], replyText: String?) async {
-        guard let phoneID, userInfo["phoneID"] as? String == phoneID,
-              let key = userInfo["key"] as? String else { return }
+        guard let owner = userInfo["phoneID"] as? String, let key = userInfo["key"] as? String else { return }
+        if actionID == CategoryRegistry.copyActionID {
+            // Copying needs no phone.
+            if let code = userInfo["code"] as? String { copy(code) }
+            return
+        }
+        guard let phoneID, owner == phoneID else {
+            // A button or reply for a phone that is not connected must not vanish without a word.
+            if actionID.hasPrefix("a|") {
+                await notice(String(localized: "Your phone isn't connected. Nothing was sent.", bundle: .main), phoneID: owner)
+            }
+            return
+        }
 
         if actionID == UNNotificationDismissActionIdentifier {
             var dismiss = AMDismissNotification()
             dismiss.key = key
             await send(.notifyDismiss, dismiss)
-        } else if actionID == CategoryRegistry.copyActionID {
-            if let code = userInfo["code"] as? String { copy(code) }
         } else if actionID.hasPrefix("a|"), let index = UInt32(actionID.dropFirst(2)) {
             var invoke = AMInvokeAction()
             invoke.key = key
@@ -162,6 +182,16 @@ public final class NotificationsModel {
     // MARK: Helpers
 
     static func macID(phoneID: String, key: String) -> String { "n|" + phoneID + "|" + key }
+
+    /// A one-off message from this app (not from the phone): a banner without a sound.
+    private func notice(_ title: String, phoneID: String) async {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.interruptionLevel = .active
+        do { try await presenter.deliver(id: "i|" + phoneID + "|" + UUID().uuidString, content: content) } catch {
+            Self.log.error("deliver of a notice failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
 
     private func sendFilter(phoneID: String) async {
         let settings = load(phoneID)

@@ -683,6 +683,28 @@
         }
       }
     },
+    "Your phone isn't connected. Nothing was sent.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your phone isn't connected. Nothing was sent."
+          }
+        }
+      }
+    },
+    "Couldn't send that to your phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't send that to your phone."
+          }
+        }
+      }
+    },
     "This notification is no longer on the phone.": {
       "extractionState": "manual",
       "localizations": {
