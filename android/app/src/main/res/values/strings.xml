@@ -59,6 +59,12 @@
     <string name="home_forget_body">Your Mac will forget this phone too. To use them together again, pair again.</string>
     <string name="home_forget_confirm">Forget</string>
 
+    <!-- Find my phone -->
+    <string name="home_find_title">Ring at full volume, even on silent</string>
+    <string name="home_find_needs_access">To ring when Do Not Disturb is set to Total silence, allow Do Not Disturb access.</string>
+    <string name="home_find_granted">Allowed. Your Mac can ring this phone even in Do Not Disturb.</string>
+    <string name="home_find_allow">Allow Do Not Disturb access</string>
+
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>
     <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>

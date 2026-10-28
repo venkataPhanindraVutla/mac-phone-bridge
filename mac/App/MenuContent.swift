@@ -1,4 +1,5 @@
 import AppKit
+import FeatureFind
 import FeatureStatus
 import SwiftUI
 
@@ -53,6 +54,13 @@ struct MenuContent: View {
     }
 
     @ViewBuilder private var featureSection: some View {
+        if model.canRing {
+            Button(model.ring.menuTitle) { Task { await model.ring.toggle(using: model.server) } }
+                .accessibilityLabel(Text(model.ring.ringing ? "Stop ringing the phone" : "Ring the phone"))
+        }
+        if let note = model.ring.note {
+            Text(note)
+        }
         if model.isConnected, let status = model.phoneStatus.status {
             Text(StatusFormatter.detail(status))
                 .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))

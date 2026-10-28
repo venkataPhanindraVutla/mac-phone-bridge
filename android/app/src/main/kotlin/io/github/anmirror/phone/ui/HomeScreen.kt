@@ -1,5 +1,8 @@
 package io.github.anmirror.phone.ui
 
+import android.app.NotificationManager
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -16,10 +19,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -69,6 +76,7 @@ fun HomeScreen(
         } else if (state !is PhoneConnectionState.Connected) {
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
+        FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.home_forget))
@@ -105,5 +113,35 @@ fun HomeScreen(
                 TextButton(onClick = { confirmForget = false }) { Text(stringResource(R.string.pair_cancel)) }
             },
         )
+    }
+}
+
+/**
+ * Find my phone: ringing at full volume on silent needs no permission, but ringing through Do Not
+ * Disturb's Total silence needs the special "Do Not Disturb access", which only Settings can grant.
+ */
+@Composable
+private fun FindMyPhoneRow() {
+    val context = LocalContext.current
+    val nm = context.getSystemService(NotificationManager::class.java)
+    var granted by remember { mutableStateOf(nm.isNotificationPolicyAccessGranted) }
+    // Back from Settings: re-read.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { granted = nm.isNotificationPolicyAccessGranted }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            stringResource(R.string.home_find_title),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            stringResource(if (granted) R.string.home_find_granted else R.string.home_find_needs_access),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (!granted) {
+            OutlinedButton(
+                onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_find_allow)) }
+        }
     }
 }

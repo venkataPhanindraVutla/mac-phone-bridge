@@ -31,7 +31,7 @@ let package = Package(
             ]
         ),
         .target(name: "FeatureStatus", dependencies: ["AMProtocol"]),
-        .target(name: "FeatureFind", dependencies: ["AMProtocol"]),
+        .target(name: "FeatureFind", dependencies: ["AMProtocol", "ConnectionCore"]),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
@@ -48,6 +48,6 @@ let package = Package(
             dependencies: ["ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .testTarget(name: "FeatureStatusTests", dependencies: ["FeatureStatus"]),
-        .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind"]),
+        .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind", "AMProtocol"]),
     ]
 )

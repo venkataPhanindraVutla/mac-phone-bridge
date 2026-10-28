@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Find my phone: vibrate while ringing, and (user-granted special access) lift Do Not Disturb's Total silence. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

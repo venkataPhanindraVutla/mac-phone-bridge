@@ -594,6 +594,72 @@
           }
         }
       }
+    },
+    "Ring phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ring phone"
+          }
+        }
+      }
+    },
+    "Stop ringing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop ringing"
+          }
+        }
+      }
+    },
+    "Ring the phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ring the phone"
+          }
+        }
+      }
+    },
+    "Stop ringing the phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop ringing the phone"
+          }
+        }
+      }
+    },
+    "The phone may be silent. Allow Do Not Disturb access in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The phone may be silent. Allow Do Not Disturb access in the phone app."
+          }
+        }
+      }
+    },
+    "Phone may still be ringing. Stop it on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone may still be ringing. Stop it on the phone."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

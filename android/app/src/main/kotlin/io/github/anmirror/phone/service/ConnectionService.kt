@@ -28,6 +28,10 @@ import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
 import io.github.anmirror.connection.PhoneConnectionState.Connected
+import io.github.anmirror.feature.find.AndroidAlarmAudio
+import io.github.anmirror.feature.find.AndroidDndOverride
+import io.github.anmirror.feature.find.AndroidRingNotifier
+import io.github.anmirror.feature.find.RingController
 import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
@@ -46,6 +50,7 @@ class ConnectionService : LifecycleService() {
     private lateinit var graph: AppGraph
     private lateinit var network: NetworkWatcher
     private var lastText: String? = null
+    private lateinit var ring: RingController
 
     override fun onCreate() {
         super.onCreate()
@@ -62,6 +67,7 @@ class ConnectionService : LifecycleService() {
             connected = graph.manager.state.map { it is Connected && "status.v1" in it.shared },
             send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
         ).launchIn(lifecycleScope)
+        setUpFindMyPhone()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -74,6 +80,7 @@ class ConnectionService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACTION_STOP_RING) ring.stop() // the Stop action / tap on the ring notification
         // Every start must be followed by startForeground, also a sticky restart.
         goForeground(lastText ?: getString(R.string.state_looking_unnamed))
         Log.i(TAG, "service: start (restart=${intent == null})")
@@ -82,10 +89,41 @@ class ConnectionService : LifecycleService() {
 
     override fun onDestroy() {
         running = false
+        ring.stop() // the service going away must not leave an alarm behind
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
         super.onDestroy()
+    }
+
+    /**
+     * The ring lives here, not in the connection: a dropped connection does not stop it. It stops
+     * on find.stop, on the notification's Stop, or when this service is destroyed.
+     */
+    private fun setUpFindMyPhone() {
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ConnectionService::class.java).setAction(ACTION_STOP_RING),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        ring = RingController(
+            audio = AndroidAlarmAudio(this),
+            dnd = AndroidDndOverride(this),
+            notifier = AndroidRingNotifier(this, stop),
+            onState = { state ->
+                lifecycleScope.launch { graph.manager.send(Channel.CHANNEL_FIND, MessageType.FIND_STATE, state) }
+            },
+        )
+        graph.manager.on(MessageType.FIND_RING) { ring.start() }
+        graph.manager.on(MessageType.FIND_STOP) { ring.stop() }
+        // After a reconnect the Mac does not know the phone is still ringing: tell it.
+        lifecycleScope.launch {
+            graph.manager.state
+                .map { it is Connected && "find.v1" in it.shared }
+                .distinctUntilChanged()
+                .collect { shared -> if (shared && ring.ringing.value) graph.manager.send(Channel.CHANNEL_FIND, MessageType.FIND_STATE, ring.currentState()) }
+        }
     }
 
     private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?, pairing: Boolean) {
@@ -161,6 +199,7 @@ class ConnectionService : LifecycleService() {
 
     companion object {
         const val CHANNEL_ID = "connection"
+        const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
         private const val NOTIFICATION_ID = 1
 
         /** True between onCreate and onDestroy. */

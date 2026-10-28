@@ -1,6 +1,7 @@
 import AppKit
 import AMProtocol
 import ConnectionCore
+import FeatureFind
 import FeatureStatus
 import Foundation
 import Observation
@@ -17,6 +18,9 @@ final class AppModel {
 
     let server: MacServer
     let phoneStatus = PhoneStatusModel()
+    let ring = RingModel()
+    /// Capabilities the connected phone shares; empty while disconnected.
+    private(set) var sharedCapabilities: Set<String> = []
     private(set) var pairedPhones: [PairedPhone] = []
     /// When the current QR code expires; nil when no pairing window is open.
     private(set) var pairingDeadline: Date?
@@ -84,6 +88,9 @@ final class AppModel {
     var menuBarAccessibilityLabel: LocalizedStringResource {
         isConnected ? "Android Mirroring, phone connected" : "Android Mirroring, phone not connected"
     }
+
+    /// Find my phone is offered only while the connected phone shares `find.v1`.
+    var canRing: Bool { isConnected && sharedCapabilities.contains("find.v1") }
 
     /// Status text for the menu-bar icon; nil unless a phone is connected and has reported.
     var menuBarStatusTitle: String? {
@@ -174,17 +181,23 @@ final class AppModel {
             refreshPhones()
         case let .connected(phone, shared):
             phoneStatus.reset() // never show the previous session's values
+            ring.clearHint()
+            sharedCapabilities = shared
             refreshPhones()
             #if DEBUG
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
             #endif
         case let .disconnected(phone):
             phoneStatus.reset()
+            ring.reset()
+            sharedCapabilities = []
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
         case .unpaired:
             phoneStatus.reset()
+            ring.reset()
+            sharedCapabilities = []
             refreshPhones()
         case let .rejected(reason):
             switch reason {
@@ -202,6 +215,8 @@ final class AppModel {
         switch envelope.type {
         case MessageType.statusUpdate.rawValue:
             if let update = try? AMStatusUpdate(serializedBytes: envelope.payload) { phoneStatus.apply(update) }
+        case MessageType.findState.rawValue:
+            if let state = try? AMRingState(serializedBytes: envelope.payload) { ring.apply(state) }
         default:
             break
         }
