@@ -76,6 +76,19 @@ private struct Fixture {
     #expect(store.syncMs == 20)
 }
 
+@MainActor @Test func incrementalNonLastBatchDoesNotAdvanceSyncMs() throws {
+    let f = Fixture(); defer { f.cleanUp() }
+    let store = f.store()
+    try store.apply(batch([contact("1", "Alice", "4155550100")], full: true, syncMs: 10))
+    try store.apply(batch([contact("2", "Bob", "4155550111")], last: false, syncMs: 50))
+    #expect(store.name(forNumber: "4155550111") == "Bob") // applied early, idempotent
+    #expect(store.syncMs == 10)
+    #expect(f.store().syncMs == 10) // and not persisted either
+    try store.apply(batch([contact("3", "Cy", "4155550122")], last: true, syncMs: 50))
+    #expect(store.syncMs == 50)
+    #expect(f.store().syncMs == 50)
+}
+
 @MainActor @Test func contactWithoutNumbersIsNotStored() throws {
     let f = Fixture(); defer { f.cleanUp() }
     let store = f.store()

@@ -23,9 +23,8 @@ class AndroidContactsSource(context: Context) : ContactsSource {
     private val resolver: ContentResolver get() = app.contentResolver
 
     override fun changedSince(ms: Long): List<ContactRow> {
-        val phones = phonesChangedSince(ms)
         val rows = ArrayList<ContactRow>()
-                resolver.query(
+        resolver.query(
             ContactsContract.Contacts.CONTENT_URI,
             arrayOf(
                 ContactsContract.Contacts._ID,
@@ -38,10 +37,15 @@ class AndroidContactsSource(context: Context) : ContactsSource {
         )?.use { cursor ->
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(0).toString()
-                rows += ContactRow(id, cursor.getString(1).orEmpty(), phones[id].orEmpty(), cursor.getLong(2))
+                rows += ContactRow(id, cursor.getString(1).orEmpty(), emptyList(), cursor.getLong(2))
             }
         }
-        return rows
+        // Phones are read AFTER the contacts on purpose. A contact written between the two queries
+        // then still gets its numbers (this read is at least as new), and one written after the
+        // contacts query has a timestamp above the sync_ms we report, so the next push resends it.
+        // The other order would send it without numbers, which the Mac drops, with sync_ms past it.
+        val phones = phonesChangedSince(ms)
+        return rows.map { it.copy(phones = phones[it.id].orEmpty()) }
     }
 
     override fun deletedSince(ms: Long): List<Pair<String, Long>> {

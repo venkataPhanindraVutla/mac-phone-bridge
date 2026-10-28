@@ -71,7 +71,9 @@ public final class ContactsStore {
         } else {
             for c in b.upserts { Self.put(c, into: &entries) }
             for id in b.deletedIds { entries[id] = nil }
-            syncMs = max(syncMs, b.syncMs)
+            // Every batch of a sequence carries the final mark: take it only once the last one is
+            // in, so a sequence cut short is asked for again from the old mark.
+            if b.last { syncMs = max(syncMs, b.syncMs) }
         }
         reindex()
         try persist()
