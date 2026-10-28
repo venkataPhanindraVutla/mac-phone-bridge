@@ -13,6 +13,15 @@ import Testing
     ("Ana", "call me on 98765 43210", nil),
     ("Calendar", "Meeting 2026-10-28 login link", nil),
     ("Ana", "hi 👋", nil),
+    ("Ana", "Verify your numbers 4821", "4821"),
+    ("Ana", "Your code for Mars 4821", "4821"),
+    ("Ana", "Users 4821 code", "4821"),
+    ("Bank", "Rs 4500 debited, OTP 1234", "1234"),
+    ("Bank", "$ 4500 code", nil),
+    ("Ana", "9999 and your code is 1234", "1234"),
+    ("Ana", "login 1234 then 5678 code", "1234"),
+    ("Calendar", "Meeting 28 Oct 2026 login link", nil),
+    ("Ana", "Your login code 2026", "2026"),
 ] as [(String, String, String?)])
 func detectsCodes(title: String, text: String, expected: String?) {
     #expect(OneTimeCode.detect(title: title, text: text) == expected)
