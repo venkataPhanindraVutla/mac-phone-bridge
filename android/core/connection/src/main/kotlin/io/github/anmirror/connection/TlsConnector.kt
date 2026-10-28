@@ -65,6 +65,17 @@ class TlsConnector(
         throw UnreachableException(hosts, causes, refusedByPeer = refused)
     }
 
+    /**
+     * One pinned TLS 1.3 socket to [host]:[port], with the same context and timeouts as
+     * [connect]; used for bulk connections (SPEC 13). Throws [IOException] if the connect or handshake fails.
+     */
+    internal suspend fun dialPinned(host: String, port: Int, pinnedFpHex: String): SSLSocket {
+        val context = SSLContext.getInstance("TLSv1.3").apply {
+            init(identity.keyManagers(), arrayOf(PinnedTrustManager(setOf(pinnedFpHex))), null)
+        }
+        return dial(context, host, port)
+    }
+
     private suspend fun dial(context: SSLContext, host: String, port: Int): SSLSocket = coroutineScope {
         val raw = Socket()
         val done = AtomicBoolean(false)
