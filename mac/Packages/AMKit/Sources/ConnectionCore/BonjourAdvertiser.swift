@@ -3,23 +3,30 @@ import Foundation
 import Network
 
 /// Publishes the listener as `_anmirror._tcp` with no personal data (SPEC sections 1 and 6):
-/// a random instance name made once per launch, and TXT `v=1`, `r=<rotating ID>`.
-/// The TXT record is republished at every 15-minute epoch boundary.
+/// a random instance name `am-<8 hex>`, and TXT `v=1`, `r=<rotating ID>`. Both change at every
+/// 15-minute epoch boundary, and the name also changes on wake, so the name cannot be used to
+/// follow the Mac over time. Phones find their Mac by TXT `r`, never by the name.
 @MainActor
 public final class BonjourAdvertiser {
     public nonisolated static let serviceType = "_anmirror._tcp"
-    public nonisolated static let instanceName: String =
-        "am-" + PairingCrypto.randomBytes(4).map { String(format: "%02x", $0) }.joined()
     public nonisolated static let epochSeconds: Double = 900
 
     private let discoveryKey: Data
     private let clock: () -> Date
     private weak var listener: NWListener?
     private var republish: Task<Void, Never>?
+    private var instanceName = BonjourAdvertiser.randomInstanceName()
+    /// The epoch `instanceName` was made for; nil forces a new name at the next publish.
+    private var nameEpoch: Int64?
 
     public init(discoveryKey: Data, clock: @escaping () -> Date = Date.init) {
         self.discoveryKey = discoveryKey
         self.clock = clock
+    }
+
+    /// `am-` and 8 random lowercase hex digits.
+    public nonisolated static func randomInstanceName() -> String {
+        "am-" + PairingCrypto.randomBytes(4).map { String(format: "%02x", $0) }.joined()
     }
 
     public nonisolated static func txt(discoveryKey: Data, unixSeconds: Int64) -> [String: String] {
@@ -47,6 +54,22 @@ public final class BonjourAdvertiser {
         }
     }
 
+    /// The name to publish now: a fresh random one once the epoch has changed.
+    func currentInstanceName() -> String {
+        let epoch = Int64((clock().timeIntervalSince1970 / Self.epochSeconds).rounded(.down))
+        if nameEpoch != epoch {
+            if nameEpoch != nil { instanceName = Self.randomInstanceName() }
+            nameEpoch = epoch
+        }
+        return instanceName
+    }
+
+    /// A new random name from the next publish on (after wake from sleep).
+    public func rotateInstanceName() {
+        instanceName = Self.randomInstanceName()
+        nameEpoch = nil
+    }
+
     public func stop() {
         republish?.cancel()
         republish = nil
@@ -57,7 +80,7 @@ public final class BonjourAdvertiser {
         guard let listener else { return }
         let now = Int64(clock().timeIntervalSince1970.rounded(.down))
         let record = NWTXTRecord(Self.txt(discoveryKey: discoveryKey, unixSeconds: now))
-        listener.service = NWListener.Service(name: Self.instanceName, type: Self.serviceType,
+        listener.service = NWListener.Service(name: currentInstanceName(), type: Self.serviceType,
                                               domain: nil, txtRecord: record)
     }
 }

@@ -19,8 +19,6 @@ final class AppModel {
     let server: MacServer
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
-    /// Capabilities the connected phone shares; empty while disconnected.
-    private(set) var sharedCapabilities: Set<String> = []
     private(set) var pairedPhones: [PairedPhone] = []
     /// When the current QR code expires; nil when no pairing window is open.
     private(set) var pairingDeadline: Date?
@@ -64,24 +62,21 @@ final class AppModel {
     }
 
     // MARK: derived state
+    // Connection display and feature items follow `server.activePhone` only: an open pairing
+    // window must not make a connected phone look disconnected.
 
-    var isConnected: Bool {
-        if case .connected = server.state { return true }
-        return false
-    }
+    var isConnected: Bool { server.activePhone != nil }
 
     /// The phone to show in the menu: the connected one, else the first paired one.
-    var currentPhone: PairedPhone? {
-        if case let .connected(phone, _) = server.state { return phone }
-        return pairedPhones.first
-    }
+    var currentPhone: PairedPhone? { server.activePhone?.phone ?? pairedPhones.first }
 
     var statusText: LocalizedStringResource {
+        if server.activePhone != nil { return "Connected" }
         switch server.state {
-        case .connected: "Connected"
-        case .incompatible: "Update needed: app versions differ"
-        case .pairing: "Pairing…"
-        case .idle: pairedPhones.isEmpty ? "No phone paired" : "Not connected"
+        case .connected: return "Connected"
+        case .incompatible: return "Update needed: app versions differ"
+        case .pairing: return "Pairing…"
+        case .idle: return pairedPhones.isEmpty ? "No phone paired" : "Not connected"
         }
     }
 
@@ -90,7 +85,7 @@ final class AppModel {
     }
 
     /// Find my phone is offered only while the connected phone shares `find.v1`.
-    var canRing: Bool { isConnected && sharedCapabilities.contains("find.v1") }
+    var canRing: Bool { server.activePhone?.shared.contains("find.v1") ?? false }
 
     /// Status text for the menu-bar icon; nil unless a phone is connected and has reported.
     var menuBarStatusTitle: String? {
@@ -147,6 +142,14 @@ final class AppModel {
 
     // MARK: server
 
+    /// App quit: tell the phone (`system.goodbye SHUTDOWN`) and close. The goodbye is queued on
+    /// the connection's own queue; a short pause lets it reach the wire before the process ends.
+    func shutdown() {
+        let hadPhone = server.activePhone != nil
+        server.stop()
+        if hadPhone { Thread.sleep(forTimeInterval: 0.25) }
+    }
+
     private func start() {
         let saved = UserDefaults.standard.integer(forKey: Self.portKey)
         do {
@@ -182,7 +185,6 @@ final class AppModel {
         case let .connected(phone, shared):
             phoneStatus.reset() // never show the previous session's values
             ring.clearHint()
-            sharedCapabilities = shared
             refreshPhones()
             #if DEBUG
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
@@ -190,14 +192,12 @@ final class AppModel {
         case let .disconnected(phone):
             phoneStatus.reset()
             ring.reset()
-            sharedCapabilities = []
             #if DEBUG
             Self.debugLine("disconnected \(phone.name)")
             #endif
         case .unpaired:
             phoneStatus.reset()
             ring.reset()
-            sharedCapabilities = []
             refreshPhones()
         case let .rejected(reason):
             switch reason {

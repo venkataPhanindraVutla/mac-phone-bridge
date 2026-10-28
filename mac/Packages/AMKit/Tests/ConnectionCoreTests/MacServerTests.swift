@@ -249,14 +249,15 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
         #expect(try await phone.nextErrorCode() == .pairingExpired)
     }
 
-    @Test func expiredWindowGetsExpired() async throws {
-        let (server, port, _) = try await startServer(pairingLifetime: 0.05)
+    @Test func expiredWindowRefusesUnknownCertificate() async throws {
+        // R37 M2: once the secret expired, an unknown phone is refused at TLS (the phone shows
+        // "code expired"); a paired phone still gets PAIRING_EXPIRED, see MacServerFinalFixTests.
+        let (server, port, log) = try await startServer(pairingLifetime: 0.05)
         defer { server.stop() }
-        let uri = server.beginPairing()
+        _ = server.beginPairing()
         try await Task.sleep(for: .milliseconds(150))
-        let phone = try await TestPhone.connect("phone", port: port)
-        try await phone.sendPairRequest(uri)
-        #expect(try await phone.nextErrorCode() == .pairingExpired)
+        #expect(await refusedAtTLS("phone", port: port))
+        #expect(await eventually { log.contains(.rejected(.notPairedCertificate)) })
     }
 
     @Test func badProofGetsBadPairingSecret() async throws {
@@ -572,11 +573,10 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
 }
 
 @Test func bonjourInstanceNameAndTXT() {
-    let name = BonjourAdvertiser.instanceName
+    let name = BonjourAdvertiser.randomInstanceName()
     #expect(name.count == 11)
     #expect(name.hasPrefix("am-"))
     #expect(name.dropFirst(3).allSatisfy { "0123456789abcdef".contains($0) })
-    #expect(BonjourAdvertiser.instanceName == name) // once per launch
 
     let key = Data(repeating: 9, count: 32)
     let txt = BonjourAdvertiser.txt(discoveryKey: key, unixSeconds: 1_800_000_000)

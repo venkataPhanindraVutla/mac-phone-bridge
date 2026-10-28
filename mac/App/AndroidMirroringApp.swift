@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 @main
 struct AndroidMirroringApp: App {
-    @State private var model = AppModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    private var model: AppModel { appDelegate.model }
 
     var body: some Scene {
         MenuBarExtra {
@@ -30,6 +32,16 @@ struct AndroidMirroringApp: App {
             SettingsView()
         }
         .windowResizability(.contentSize)
+    }
+}
+
+/// Owns the model (created once, with the delegate) and says goodbye to the phone on quit.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    lazy var model = AppModel()
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.shutdown()
     }
 }
 

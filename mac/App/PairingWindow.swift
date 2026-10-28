@@ -54,7 +54,8 @@ struct PairingWindow: View {
         VStack(spacing: 12) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let remaining = model.pairingDeadline.map { $0.timeIntervalSince(context.date) } ?? 0
-                if remaining > 0 {
+                // Expired, or used up by wrong codes: the Mac no longer accepts it either.
+                if remaining > 0, !model.server.pairingSecretSpent {
                     VStack(spacing: 12) {
                         QRCodeView(text: uri.string).frame(width: 240, height: 240)
                         Text("Scan this with the Android Mirroring app on your phone")

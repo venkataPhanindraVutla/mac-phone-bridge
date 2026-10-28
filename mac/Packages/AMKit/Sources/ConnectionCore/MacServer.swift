@@ -5,6 +5,8 @@ import Network
 import Observation
 import SwiftProtobuf
 
+/// What the pairing window and the menu show. A pairing window takes precedence over a
+/// connected phone here; whether a phone is connected is `MacServer.activePhone`.
 public enum MacConnectionState: Equatable, Sendable {
     case idle
     /// A pairing window is open. `code` is set once a phone proved the secret.
@@ -41,6 +43,17 @@ public enum MacServerEvent: Equatable, Sendable {
     case rejected(MacRejection)
 }
 
+/// The phone in session with the Mac and the capabilities both sides share.
+public struct ActivePhone: Equatable, Sendable {
+    public let phone: PairedPhone
+    public let shared: Set<String>
+
+    public init(phone: PairedPhone, shared: Set<String>) {
+        self.phone = phone
+        self.shared = shared
+    }
+}
+
 public enum MacServerError: Error, Equatable, Sendable {
     case notConnected
 }
@@ -53,6 +66,11 @@ public final class MacServer {
     public private(set) var state: MacConnectionState = .idle
     public private(set) var port: UInt16?
     public private(set) var isListening = false
+    /// The phone in session, whether or not a pairing window is open.
+    public private(set) var activePhone: ActivePhone?
+    /// True while a pairing window is open whose secret can no longer verify: older than its
+    /// lifetime, used, or burned by bad proofs. Unknown certificates are then refused at TLS.
+    public private(set) var pairingSecretSpent = false
 
     /// Messages from the connected phone other than hello/ping/goodbye.
     @ObservationIgnored public var onMessage: ((AMEnvelope) -> Void)?
@@ -82,6 +100,9 @@ public final class MacServer {
     @ObservationIgnored private var active: Session?
     @ObservationIgnored private var window: PairingWindow?
     @ObservationIgnored private var incompatiblePhone: String?
+    /// The paired phones as last read from `phones`; nil means read again. Every change made
+    /// through this server (save, remove, forget) clears it.
+    @ObservationIgnored private var pairedCache: [PairedPhone]?
     /// Secrets of windows this process closed or replaced, newest last. A proof made with
     /// one of them is an old QR code: it gets PAIRING_EXPIRED, not BAD_PAIRING_SECRET.
     @ObservationIgnored private var retiredSecrets: [Data] = []
@@ -120,15 +141,27 @@ public final class MacServer {
         let identity = try identityProvider.identity()
         self.identity = identity
         if advertise { advertiser = BonjourAdvertiser(discoveryKey: try secrets.discoveryKey()) }
+        pairedCache = nil
         refreshPolicy()
         restartAttempts = 0
         try startListener(port: port ?? 0)
     }
 
-    /// Closes every connection and the listener.
+    /// Closes every connection and the listener. A phone past pairing is told first
+    /// (`system.goodbye SHUTDOWN`): it keeps the pairing and reconnects with its usual backoff.
     public func stop() {
         if let w = window { endWindow(w, rejection: nil, phoneError: .pairingRejected) }
-        for s in Array(sessions.values) { drop(s) }
+        var bye = AMGoodbye()
+        bye.reason = .shutdown
+        for s in Array(sessions.values) {
+            switch s.phase {
+            case .active, .awaitingHello:
+                post(s, .goodbye, bye, channel: .system)
+                drop(s, flush: true)
+            default:
+                drop(s)
+            }
+        }
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
@@ -147,6 +180,7 @@ public final class MacServer {
         listener = nil
         isListening = false
         restartAttempts = 0
+        advertiser?.rotateInstanceName()
         try? startListener(port: port)
         recomputeState()
     }
@@ -163,7 +197,15 @@ public final class MacServer {
         let flow = MacPairingFlow(macFingerprint: identity.fingerprint, now: now(), lifetime: pairingLifetime)
         let uri = PairingURI(macFingerprint: identity.fingerprint, secret: flow.secret,
                              hosts: PairingHosts.current(), port: port ?? 0, macName: macName)
-        window = PairingWindow(flow: flow, uri: uri)
+        let w = PairingWindow(flow: flow, uri: uri)
+        window = w
+        // Close the TLS gate when the secret runs out (the window itself stays, ruling R11).
+        let lifetime = pairingLifetime
+        w.expiry = Task { [weak self, weak w] in
+            do { try await Task.sleep(for: .seconds(lifetime) + .milliseconds(50)) } catch { return }
+            guard let self, let w, self.window === w else { return }
+            self.refreshPolicy()
+        }
         incompatiblePhone = nil
         refreshPolicy()
         recomputeState()
@@ -197,9 +239,10 @@ public final class MacServer {
 
     /// Unpairs: tells the phone (`system.goodbye UNPAIRED`) if it is connected, then removes it.
     public func forget(phoneID: String) async {
-        let known = (try? phones.all())?.first { $0.id == phoneID }
+        let known = pairedList().first { $0.id == phoneID }
         // Untrust first, so a reconnect cannot slip in while the goodbye is on its way.
         try? phones.remove(id: phoneID)
+        pairedCache = nil
         refreshPolicy()
         var bye = AMGoodbye()
         bye.reason = .unpaired
@@ -377,7 +420,10 @@ public final class MacServer {
             reject(session, .pairingExpired, .pairingExpired)
             return
         }
-        switch w.flow.verify(request, phoneFingerprint: session.conn.peerFingerprint, now: now()) {
+        let verdict = w.flow.verify(request, phoneFingerprint: session.conn.peerFingerprint, now: now())
+        // A used, burned or expired secret closes the TLS gate for unknown certificates.
+        refreshPolicy()
+        switch verdict {
         case let .rejected(code):
             reject(session, code, Self.rejection(for: code))
         case let .verified(code):
@@ -410,6 +456,7 @@ public final class MacServer {
             var complete = AMPairComplete()
             do {
                 complete.discoveryKey = try secrets.discoveryKey()
+                defer { pairedCache = nil }
                 try phones.save(phone)
             } catch {
                 // Detach first so dropping the session does not also report "cancelled".
@@ -435,6 +482,7 @@ public final class MacServer {
     /// `system.error phoneError` when given (SPEC 5.3: the Mac refuses to continue).
     private func endWindow(_ w: PairingWindow, rejection: MacRejection?, phoneError: AMErrorCode? = nil) {
         w.timer?.cancel()
+        w.expiry?.cancel()
         if window === w { window = nil }
         retire(w.flow.secret)
         if let s = w.session {
@@ -486,6 +534,7 @@ public final class MacServer {
         let reason = (try? AMGoodbye(serializedBytes: env.payload))?.reason ?? .unspecified
         if reason == .unpaired, let paired {
             try? phones.remove(id: paired.id)
+            pairedCache = nil
             refreshPolicy()
             emit(.unpaired(paired))
             for s in Array(sessions.values) where s.conn.peerFingerprint == paired.fingerprint { drop(s) }
@@ -563,21 +612,36 @@ public final class MacServer {
         return matched
     }
 
-    private func pairedPhone(_ fingerprint: Data) -> PairedPhone? {
-        (try? phones.all())?.first { $0.fingerprint == fingerprint }
+    /// The paired phones, read from the store only when the cache was cleared (not per message).
+    private func pairedList() -> [PairedPhone] {
+        if let pairedCache { return pairedCache }
+        guard let loaded = try? phones.all() else { return [] } // read again next time
+        pairedCache = loaded
+        return loaded
     }
 
+    private func pairedPhone(_ fingerprint: Data) -> PairedPhone? {
+        pairedList().first { $0.fingerprint == fingerprint }
+    }
+
+    /// Updates who may complete the TLS handshake: paired phones, plus any certificate while a
+    /// pairing window's secret is still usable.
     private func refreshPolicy() {
-        let paired = Set(((try? phones.all()) ?? []).map(\.fingerprint))
-        policy.update(paired: paired, windowOpen: window != nil)
+        let paired = Set(pairedList().map(\.fingerprint))
+        let spent = window.map { $0.flow.isSpent(now: now()) } ?? false
+        policy.update(paired: paired, pairingOpen: window != nil && !spent)
+        if spent != pairingSecretSpent { pairingSecretSpent = spent }
     }
 
     private func recomputeState() {
+        var phone: ActivePhone?
+        if let a = active, case let .active(p, shared) = a.phase { phone = ActivePhone(phone: p, shared: shared) }
+        if phone != activePhone { activePhone = phone }
         let next: MacConnectionState
         if let w = window {
             next = .pairing(uri: w.uri, code: w.code)
-        } else if let a = active, case let .active(phone, shared) = a.phase {
-            next = .connected(phone, shared: shared)
+        } else if let phone {
+            next = .connected(phone.phone, shared: phone.shared)
         } else if let name = incompatiblePhone {
             next = .incompatible(phoneName: name)
         } else {
@@ -644,6 +708,8 @@ private final class PairingWindow {
     var session: Session?
     var request: AMPairRequest?
     var timer: Task<Void, Never>?
+    /// Closes the TLS gate once the secret's lifetime has passed.
+    var expiry: Task<Void, Never>?
 
     init(flow: MacPairingFlow, uri: PairingURI) {
         self.flow = flow
@@ -651,20 +717,21 @@ private final class PairingWindow {
     }
 }
 
-/// Who may complete the TLS handshake; read from the TLS verify queue.
+/// Who may complete the TLS handshake; read from the TLS verify queue. `pairingOpen`: a
+/// pairing window is open and its secret can still verify, so any certificate may try.
 final class PeerPolicy: @unchecked Sendable {
     private let lock = NSLock()
     private var paired: Set<Data> = []
-    private var windowOpen = false
+    private var pairingOpen = false
 
-    func update(paired: Set<Data>, windowOpen: Bool) {
+    func update(paired: Set<Data>, pairingOpen: Bool) {
         lock.lock(); defer { lock.unlock() }
         self.paired = paired
-        self.windowOpen = windowOpen
+        self.pairingOpen = pairingOpen
     }
 
     func accepts(_ fingerprint: Data) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return windowOpen || paired.contains(fingerprint)
+        return pairingOpen || paired.contains(fingerprint)
     }
 }
