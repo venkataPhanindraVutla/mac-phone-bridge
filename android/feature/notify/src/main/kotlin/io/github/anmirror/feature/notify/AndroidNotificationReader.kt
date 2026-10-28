@@ -22,11 +22,21 @@ class AndroidNotificationReader(context: Context) {
         var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         var text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))
             ?.toString().orEmpty()
+        var lastFromUser = false
         NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(n)?.let { style ->
-            val messages = style.messages.map { MessageSnapshot(it.person?.name?.toString(), it.text?.toString().orEmpty()) }
-            NotificationMapper.messagingContent(style.conversationTitle?.toString(), messages)?.let {
-                title = it.first
-                text = it.second
+            val user = style.user
+            val messages = style.messages.map { m ->
+                val person = m.person
+                // A message without a sender, or sent as the style's user, is the user's own.
+                val fromUser = person == null ||
+                    (person.key != null && person.key == user.key) ||
+                    (person.name != null && person.name.toString() == user.name?.toString())
+                MessageSnapshot(person?.name?.toString(), m.text?.toString().orEmpty(), fromUser)
+            }
+            NotificationMapper.messagingContent(style.conversationTitle?.toString(), messages, fallbackTitle = title)?.let {
+                title = it.title
+                text = it.text
+                lastFromUser = it.lastFromUser
             }
         }
         val template = extras.getString(Notification.EXTRA_TEMPLATE).orEmpty()
@@ -46,6 +56,7 @@ class AndroidNotificationReader(context: Context) {
             category = n.category,
             onlyAlertOnce = n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
             clearable = sbn.isClearable,
+            lastFromUser = lastFromUser,
         )
     }
 

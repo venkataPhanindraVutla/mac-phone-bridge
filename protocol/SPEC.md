@@ -271,8 +271,11 @@ Channel `NOTIFY`. Messages are listed in section 3.
   notification by key.
 - `alert = false` means "update silently": the Mac refreshes the content without alerting.
 - On connect, the phone sends each still-active, eligible notification that this Mac has not
-  received during this phone process, then one `notify.snapshot` listing every active key.
-  The Mac removes any notification it shows whose key is not in the snapshot.
+  received during this phone process, or whose title, text or actions changed since this Mac
+  last received it, all with `alert = false`; then one `notify.snapshot` listing every active
+  key. The phone remembers what it sent for the last Mac that connected only, so a different
+  Mac gets every active notification. The Mac removes any notification it shows whose key is
+  not in the snapshot. If the phone cannot read its active notifications, it sends neither.
 - Every `notify.invoke` is answered by one `notify.result`: `OK` on success, `GONE` or `FAILED`
   otherwise. It carries `reply_to` set to the invoke's `id` and an `ActionOutcome`. The Mac does
   not retry.

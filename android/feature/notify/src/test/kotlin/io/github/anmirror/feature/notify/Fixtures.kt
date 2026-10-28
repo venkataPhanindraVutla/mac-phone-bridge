@@ -15,9 +15,10 @@ fun snap(
     category: String? = null,
     onlyAlertOnce: Boolean = false,
     clearable: Boolean = true,
+    lastFromUser: Boolean = false,
 ) = NotificationSnapshot(
     key, pkg, "Chat", title, text, "", 1000L, actions, ongoing, groupSummary, foregroundService,
-    mediaStyle, category, onlyAlertOnce, clearable,
+    mediaStyle, category, onlyAlertOnce, clearable, lastFromUser,
 )
 
 fun filter(enabled: Boolean = true, vararg muted: String): NotificationFilter =

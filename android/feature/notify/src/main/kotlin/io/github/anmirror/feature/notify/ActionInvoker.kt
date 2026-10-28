@@ -13,7 +13,9 @@ interface ActionInvoker {
     /** [actionIndex] indexes the capped list sent to the Mac ([NotificationMapper.cappedOrder]). */
     fun invoke(key: String, actionIndex: Int, replyText: String?): ActionOutcome
     fun dismiss(key: String)
-    fun active(): List<NotificationSnapshot>
+
+    /** The phone's active notifications; null when they could not be read (not the same as none). */
+    fun active(): List<NotificationSnapshot>?
 
     /** Already scaled by [ImageScaler], or null. */
     fun image(key: String): ByteArray?
@@ -55,8 +57,8 @@ class AndroidActionInvoker(
 
     override fun dismiss(key: String) = cancel(key)
 
-    override fun active(): List<NotificationSnapshot> =
-        activeNotifications().orEmpty().map { reader.snapshot(it) }
+    override fun active(): List<NotificationSnapshot>? =
+        activeNotifications()?.map { reader.snapshot(it) }
 
     override fun image(key: String): ByteArray? = sbn(key)?.let { reader.image(it) }
 

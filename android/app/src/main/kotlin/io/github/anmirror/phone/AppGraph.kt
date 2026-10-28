@@ -114,8 +114,13 @@ class AppGraph private constructor(context: Context) {
     /** Whether the user has granted notification access (re-read on resume and by the listener). */
     val notifyAccess: StateFlow<Boolean> = _notifyAccess.asStateFlow()
 
-    /** This connection's handshake state (R7). Used only from the ordered event queue. */
-    val notifySession = NotifySession { notifyBridge.onConnected() }
+    /**
+     * This connection's handshake state (R7). Used only from the ordered event queue. The bridge
+     * remembers what it sent per Mac, so it is told which one this is.
+     */
+    val notifySession = NotifySession {
+        (manager.state.value as? PhoneConnectionState.Connected)?.let { notifyBridge.onConnected(it.mac.id) }
+    }
 
     private val _listenerBound = MutableStateFlow(false)
 
@@ -321,7 +326,8 @@ class DelegatingActionInvoker : ActionInvoker {
         target?.invoke(key, actionIndex, replyText) ?: ActionOutcome.ACTION_OUTCOME_GONE
 
     override fun dismiss(key: String) { target?.dismiss(key) }
-    override fun active(): List<NotificationSnapshot> = target?.active().orEmpty()
+    /** Null (unreadable, not empty) while the listener is not connected. */
+    override fun active(): List<NotificationSnapshot>? = target?.active()
     override fun image(key: String): ByteArray? = target?.image(key)
     override fun icon(packageName: String): ByteArray? = target?.icon(packageName)
 }

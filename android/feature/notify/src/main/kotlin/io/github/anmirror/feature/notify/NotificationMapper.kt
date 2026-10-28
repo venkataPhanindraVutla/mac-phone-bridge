@@ -5,8 +5,11 @@ import io.github.anmirror.protocol.v1.NotificationAction
 import io.github.anmirror.protocol.v1.NotificationFilter
 import io.github.anmirror.protocol.v1.PhoneNotification
 
-/** One message of a `MessagingStyle` notification. */
-data class MessageSnapshot(val sender: String?, val text: String)
+/** One message of a `MessagingStyle` notification; [fromUser] when the phone's user wrote it. */
+data class MessageSnapshot(val sender: String?, val text: String, val fromUser: Boolean = false)
+
+/** What a `MessagingStyle` notification shows: [lastFromUser] when the newest message is the user's own. */
+data class MessagingContent(val title: String, val text: String, val lastFromUser: Boolean)
 
 /** Pure rules: which notifications go to the Mac and how they look on the wire (SPEC 10). */
 object NotificationMapper {
@@ -81,12 +84,16 @@ object NotificationMapper {
     }
 
     /**
-     * Title and text of a `MessagingStyle` notification: the conversation title, else the last
-     * message's sender; and the last message. Null when there are no messages.
+     * Title and text of a `MessagingStyle` notification. Title: the conversation title, else the
+     * sender of the newest message not written by the user (after an inline reply the newest one
+     * is the user's own), else [fallbackTitle] (`EXTRA_TITLE`). Text: the newest message. Null
+     * when there are no messages.
      */
-    fun messagingContent(conversationTitle: String?, messages: List<MessageSnapshot>): Pair<String, String>? {
+    fun messagingContent(conversationTitle: String?, messages: List<MessageSnapshot>, fallbackTitle: String): MessagingContent? {
         val last = messages.lastOrNull() ?: return null
-        val title = conversationTitle?.takeIf { it.isNotBlank() } ?: last.sender.orEmpty()
-        return title to last.text
+        val title = conversationTitle?.takeIf { it.isNotBlank() }
+            ?: messages.lastOrNull { !it.fromUser }?.sender?.takeIf { it.isNotBlank() }
+            ?: fallbackTitle
+        return MessagingContent(title, last.text, last.fromUser)
     }
 }

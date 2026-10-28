@@ -20,4 +20,6 @@ data class NotificationSnapshot(
     val category: String?,
     val onlyAlertOnce: Boolean,
     val clearable: Boolean,
+    /** A `MessagingStyle` notification whose newest message is the user's own (an inline reply). */
+    val lastFromUser: Boolean = false,
 )

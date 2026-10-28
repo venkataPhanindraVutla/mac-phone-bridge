@@ -56,9 +56,28 @@ class NotificationMapperTest {
     @Test
     fun messagingStyleUsesLastMessage() {
         val msgs = listOf(MessageSnapshot("Bob", "first"), MessageSnapshot("Carol", "last"))
-        assertEquals("Group" to "last", NotificationMapper.messagingContent("Group", msgs))
-        assertEquals("Carol" to "last", NotificationMapper.messagingContent(null, msgs))
-        assertEquals("Carol" to "last", NotificationMapper.messagingContent("", msgs))
+        assertEquals(MessagingContent("Group", "last", false), NotificationMapper.messagingContent("Group", msgs, "t"))
+        assertEquals(MessagingContent("Carol", "last", false), NotificationMapper.messagingContent(null, msgs, "t"))
+        assertEquals(MessagingContent("Carol", "last", false), NotificationMapper.messagingContent("", msgs, "t"))
+        assertEquals(null, NotificationMapper.messagingContent("Group", emptyList(), "t"))
+    }
+
+    @Test
+    fun ownReplyKeepsConversationTitle() {
+        // A 1:1 chat after an inline reply: the newest message is the user's own.
+        val chat = listOf(MessageSnapshot("Bob", "are you coming?"), MessageSnapshot(null, "on my way", fromUser = true))
+        val c = NotificationMapper.messagingContent(null, chat, fallbackTitle = "Bob")!!
+        assertEquals("Bob", c.title)
+        assertEquals("on my way", c.text)
+        assertTrue(c.lastFromUser)
+        // A group keeps its own title.
+        assertEquals("Family", NotificationMapper.messagingContent("Family", chat, "x")!!.title)
+        // Only the user's own messages: the notification's title.
+        val mine = listOf(MessageSnapshot("Me", "hello?", fromUser = true))
+        assertEquals("Bob", NotificationMapper.messagingContent(null, mine, fallbackTitle = "Bob")!!.title)
+        // The sender is the last one that is not the user, not the first.
+        val two = listOf(MessageSnapshot("Ann", "a"), MessageSnapshot("Carol", "b"), MessageSnapshot(null, "c", fromUser = true))
+        assertEquals("Carol", NotificationMapper.messagingContent(null, two, "x")!!.title)
     }
 
     @Test

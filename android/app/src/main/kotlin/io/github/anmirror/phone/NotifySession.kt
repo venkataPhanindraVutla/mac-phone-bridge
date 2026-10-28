@@ -5,7 +5,7 @@ import io.github.anmirror.protocol.v1.ActionResult
 
 /**
  * One connection's notification handshake. The Mac's first `notify.filter` starts the session
- * (R7); the resync ([resync] = `bridge.onConnected()`, which ends in a `notify.snapshot`) must
+ * (R7); the resync ([resync] = `bridge.onConnected(macId)`, which ends in a `notify.snapshot`) must
  * run only while the notification listener is bound, since an unbound listener has no active
  * list and an empty snapshot would make the Mac drop everything it shows. Called only from the
  * ordered event queue.

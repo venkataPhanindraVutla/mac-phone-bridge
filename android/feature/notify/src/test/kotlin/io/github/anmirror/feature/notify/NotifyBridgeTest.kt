@@ -16,10 +16,13 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 private class FakeInvoker : ActionInvoker {
     val activeList = mutableListOf<NotificationSnapshot>()
+    /** The listener could not read its active notifications. */
+    var activeFails = false
     var invokeResult = ActionOutcome.ACTION_OUTCOME_OK
     val invoked = mutableListOf<Triple<String, Int, String?>>()
     val dismissed = mutableListOf<String>()
@@ -32,7 +35,7 @@ private class FakeInvoker : ActionInvoker {
         return invokeResult
     }
     override fun dismiss(key: String) { dismissed += key }
-    override fun active() = activeList.toList()
+    override fun active(): List<NotificationSnapshot>? = if (activeFails) null else activeList.toList()
     override fun image(key: String) = imageBytes
     override fun icon(packageName: String): ByteArray? { iconCalls++; return iconBytes }
 }
@@ -40,7 +43,14 @@ private class FakeInvoker : ActionInvoker {
 class NotifyBridgeTest {
     private val invoker = FakeInvoker()
     private val sent = mutableListOf<Pair<String, MessageLite>>()
-    private val bridge = NotifyBridge("io.github.anmirror.phone", invoker) { t, p -> sent += t to p; true }
+    private val logged = mutableListOf<String>()
+
+    /** False while the Mac can't hear: sends fail. */
+    private var reachable = true
+    private val bridge = NotifyBridge("io.github.anmirror.phone", invoker, { m, _ -> logged += m }) { t, p ->
+        if (reachable) sent += t to p
+        reachable
+    }
 
     private fun posted() = sent.filter { it.first == MessageType.NOTIFY_POSTED }.map { it.second as PhoneNotification }
 
@@ -81,11 +91,91 @@ class NotifyBridgeTest {
         invoker.activeList += snap(key = "c", ongoing = true)
         bridge.onPosted(snap(key = "a"))
         sent.clear()
-        bridge.onConnected()
+        bridge.onConnected("mac1")
         assertEquals(listOf("b"), posted().map { it.key })
         val last = sent.last()
         assertEquals(MessageType.NOTIFY_SNAPSHOT, last.first)
         assertEquals(listOf("a", "b"), (last.second as ActiveNotifications).keysList)
+    }
+
+    @Test
+    fun changedWhileDisconnectedIsResentOnReconnect() = runTest {
+        invoker.activeList += snap(key = "a", text = "one")
+        invoker.activeList += snap(key = "b", text = "same")
+        bridge.onConnected("mac1")
+        // The Mac can't hear while "a" changes on the phone.
+        reachable = false
+        invoker.activeList[0] = snap(key = "a", text = "two")
+        bridge.onPosted(invoker.activeList[0])
+        reachable = true
+        sent.clear()
+        bridge.onConnected("mac1")
+        val p = posted().single()
+        assertEquals("a", p.key)
+        assertEquals("two", p.text)
+        assertFalse(p.alert) // a catch-up does not ding
+        assertEquals(MessageType.NOTIFY_SNAPSHOT, sent.last().first)
+    }
+
+    @Test
+    fun changedActionsAreResentOnReconnect() = runTest {
+        invoker.activeList += snap(key = "a")
+        bridge.onConnected("mac1")
+        invoker.activeList[0] = snap(key = "a", actions = listOf(ActionSnapshot("Reply", true, null)))
+        sent.clear()
+        bridge.onConnected("mac1")
+        assertEquals(listOf("Reply"), posted().single().actionsList.map { it.title })
+    }
+
+    @Test
+    fun secondMacGetsActiveNotifications() = runTest {
+        invoker.activeList += snap(key = "a")
+        bridge.onConnected("macA")
+        assertEquals(listOf("a"), posted().map { it.key })
+        sent.clear()
+        bridge.onConnected("macB")
+        val p = posted().single()
+        assertEquals("a", p.key)
+        assertFalse(p.alert)
+        sent.clear()
+        bridge.onConnected("macB") // the same Mac again: it has everything
+        assertTrue(posted().isEmpty())
+    }
+
+    @Test
+    fun deliveredHoldsNoContent() = runTest {
+        bridge.onPosted(snap(key = "a", title = "Alice Smith", text = "the secret plan"))
+        val stored = bridge.deliveredRecords()
+        assertEquals(setOf("a"), stored.keys)
+        val value = stored.getValue("a")
+        assertFalse(value.contains("the secret plan"))
+        assertFalse(value.contains("Alice Smith"))
+    }
+
+    @Test
+    fun ownReplyDoesNotAlert() = runTest {
+        bridge.onPosted(snap(key = "a", text = "hey"))
+        bridge.onPosted(snap(key = "a", text = "on my way", lastFromUser = true))
+        bridge.onPosted(snap(key = "b", text = "first and mine", lastFromUser = true))
+        assertEquals(listOf(true, false, false), posted().map { it.alert })
+    }
+
+    @Test
+    fun failedActiveReadSkipsSnapshot() = runTest {
+        bridge.onPosted(snap(key = "a"))
+        sent.clear()
+        invoker.activeFails = true
+        bridge.onConnected("mac1")
+        assertTrue(sent.isEmpty()) // an empty snapshot would wipe the Mac's list
+        assertEquals(1, logged.size)
+    }
+
+    @Test
+    fun invokeWhenActiveUnreadableFails() = runTest {
+        invoker.activeFails = true
+        val r = bridge.onInvoke(1, InvokeAction.newBuilder().setKey("a").build())
+        assertEquals(ActionOutcome.ACTION_OUTCOME_FAILED, r.outcome) // not GONE: the Mac would drop it
+        assertTrue(invoker.invoked.isEmpty())
     }
 
     @Test
@@ -227,7 +317,7 @@ class NotifyBridgeTest {
             sent += t to p
             true
         }
-        b.onConnected()
+        b.onConnected("mac1")
         assertEquals(listOf("good"), posted().map { it.key })
         assertEquals(MessageType.NOTIFY_SNAPSHOT, sent.last().first)
         assertEquals(1, logged.size)
