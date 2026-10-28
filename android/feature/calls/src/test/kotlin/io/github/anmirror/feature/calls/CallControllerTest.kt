@@ -22,8 +22,10 @@ import kotlin.test.assertTrue
 private class FakeSource : CallStateSource {
     var onChange: ((TelephonyPhase, String?) -> Unit)? = null
     var stopped = false
-    override fun start(onChange: (TelephonyPhase, String?) -> Unit) { this.onChange = onChange }
-    override fun stop() { stopped = true }
+    var starts = 0
+    var stops = 0
+    override fun start(onChange: (TelephonyPhase, String?) -> Unit) { this.onChange = onChange; starts++ }
+    override fun stop() { stopped = true; stops++ }
     fun emit(phase: TelephonyPhase, number: String? = null) = onChange!!(phase, number)
 }
 
@@ -324,6 +326,32 @@ class CallControllerTest {
         runtime.update(on = true, granted = false)
         assertNull(runtime.controller)
         assertTrue(source.stopped)
+    }
+
+    @Test fun sameStateRedeliveryIsNoOp() = test {
+        source.emit(TelephonyPhase.OFFHOOK, "1")
+        val n = states.size
+        source.emit(TelephonyPhase.OFFHOOK, "1")
+        assertEquals(n, states.size)
+        source.emit(TelephonyPhase.IDLE)
+        val m = states.size
+        source.emit(TelephonyPhase.IDLE)
+        assertEquals(m, states.size)
+    }
+
+    @Test fun callLogGrantRestartsSourceKeepingCallId() = test {
+        val runtime = CallsRuntime { controller }
+        runtime.update(on = true, granted = true)
+        source.emit(TelephonyPhase.RINGING, null)
+        val id = last.callId
+        val starts = source.starts
+        runtime.restartSource()
+        assertEquals(starts + 1, source.starts)
+        // The new listener delivers the same phase, now with the number.
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        assertEquals(id, last.callId)
+        assertEquals("+911234", last.number)
+        assertEquals(1, states.map { it.callId }.distinct().size)
     }
 
     private fun assertNotEqualsId(a: String, b: String) = assertTrue(a != b)

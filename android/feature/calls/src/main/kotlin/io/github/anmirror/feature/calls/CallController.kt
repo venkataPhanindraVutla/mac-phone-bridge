@@ -37,13 +37,13 @@ import kotlinx.coroutines.withContext
  */
 class CallController(
     private val source: CallStateSource,
-    /** Telecom actions; null when answering/ending is switched off or ANSWER_PHONE_CALLS is missing. */
+    /** Telecom actions; null only when answering/ending is switched off in this build (permission is checked live). */
     private val primary: CallActions?,
     /** The dialer notification's CallStyle intents. */
     private val fallback: CallActions,
     /** The microphone mute; independent of the answer permission. */
     private val mic: MicMute,
-    /** Null when the call log is switched off or READ_CALL_LOG is missing. */
+    /** Null only when the call log is switched off in this build (permission is checked live; null verdict = cannot tell). */
     private val missed: MissedCallLookup?,
     /** Title of the active call notification, if any: a number or a contact name. */
     private val notificationNumber: () -> String?,
@@ -96,6 +96,17 @@ class CallController(
                 }
             }
         }
+        source.start { phase, number -> events.trySend(Event(phase, number)) }
+    }
+
+    /**
+     * Re-registers the telephony listener (e.g. READ_CALL_LOG was granted, so a source can now
+     * deliver the number) without touching the calls: ids and state survive. The re-registered
+     * listener re-delivers the current phase, which is a no-op while it is unchanged.
+     */
+    fun restartSource() {
+        if (consumer == null) return
+        source.stop()
         source.start { phase, number -> events.trySend(Event(phase, number)) }
     }
 

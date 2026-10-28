@@ -62,6 +62,7 @@ import io.github.anmirror.protocol.v1.NotificationFilter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -297,6 +298,7 @@ class ConnectionService : LifecycleService() {
             }
         }
         graph.callNotifications.onDialerCallPosted = { calls.controller?.refreshIdentity() }
+        watchCallLogGrant()
         lifecycleScope.launch {
             var wasShared = false
             combine(
@@ -314,6 +316,17 @@ class ConnectionService : LifecycleService() {
                     if (shared && (!wasShared || created)) calls.controller?.onConnected()
                     wasShared = shared
                 }
+        }
+    }
+
+    /**
+     * READ_CALL_LOG decides whether the source can deliver the incoming number (API 31+, see
+     * AndroidCallStateSource): when it flips, only the source restarts; the controller stays.
+     */
+    private fun watchCallLogGrant() {
+        if (!BuildConfig.FEATURE_CALL_LOG || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        lifecycleScope.launch {
+            graph.callsPermissions.map { it.callLog }.distinctUntilChanged().drop(1).collect { calls.restartSource() }
         }
     }
 

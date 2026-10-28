@@ -6,7 +6,7 @@ package io.github.anmirror.feature.calls
  * keeps its call_id. Call from one thread (the service's main scope).
  */
 class CallsRuntime(private val create: () -> CallController) {
-    var controller: CallController? = null
+    @Volatile var controller: CallController? = null
         private set
 
     /** Applies the switch and the permission; returns true when a new controller was just started. */
@@ -19,6 +19,11 @@ class CallsRuntime(private val create: () -> CallController) {
         if (controller != null) return false
         controller = create().also { it.start() }
         return true
+    }
+
+    /** A permission that changes how the source reports (READ_CALL_LOG) flipped: same controller, new listener. */
+    fun restartSource() {
+        controller?.restartSource()
     }
 
     fun stop() {
