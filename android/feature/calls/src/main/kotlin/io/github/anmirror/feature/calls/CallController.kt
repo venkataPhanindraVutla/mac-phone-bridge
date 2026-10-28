@@ -41,6 +41,8 @@ class CallController(
     private val primary: CallActions?,
     /** The dialer notification's CallStyle intents. */
     private val fallback: CallActions,
+    /** The microphone mute; independent of the answer permission. */
+    private val mic: MicMute,
     /** Null when the call log is switched off or READ_CALL_LOG is missing. */
     private val missed: MissedCallLookup?,
     /** Title of the active call notification, if any: a number or a contact name. */
@@ -53,7 +55,8 @@ class CallController(
     /** The call log is written a moment after the phone goes idle. */
     private val lookupDelayMs: Long = 1_500,
 ) {
-    private class Event(val phase: TelephonyPhase, val number: String?)
+    /** A phase change from the source, or (phase == null) a nudge to re-read the caller's identity. */
+    private class Event(val phase: TelephonyPhase?, val number: String?)
 
     private class Call(val id: String, val incoming: Boolean, val startedMs: Long) {
         var phase = CallPhase.CALL_PHASE_RINGING
@@ -102,6 +105,11 @@ class CallController(
         consumer = null
     }
 
+    /** The call notification changed: queue a re-read of the newest call's number / name. */
+    fun refreshIdentity() {
+        events.trySend(Event(null, null))
+    }
+
     /** The Mac (re)connected: tell it about every call in progress. */
     suspend fun onConnected() = mutex.withLock {
         calls.forEach { send(MessageType.CALLS_STATE, it.toState()) }
@@ -117,10 +125,11 @@ class CallController(
         val ringing = call.phase == CallPhase.CALL_PHASE_RINGING
         val active = call.phase == CallPhase.CALL_PHASE_ACTIVE
         return when (action) {
+            // End/decline act on the foreground call, never on a waiting one: not offered for it.
             CallAction.CALL_ACTION_ANSWER ->
-                if (ringing && call.canAnswer) attempt { it.answer() } else NOT_ALLOWED
+                if (ringing && call.canAnswer && !call.waiting) attempt { it.answer() } else NOT_ALLOWED
             CallAction.CALL_ACTION_DECLINE ->
-                if (ringing) attempt { it.end() }.also { if (it == OK) call.declined = true } else NOT_ALLOWED
+                if (ringing && !call.waiting) attempt { it.end() }.also { if (it == OK) call.declined = true } else NOT_ALLOWED
             CallAction.CALL_ACTION_HANG_UP ->
                 if (active) attempt { it.end() } else NOT_ALLOWED
             CallAction.CALL_ACTION_MUTE -> if (active) mute(call, true) else NOT_ALLOWED
@@ -137,9 +146,8 @@ class CallController(
     }
 
     private suspend fun mute(call: Call, muted: Boolean): CallCommandOutcome {
-        val actions = primary?.takeIf { it.isAvailable() } ?: return NOT_ALLOWED
-        val applied = actions.setMuted(muted)
-        val readBack = actions.isMuted()
+        val applied = mic.setMuted(muted)
+        val readBack = mic.isMuted()
         call.muteSupported = readBack == muted
         call.muted = readBack ?: call.muted
         if (muted && call.muteSupported) micMutedByUs = true
@@ -149,6 +157,11 @@ class CallController(
     }
 
     private suspend fun handle(e: Event) {
+        if (e.phase == null) {
+            refreshIdentity(null)
+            publish()
+            return
+        }
         val prev = lastPhase
         lastPhase = e.phase
         when (e.phase) {
@@ -179,11 +192,11 @@ class CallController(
                 calls.toList().forEach { close(it) }
                 if (micMutedByUs) {
                     micMutedByUs = false
-                    primary?.setMuted(false)
+                    mic.setMuted(false)
                 }
             }
         }
-        refreshIdentities(e.number)
+        refreshIdentity(e.number)
         publish()
     }
 
@@ -191,7 +204,8 @@ class CallController(
         val now = clock()
         val call = Call(newId(), incoming, now)
         call.canAnswer = canAnswer
-        val (n, name) = identify(number)
+        // The notification is only the caller's while this is the one call; with two it may be the other's.
+        val (n, name) = identify(number, useNotification = calls.isEmpty())
         call.number = n
         call.displayName = name
         if (active) {
@@ -206,9 +220,9 @@ class CallController(
 
     /** Mute can be offered when the microphone state can be read at all. */
     private fun initMute(call: Call) {
-        val actions = primary?.takeIf { it.isAvailable() }
-        call.muteSupported = actions?.isMuted() != null
-        call.muted = actions?.isMuted() ?: false
+        val state = mic.isMuted()
+        call.muteSupported = state != null
+        call.muted = state ?: false
     }
 
     /** ENDED goes out once, then the call is forgotten; an unanswered, undeclined ring may be a missed call. */
@@ -235,23 +249,25 @@ class CallController(
         }
     }
 
-    /** The number / name may show up after the first callback (the notification is posted later). */
-    private suspend fun refreshIdentities(sourceNumber: String?) {
-        for (call in calls) {
-            if (call.number.isNotEmpty() && call.displayName.isNotEmpty()) continue
-            val (n, name) = identify(sourceNumber?.takeIf { call.number.isEmpty() })
-            val number = call.number.ifEmpty { n }
-            val display = call.displayName.ifEmpty { name }
-            if (number == call.number && display == call.displayName) continue
-            call.number = number
-            call.displayName = display
-            send(MessageType.CALLS_STATE, call.toState())
-        }
+    /**
+     * The number / name may show up after the first callback (the dialer posts its notification
+     * later): fills what is still empty on the newest call only. Other calls are never backfilled.
+     */
+    private suspend fun refreshIdentity(sourceNumber: String?) {
+        val call = calls.lastOrNull() ?: return
+        if (call.number.isNotEmpty() && call.displayName.isNotEmpty()) return
+        val (n, name) = identify(sourceNumber, useNotification = calls.size == 1)
+        val number = call.number.ifEmpty { n }
+        val display = call.displayName.ifEmpty { name }
+        if (number == call.number && display == call.displayName) return
+        call.number = number
+        call.displayName = display
+        send(MessageType.CALLS_STATE, call.toState())
     }
 
     /** (number, display name): the number from the source, else from the notification title when it is one. */
-    private fun identify(sourceNumber: String?): Pair<String, String> {
-        val title = notificationNumber()?.trim()?.takeIf { it.isNotEmpty() }
+    private fun identify(sourceNumber: String?, useNotification: Boolean): Pair<String, String> {
+        val title = if (useNotification) notificationNumber()?.trim()?.takeIf { it.isNotEmpty() } else null
         val titleIsNumber = title != null && looksLikeNumber(title)
         val number = sourceNumber?.takeIf { it.isNotBlank() } ?: title.takeIf { titleIsNumber }.orEmpty()
         val name = title.takeIf { !titleIsNumber }.orEmpty()

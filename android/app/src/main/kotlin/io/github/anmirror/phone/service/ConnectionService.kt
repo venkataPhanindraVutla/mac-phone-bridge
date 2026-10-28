@@ -36,6 +36,8 @@ import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
 import io.github.anmirror.connection.PhoneConnectionState.Connected
 import io.github.anmirror.feature.calls.AndroidCallStateSource
+import io.github.anmirror.feature.calls.AndroidMicMute
+import io.github.anmirror.feature.calls.CallsRuntime
 import io.github.anmirror.feature.calls.CallController
 import io.github.anmirror.feature.calls.CallLogMissedCallLookup
 import io.github.anmirror.feature.calls.CallStyleCallActions
@@ -123,8 +125,8 @@ class ConnectionService : LifecycleService() {
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
-        callController?.stop()
-        callController = null
+        graph.callNotifications.onDialerCallPosted = null
+        calls.stop()
         network.stop()
         graph.manager.stop()
         Log.i(TAG, "service: destroyed")
@@ -266,62 +268,62 @@ class ConnectionService : LifecycleService() {
         }
     }
 
-    private var callController: CallController? = null
+    private val calls = CallsRuntime { newCallController() }
 
     /**
      * Calls: the controller (and its telephony source) lives while the switch is on and
-     * READ_PHONE_STATE is granted, so a call survives a dropped connection; what it sends goes
-     * through [AppGraph.sendCalls], which sends only while the Mac shares calls.v1.
-     * `calls.availability` is sent regardless, while the Mac shares calls.v1, and every
-     * `calls.command` gets exactly one `calls.result`, NOT_ALLOWED while the feature is closed.
+     * READ_PHONE_STATE is granted, and only then (a reconnect never rebuilds it, so a call keeps its
+     * call_id); what it sends goes through [AppGraph.sendCalls], which sends only while the Mac
+     * shares calls.v1. `calls.availability` is sent regardless, while the Mac shares calls.v1, and
+     * every `calls.command` gets exactly one `calls.result`: NOT_ALLOWED while the feature is
+     * closed, FAILED if handling it threw.
      */
     private fun setUpCalls() {
         graph.manager.on(MessageType.CALLS_COMMAND) { env ->
             val command = CallCommand.parseFrom(env.payload)
             graph.scope.launch {
                 if (!graph.callsShared()) return@launch
-                val controller = callController?.takeIf { graph.callsOpen() }
-                val result = controller?.onCommand(command) ?: CallCommandResult.newBuilder()
-                    .setCallId(command.callId)
-                    .setOutcome(CallCommandOutcome.CALL_COMMAND_OUTCOME_NOT_ALLOWED)
-                    .build()
+                val controller = calls.controller?.takeIf { graph.callsOpen() }
+                val outcome = try {
+                    controller?.onCommand(command)?.outcome ?: CallCommandOutcome.CALL_COMMAND_OUTCOME_NOT_ALLOWED
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "calls: command failed", e)
+                    CallCommandOutcome.CALL_COMMAND_OUTCOME_FAILED
+                }
+                val result = CallCommandResult.newBuilder().setCallId(command.callId).setOutcome(outcome).build()
                 graph.manager.send(Channel.CHANNEL_CALLS, MessageType.CALLS_RESULT, result, env.id)
             }
         }
+        graph.callNotifications.onDialerCallPosted = { calls.controller?.refreshIdentity() }
         lifecycleScope.launch {
+            var wasShared = false
             combine(
                 graph.manager.state.map { it is Connected && "calls.v1" in it.shared }.distinctUntilChanged(),
                 graph.callsOn,
-                graph.callsPermissions,
-            ) { shared, on, permissions -> Triple(shared, on, permissions) }
+                graph.callsPermissions.map { it.phoneState }.distinctUntilChanged(),
+            ) { shared, on, phoneState -> Triple(shared, on, phoneState) }
                 .distinctUntilChanged()
-                .collect { (shared, on, permissions) ->
+                .collect { (shared, on, phoneState) ->
                     if (shared) {
-                        graph.manager.send(Channel.CHANNEL_CALLS, MessageType.CALLS_AVAILABILITY, featureAvailability(permissions.phoneState, on))
+                        graph.manager.send(Channel.CHANNEL_CALLS, MessageType.CALLS_AVAILABILITY, featureAvailability(phoneState, on))
                     }
-                    callController?.stop()
-                    callController = null
-                    if (on && permissions.phoneState) {
-                        val controller = newCallController(permissions.callLog, permissions.answer)
-                        callController = controller
-                        controller.start()
-                    }
+                    val created = calls.update(on, phoneState)
+                    // The one place the Mac is caught up: it just (re)connected, or the controller just came up while connected.
+                    if (shared && (!wasShared || created)) calls.controller?.onConnected()
+                    wasShared = shared
                 }
-        }
-        // Once per (re)connect: catch the Mac up with a call already in progress.
-        lifecycleScope.launch {
-            graph.manager.state
-                .map { it is Connected && "calls.v1" in it.shared }
-                .distinctUntilChanged()
-                .collect { shared -> if (shared) callController?.onConnected() }
         }
     }
 
-    private fun newCallController(callLog: Boolean, answer: Boolean) = CallController(
-        source = AndroidCallStateSource(this),
-        primary = if (BuildConfig.FEATURE_ANSWER_CALLS && answer) TelecomCallActions(this) else null,
+    // Both implementations check their permission on every use, so a grant needs no rebuild.
+    private fun newCallController() = CallController(
+        source = AndroidCallStateSource(this, wantNumber = BuildConfig.FEATURE_CALL_LOG),
+        primary = if (BuildConfig.FEATURE_ANSWER_CALLS) TelecomCallActions(this) else null,
         fallback = CallStyleCallActions { graph.callNotifications.notification() },
-        missed = if (BuildConfig.FEATURE_CALL_LOG && callLog) CallLogMissedCallLookup(this) else null,
+        mic = AndroidMicMute(this),
+        missed = if (BuildConfig.FEATURE_CALL_LOG) CallLogMissedCallLookup(this) else null,
         notificationNumber = { graph.callNotifications.title() },
         clock = System::currentTimeMillis,
         newId = { java.util.UUID.randomUUID().toString() },

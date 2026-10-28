@@ -16,6 +16,7 @@ class CallLogMissedCallLookup(context: Context) : MissedCallLookup {
     private val app = context.applicationContext
 
     override fun wasMissed(number: String?, sinceMs: Long): Boolean? {
+        if (number.isNullOrBlank()) return null // nothing to match a row against: cannot tell
         if (app.checkSelfPermission(Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) return null
         return try {
             app.contentResolver.query(

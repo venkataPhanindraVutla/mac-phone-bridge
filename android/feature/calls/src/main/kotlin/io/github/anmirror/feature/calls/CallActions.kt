@@ -18,23 +18,44 @@ interface CallActions {
     fun answer(): Boolean
     /** Declines a ringing call or hangs up an active one. */
     fun end(): Boolean
+}
+
+/** The microphone mute (MODIFY_AUDIO_SETTINGS only; no call permission needed). */
+interface MicMute {
     fun setMuted(muted: Boolean): Boolean
     /** The microphone's mute state; null = unknown. */
     fun isMuted(): Boolean?
 }
 
+class AndroidMicMute(context: Context) : MicMute {
+    private val audio = context.applicationContext.getSystemService(AudioManager::class.java)
+
+    override fun setMuted(muted: Boolean): Boolean = try {
+        audio.isMicrophoneMute = muted
+        true
+    } catch (e: RuntimeException) {
+        false
+    }
+
+    override fun isMuted(): Boolean? = try {
+        audio.isMicrophoneMute
+    } catch (e: RuntimeException) {
+        null
+    }
+}
+
 /**
- * [TelecomManager.acceptRingingCall] / [TelecomManager.endCall] (ANSWER_PHONE_CALLS) and the
- * microphone mute of [AudioManager]. Call audio itself stays on the phone.
+ * [TelecomManager.acceptRingingCall] / [TelecomManager.endCall] (ANSWER_PHONE_CALLS), checked live
+ * on every call. Call audio itself stays on the phone.
  */
 class TelecomCallActions(context: Context) : CallActions {
     private val app = context.applicationContext
     private val telecom = app.getSystemService(TelecomManager::class.java)
-    private val audio = app.getSystemService(AudioManager::class.java)
 
     override fun isAvailable(): Boolean =
         app.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
 
+    @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
     override fun answer(): Boolean = guarded {
         telecom.acceptRingingCall()
@@ -44,17 +65,6 @@ class TelecomCallActions(context: Context) : CallActions {
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
     override fun end(): Boolean = guarded { telecom.endCall() }
-
-    override fun setMuted(muted: Boolean): Boolean = guarded {
-        audio.isMicrophoneMute = muted
-        true
-    }
-
-    override fun isMuted(): Boolean? = try {
-        audio.isMicrophoneMute
-    } catch (e: RuntimeException) {
-        null
-    }
 
     private fun guarded(block: () -> Boolean): Boolean = try {
         isAvailable() && block()
@@ -78,10 +88,6 @@ class CallStyleCallActions(private val activeCallNotification: () -> Notificatio
     /** A ringing call's notification carries Decline, an ongoing one's Hang up. */
     override fun end(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
         (fire(Notification.EXTRA_DECLINE_INTENT) || fire(Notification.EXTRA_HANG_UP_INTENT))
-
-    override fun setMuted(muted: Boolean): Boolean = false
-
-    override fun isMuted(): Boolean? = null
 
     private fun fire(extra: String): Boolean {
         val extras = activeCallNotification()?.extras ?: return false

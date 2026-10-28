@@ -30,20 +30,17 @@ private class FakeSource : CallStateSource {
 private class FakeActions(
     var answerOk: Boolean = true,
     var endOk: Boolean = true,
-    var muteOk: Boolean = true,
-    var applyMute: Boolean = true,
     var available: Boolean = true,
 ) : CallActions {
     val log = mutableListOf<String>()
-    var muted: Boolean? = false
     override fun isAvailable() = available
     override fun answer(): Boolean { log += "answer"; return answerOk }
     override fun end(): Boolean { log += "end"; return endOk }
-    override fun setMuted(muted: Boolean): Boolean {
-        log += "mute($muted)"
-        if (applyMute && muteOk) this.muted = muted
-        return muteOk
-    }
+}
+
+private class FakeMic(var applyMute: Boolean = true) : MicMute {
+    var muted: Boolean? = false
+    override fun setMuted(muted: Boolean): Boolean { if (applyMute) this.muted = muted; return true }
     override fun isMuted(): Boolean? = muted
 }
 
@@ -57,6 +54,7 @@ private class Rig(scope: CoroutineScope, dispatcher: CoroutineDispatcher) {
     val source = FakeSource()
     val primary = FakeActions()
     val fallback = FakeActions()
+    val mic = FakeMic()
     var lookup: FakeLookup? = FakeLookup(null)
     var title: String? = null
     var now = 1_000L
@@ -69,6 +67,7 @@ private class Rig(scope: CoroutineScope, dispatcher: CoroutineDispatcher) {
             source = source,
             primary = if (primaryOn) primary else null,
             fallback = fallback,
+            mic = mic,
             missed = lookup,
             notificationNumber = { title },
             clock = { now },
@@ -190,7 +189,7 @@ class CallControllerTest {
     }
 
     @Test fun muteReadBackMismatchMarksUnsupported() = test {
-        primary.applyMute = false
+        mic.applyMute = false
         source.emit(TelephonyPhase.OFFHOOK, "1")
         val r = controller.onCommand(cmd(last.callId, CallAction.CALL_ACTION_MUTE))
         assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_FAILED, r.outcome)
@@ -268,6 +267,62 @@ class CallControllerTest {
 
     @Test fun stopStopsTheSource() = test {
         controller.stop()
+        assertTrue(source.stopped)
+    }
+
+    @Test fun declineOnWaitingCallIsNotAllowed() = test {
+        source.emit(TelephonyPhase.OFFHOOK, "1")
+        source.emit(TelephonyPhase.RINGING, "2")
+        val waiting = last.callId
+        assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_NOT_ALLOWED, controller.onCommand(cmd(waiting, CallAction.CALL_ACTION_DECLINE)).outcome)
+        assertTrue(primary.log.isEmpty() && fallback.log.isEmpty())
+    }
+
+    @Test fun muteWorksWithoutPrimary() = test(setup = { primaryOn = false }) {
+        source.emit(TelephonyPhase.OFFHOOK, "1")
+        assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_OK, controller.onCommand(cmd(last.callId, CallAction.CALL_ACTION_MUTE)).outcome)
+        assertTrue(last.muted)
+    }
+
+    @Test fun identityResolvesWhenNotificationArrivesAfterRinging() = test {
+        source.emit(TelephonyPhase.RINGING, null)
+        assertEquals("", last.number)
+        title = "+91 98765 43210"
+        controller.refreshIdentity()
+        assertEquals("+91 98765 43210", last.number)
+        assertEquals(CallPhase.CALL_PHASE_RINGING, last.phase)
+        // The missed call carries it too.
+        source.emit(TelephonyPhase.IDLE)
+        assertEquals("+91 98765 43210", missed.single().number)
+    }
+
+    @Test fun identityDoesNotLeakToOtherCall() = test {
+        title = "Asha Rao"
+        source.emit(TelephonyPhase.OFFHOOK, null)
+        val first = last.callId
+        assertEquals("Asha Rao", last.displayName)
+        source.emit(TelephonyPhase.RINGING, null)
+        assertEquals("", last.displayName)
+        controller.refreshIdentity()
+        assertEquals(1, states.count { it.callId == last.callId })
+        assertEquals("", last.displayName)
+        assertEquals("Asha Rao", controller.current.value?.displayName)
+        assertEquals(first, controller.current.value?.callId)
+    }
+
+    @Test fun reconnectKeepsTheSameCallId() = test {
+        val runtime = CallsRuntime { controller }
+        assertTrue(runtime.update(on = true, granted = true))
+        source.emit(TelephonyPhase.OFFHOOK, "1")
+        val id = last.callId
+        // A reconnect changes nothing about the switch or the permission: no new controller.
+        assertFalse(runtime.update(on = true, granted = true))
+        states.clear()
+        runtime.controller!!.onConnected()
+        assertEquals(listOf(id), states.map { it.callId })
+        assertFalse(states.single().incoming)
+        runtime.update(on = true, granted = false)
+        assertNull(runtime.controller)
         assertTrue(source.stopped)
     }
 

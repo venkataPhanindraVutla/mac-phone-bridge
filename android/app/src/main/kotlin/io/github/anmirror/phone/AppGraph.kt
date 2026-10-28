@@ -7,6 +7,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import android.service.notification.StatusBarNotification
+import android.telecom.TelecomManager
 import android.util.AtomicFile
 import android.util.Log
 import com.google.protobuf.MessageLite
@@ -234,7 +235,7 @@ class AppGraph private constructor(context: Context) {
         callsOpen() && manager.send(ProtoChannel.CHANNEL_CALLS, type, payload)
 
     /** Points at the notification listener while it is bound; the active call notification comes from it. */
-    val callNotifications = DelegatingCallNotifications()
+    val callNotifications = DelegatingCallNotifications(app)
 
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
@@ -329,14 +330,32 @@ class DelegatingActionInvoker : ActionInvoker {
 data class CallsPermissions(val phoneState: Boolean, val callLog: Boolean, val answer: Boolean)
 
 /**
- * The active `category == call` notification, read through the notification listener while it is
- * bound. Both lookups are null when it is not (feature/calls cannot see the listener itself).
+ * The active `category == call` notification of the default dialer / in-call UI, read through the
+ * notification listener while it is bound. Call notifications of other apps (WhatsApp, Meet, ...)
+ * are ignored: they are neither fired nor used as caller identity. Everything is null when the
+ * listener is not bound (feature/calls cannot see the listener itself).
  */
-class DelegatingCallNotifications {
+class DelegatingCallNotifications(context: Context) {
+    private val app = context.applicationContext
+
     @Volatile var active: (() -> List<StatusBarNotification>?)? = null
 
-    fun notification(): Notification? =
-        active?.invoke()?.firstOrNull { it.notification.category == Notification.CATEGORY_CALL }?.notification
+    /** Set by the service while the controller exists; called when a dialer call notification is posted. */
+    @Volatile var onDialerCallPosted: (() -> Unit)? = null
+
+    private fun dialerPackages(): Set<String> {
+        val telecom = app.getSystemService(TelecomManager::class.java) ?: return emptySet()
+        return try {
+            setOfNotNull(telecom.defaultDialerPackage, telecom.systemDialerPackage)
+        } catch (e: RuntimeException) {
+            emptySet()
+        }
+    }
+
+    fun isDialerCall(sbn: StatusBarNotification): Boolean =
+        sbn.notification.category == Notification.CATEGORY_CALL && sbn.packageName in dialerPackages()
+
+    fun notification(): Notification? = active?.invoke()?.firstOrNull { isDialerCall(it) }?.notification
 
     /** Title of the call notification: the caller's number or name. */
     fun title(): String? = notification()?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()

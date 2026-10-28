@@ -35,6 +35,8 @@ class PhoneNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // The dialer's call notification carries the caller's identity for the call controller.
+        if (graph.callNotifications.isDialerCall(sbn)) graph.callNotifications.onDialerCallPosted?.invoke()
         // Nothing is read while the feature is off or no Mac listens.
         if (!graph.notifyOpen()) return
         val snapshot = reader.snapshot(sbn)
