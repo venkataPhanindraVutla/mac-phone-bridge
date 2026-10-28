@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -69,8 +71,10 @@ fun HomeScreen(
 ) {
     var confirmForget by rememberSaveable { mutableStateOf(false) }
     var confirmPairAgain by rememberSaveable { mutableStateOf(false) }
+    // Scrolls when the rows do not fit; when they do, Forget still sits at the bottom (the scroll
+    // keeps the screen's height as the minimum, so the weighted spacer fills the rest).
     Column(
-        modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
+        modifier = Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (ringing) {
