@@ -601,6 +601,93 @@ class ConnectionManagerTest {
     }
 
     @Test
+    fun busyStopsDiscovery() = runTest {
+        // R37 #8: waiting out BUSY must not keep the Bonjour browser (and the radio) busy.
+        var active = 0
+        val discovery = MacDiscovery {
+            kotlinx.coroutines.flow.flow<DiscoveredService> {
+                active++
+                try {
+                    kotlinx.coroutines.awaitCancellation()
+                } finally {
+                    active--
+                }
+            }
+        }
+        val r = rig(listOf(macA()), discovery)
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
+        mac.errorOnHello = ErrorCode.ERROR_CODE_BUSY
+        r.manager.start()
+        runCurrent()
+        assertEquals(PhoneConnectionState.Busy(macA()), r.manager.state.value)
+        assertEquals(0, active, "no Bonjour browsing while the Mac serves another phone")
+        mac.errorOnHello = null
+        advanceTimeBy(60_001)
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+    }
+
+    @Test
+    fun storeSaveFailureStillConnectsAndKeepsRunning() = runTest {
+        // R37 #6: a store write that throws (Keystore trouble) must not end the session or the loop.
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        val store = object : PairedMacStore by inner {
+            override suspend fun save(mac: PairedMac) = throw IllegalStateException("keystore unavailable")
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val mac = FakeMac(Identities.MAC_FP, backgroundScope).also { connector.macs["10.0.0.5:4000"] = it }
+        val manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        launch { mac.goodbye(GoodbyeReason.GOODBYE_REASON_SHUTDOWN) }
+        runCurrent()
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value, "the manager is still running")
+        assertEquals(2, mac.connects)
+    }
+
+    @Test
+    fun loopSurvivesUnexpectedException() = runTest {
+        // R37 #6: an unexpected error restarts the loop after a backoff instead of ending it.
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        var failures = 1
+        val store = object : PairedMacStore by inner {
+            override suspend fun all(): List<PairedMac> {
+                if (failures > 0) {
+                    failures--
+                    throw IllegalStateException("store read failed")
+                }
+                return inner.all()
+            }
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val mac = FakeMac(Identities.MAC_FP, backgroundScope).also { connector.macs["10.0.0.5:4000"] = it }
+        val manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        manager.start()
+        runCurrent()
+        assertEquals(0, mac.connects)
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        assertEquals(1, mac.connects)
+    }
+
+    @Test
+    fun stopStillCancelsTheLoop() = runTest {
+        // Cancellation is not an "unexpected exception": stop() ends the loop for good.
+        val r = rig(listOf(macA()))
+        r.manager.start()
+        runCurrent()
+        r.manager.stop()
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals(PhoneConnectionState.Stopped, r.manager.state.value)
+        assertTrue(r.connector.dials.all { it.second == 0L }, "no dials after stop")
+    }
+
+    @Test
     fun forgetKickIsNotSwallowed() = runTest {
         // forget() lands right after the loop read the store: its kick must still wake the wait.
         val inner = InMemoryPairedMacStore(listOf(macA()))

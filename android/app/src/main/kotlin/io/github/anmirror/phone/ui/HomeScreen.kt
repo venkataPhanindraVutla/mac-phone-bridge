@@ -37,6 +37,7 @@ import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.copyNamesMac
+import io.github.anmirror.phone.forgetBodyRes
 import io.github.anmirror.phone.messageRes
 
 /** The paired Mac, the connection state from ConnectionManager, and Forget this Mac. */
@@ -112,7 +113,7 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = { confirmForget = false },
             title = { Text(stringResource(R.string.home_forget_title, mac.name)) },
-            text = { Text(stringResource(R.string.home_forget_body)) },
+            text = { Text(stringResource(state.forgetBodyRes())) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmForget = false

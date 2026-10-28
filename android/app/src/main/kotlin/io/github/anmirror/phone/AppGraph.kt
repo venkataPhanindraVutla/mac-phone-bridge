@@ -65,6 +65,7 @@ class AppGraph private constructor(context: Context) {
         discovery = NsdMacDiscovery(app, scope),
         connector = connector,
         hello = ::hello,
+        log = { message, e -> Log.e(TAG, "connection: $message", e) },
     )
 
     val pairing = PairingController(

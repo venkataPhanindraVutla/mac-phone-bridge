@@ -43,3 +43,10 @@ val PhoneConnectionState.macOrNull: PairedMac?
         is PhoneConnectionState.Busy -> mac
         PhoneConnectionState.NotPaired, PhoneConnectionState.Searching, PhoneConnectionState.Stopped -> null
     }
+
+/**
+ * What the Forget dialog says. Only a connected Mac hears `system.goodbye UNPAIRED` and forgets
+ * this phone too; otherwise the Mac keeps listing it until removed there.
+ */
+fun PhoneConnectionState.forgetBodyRes(): Int =
+    if (this is PhoneConnectionState.Connected) R.string.home_forget_body_connected else R.string.home_forget_body_not_connected

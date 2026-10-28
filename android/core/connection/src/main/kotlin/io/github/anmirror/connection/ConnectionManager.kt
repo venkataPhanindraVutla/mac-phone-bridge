@@ -98,6 +98,10 @@ data class ConnectionTiming(
  * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect. The backoff
  *   starts over after a session that lived at least one ping interval.
  * - `system.goodbye UNPAIRED` removes the Mac, then moves on to the next Mac or `NotPaired`.
+ *   Any other goodbye (`SHUTDOWN` when the Mac app quits, ...) is a normal disconnect: the Mac
+ *   stays paired and is retried with the backoff above.
+ * - A store write that fails at connect is logged; the session goes on. Any other unexpected
+ *   error restarts the loop after a backoff (1, 2, 4, ... s, or a kick): it never ends by itself.
  *
  * [hello] builds the phone's `system.hello`; its capabilities decide what [send] allows.
  * [clock] is unix milliseconds (rotating-ID epoch and `lastConnectedAt`).
@@ -110,6 +114,10 @@ class ConnectionManager(
     private val hello: () -> Hello,
     private val clock: () -> Long = System::currentTimeMillis,
     private val timing: ConnectionTiming = ConnectionTiming(),
+    /** Where unexpected errors are reported (the app passes Android's log). */
+    private val log: (String, Throwable?) -> Unit = { message, e ->
+        System.err.println("ConnectionManager: $message${e?.let { ": $it" } ?: ""}")
+    },
 ) {
     private val _state = MutableStateFlow<PhoneConnectionState>(PhoneConnectionState.NotPaired)
     val state: StateFlow<PhoneConnectionState> = _state.asStateFlow()
@@ -145,7 +153,7 @@ class ConnectionManager(
         synchronized(stateLock) {
             if (job?.isActive == true) return
             val gen = ++generation
-            job = scope.launch { loop(gen) }
+            job = scope.launch { supervise(gen) }
         }
     }
 
@@ -290,6 +298,27 @@ class ConnectionManager(
 
     private enum class Wake { TIMEOUT, USER, DISCOVERY }
 
+    /**
+     * Runs [loop] and restarts it after an unexpected error (a store that throws, a bug), after
+     * the usual backoff or a kick, so the manager never stops on its own. Cancellation ([stop],
+     * the scope ending) is passed on.
+     */
+    private suspend fun supervise(gen: Int) {
+        var failures = 0
+        while (true) {
+            try {
+                loop(gen)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("connection loop failed; restarting", e)
+                (_state.value as? PhoneConnectionState.Connected)?.let { setState(gen, PhoneConnectionState.Connecting(it.mac)) }
+                val kicked = withTimeoutOrNull(timing.backoff(failures)) { userKicks.receive() } != null
+                failures = if (kicked) 0 else failures + 1
+            }
+        }
+    }
+
     private suspend fun loop(gen: Int) = coroutineScope {
         val watch = DiscoveryWatch(this)
         var attempt = 0
@@ -367,6 +396,8 @@ class ConnectionManager(
                     }
                 }
                 Attempt.Busy -> {
+                    // Waiting for a kick or the timed retry: no Bonjour browsing meanwhile.
+                    watch.stop()
                     setState(gen, PhoneConnectionState.Busy(mac))
                     if (withTimeoutOrNull(timing.busyRetryMs) { userKicks.receive() } != null) Wake.USER else Wake.TIMEOUT
                 }
@@ -500,7 +531,11 @@ class ConnectionManager(
                     return@withLock YIELD
                 }
                 val updated = mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = clock())
-                store.save(updated)
+                // A failed write (Keystore trouble) only loses the remembered address: go on.
+                runCatching { store.save(updated) }.onFailure { e ->
+                    if (e is CancellationException) throw e
+                    log("could not save the Mac's address", e)
+                }
                 // A pairing connection to this Mac handed over while we dialed it is not needed now.
                 adopted.get()?.takeIf { it !== channel && it.isFor(mac) && adopted.compareAndSet(it, null) }?.close()
                 val session = PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs)

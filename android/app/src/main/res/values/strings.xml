@@ -56,7 +56,9 @@
     <string name="home_pair_again_body">This phone forgets %1$s. Then scan the new code your Mac shows.</string>
     <string name="home_forget">Forget this Mac</string>
     <string name="home_forget_title">Forget %1$s?</string>
-    <string name="home_forget_body">Your Mac will forget this phone too. To use them together again, pair again.</string>
+    <!-- Only a connected Mac hears the goodbye; an unreachable one keeps the phone listed. -->
+    <string name="home_forget_body_connected">Your Mac will forget this phone too. To use them together again, pair again.</string>
+    <string name="home_forget_body_not_connected">Your Mac will keep listing this phone until you remove it there. To use them together again, pair again.</string>
     <string name="home_forget_confirm">Forget</string>
 
     <!-- Find my phone -->
