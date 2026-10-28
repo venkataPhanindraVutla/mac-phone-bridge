@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 /// App icons the phone sent (PNG), one file per package, kept on disk so notifications can carry them.
 public final class IconCache {
@@ -19,6 +20,8 @@ public final class IconCache {
             try png.write(to: fileURL(for: package), options: .atomic)
         } catch {
             // An icon is decoration; losing one is harmless and it is requested again next session.
+            Logger(subsystem: "io.github.anmirror.mac", category: "notify")
+                .error("icon cache write failed: \(String(describing: type(of: error)), privacy: .public)")
         }
     }
 

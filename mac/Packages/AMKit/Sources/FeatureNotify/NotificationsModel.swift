@@ -1,6 +1,7 @@
 import AMProtocol
 import Foundation
 import Observation
+import os
 import SwiftProtobuf
 import UserNotifications
 
@@ -9,6 +10,8 @@ import UserNotifications
 @MainActor
 @Observable
 public final class NotificationsModel {
+    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "notify")
+
     public private(set) var authorized: Bool?
     public private(set) var phoneAvailability: AMFeatureAvailability?
 
@@ -22,6 +25,10 @@ public final class NotificationsModel {
     @ObservationIgnored private let attachmentDirectory: URL
     @ObservationIgnored private lazy var registry = CategoryRegistry { [presenter] in presenter.setCategories($0) }
     @ObservationIgnored private var phoneID: String?
+    /// Overridable in tests to force the system's rejection of a file.
+    @ObservationIgnored var makeSystemAttachment: (URL) throws -> UNNotificationAttachment = {
+        try UNNotificationAttachment(identifier: "image", url: $0)
+    }
     @ObservationIgnored private var requestedIcons: Set<String> = []
 
     public init(
@@ -40,6 +47,7 @@ public final class NotificationsModel {
         self.nameFor = nameFor
         self.attachmentDirectory = attachmentDirectory
         self.send = send
+        clearAttachments()
     }
 
     // MARK: Connection
@@ -47,6 +55,7 @@ public final class NotificationsModel {
     public func connected(phoneID: String) async {
         self.phoneID = phoneID
         requestedIcons = []
+        clearAttachments()
         authorized = await presenter.authorize()
         await sendFilter(phoneID: phoneID)
     }
@@ -67,7 +76,9 @@ public final class NotificationsModel {
             let id = Self.macID(phoneID: phoneID, key: n.key)
             let content = makeContent(n, phoneID: phoneID)
             do { try await presenter.deliver(id: id, content: content) } catch {
-                // Delivery can fail when the user has since turned notifications off; nothing to do.
+                // The system only takes the attachment file once scheduling succeeds.
+                discardFiles(of: content)
+                Self.log.error("deliver failed: \(String(describing: type(of: error)), privacy: .public)")
             }
         }
         if !n.package.isEmpty, icons.url(for: n.package) == nil, requestedIcons.insert(n.package).inserted {
@@ -91,13 +102,17 @@ public final class NotificationsModel {
     }
 
     public func result(_ r: AMActionResult) async {
-        guard r.outcome == .gone, let phoneID else { return }   // OK needs nothing; FAILED is not shown
+        if r.outcome == .failed {
+            Self.log.error("phone could not run the action for key \(r.key, privacy: .private)")
+            return
+        }
+        guard r.outcome == .gone, let phoneID else { return }   // OK needs nothing
         presenter.remove(ids: [Self.macID(phoneID: phoneID, key: r.key)])
         let content = UNMutableNotificationContent()
         content.title = String(localized: "This notification is no longer on the phone.", bundle: .main)
         content.interruptionLevel = .passive
         do { try await presenter.deliver(id: "i|" + UUID().uuidString, content: content) } catch {
-            // As for posted: nothing useful to do.
+            Self.log.error("deliver of the gone notice failed: \(String(describing: type(of: error)), privacy: .public)")
         }
     }
 
@@ -202,21 +217,34 @@ public final class NotificationsModel {
     /// The picture, else the cached app icon. The system takes the file it is given, so it gets its own copy.
     private func makeAttachment(_ n: AMPhoneNotification) -> UNNotificationAttachment? {
         let fm = FileManager.default
+        var target: URL?
         do {
             try fm.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
-            let target: URL
             if !n.imageJpeg.isEmpty {
-                target = attachmentDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-                try n.imageJpeg.write(to: target)
+                let url = attachmentDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+                target = url
+                try n.imageJpeg.write(to: url)
             } else if let icon = icons.url(for: n.package) {
-                target = attachmentDirectory.appendingPathComponent(UUID().uuidString + ".png")
-                try fm.copyItem(at: icon, to: target)
+                let url = attachmentDirectory.appendingPathComponent(UUID().uuidString + ".png")
+                target = url
+                try fm.copyItem(at: icon, to: url)
             } else {
                 return nil
             }
-            return try UNNotificationAttachment(identifier: "image", url: target)
+            return try makeSystemAttachment(target!)
         } catch {
+            if let target { try? fm.removeItem(at: target) }
+            Self.log.error("attachment failed: \(String(describing: type(of: error)), privacy: .public)")
             return nil
         }
+    }
+
+    private func discardFiles(of content: UNNotificationContent) {
+        for a in content.attachments { try? FileManager.default.removeItem(at: a.url) }
+    }
+
+    /// Pictures never outlive the delivery attempt; sweep anything a crash or failure left behind.
+    private func clearAttachments() {
+        try? FileManager.default.removeItem(at: attachmentDirectory)
     }
 }

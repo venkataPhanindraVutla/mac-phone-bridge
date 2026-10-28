@@ -5,6 +5,8 @@ import Testing
 import UserNotifications
 @testable import FeatureNotify
 
+private let tinyPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgAAACAAAB4iG8MwAAAABJRU5ErkJggg==")!
+
 @MainActor
 final class FakePresenter: NotificationPresenter {
     var allow = true
@@ -13,10 +15,12 @@ final class FakePresenter: NotificationPresenter {
     var shown: [String] = []
     var categories: Set<UNNotificationCategory> = []
     var categoryCalls = 0
+    var failDelivery = false
 
     func authorize() async -> Bool { allow }
     func setCategories(_ categories: Set<UNNotificationCategory>) { self.categories = categories; categoryCalls += 1 }
     func deliver(id: String, content: UNNotificationContent) async throws {
+        if failDelivery { throw URLError(.cannotConnectToHost) }
         delivered.append((id, content))
         if !shown.contains(id) { shown.append(id) }
     }
@@ -285,9 +289,10 @@ private func info(_ phone: String = "P1", key: String = "k1", code: String? = ni
     await h.model.posted(note(key: "b"))
     #expect(h.sent(.notifyIconRequest, as: AMIconRequest.self).map(\.package) == ["com.chat"])
     // A cached icon is not requested, and is attached.
-    h.model.icon({ var i = AMAppIcon(); i.package = "com.cached"; i.png = Data([0x89]); return i }())
+    h.model.icon({ var i = AMAppIcon(); i.package = "com.cached"; i.png = tinyPNG; return i }())
     #expect(h.icons.url(for: "com.cached") != nil)
     await h.model.posted(note(key: "c", package: "com.cached"))
+    #expect(h.presenter.delivered.last?.content.attachments.count == 1)
     #expect(h.sent(.notifyIconRequest, as: AMIconRequest.self).count == 1)
     // A new session asks again.
     h.model.disconnected()
@@ -312,4 +317,35 @@ private func info(_ phone: String = "P1", key: String = "k1", code: String? = ni
     // Minimal valid JPEG (SOI + EOI is enough for the file-type check).
     await h.model.posted(note(image: Data([0xFF, 0xD8, 0xFF, 0xD9])))
     #expect(h.presenter.delivered.last?.content.attachments.count == 1)
+}
+
+private func attachmentFiles(_ h: Harness) -> [String] {
+    (try? FileManager.default.contentsOfDirectory(atPath: h.dir.appendingPathComponent("att").path)) ?? []
+}
+
+@MainActor
+@Test func failedDeliveryLeavesNoPictureOnDisk() async {
+    let h = Harness(); await h.connect()
+    h.presenter.failDelivery = true
+    await h.model.posted(note(image: Data([0xFF, 0xD8, 0xFF, 0xD9])))
+    #expect(attachmentFiles(h).isEmpty)
+}
+
+@MainActor
+@Test func failedAttachmentCreationLeavesNoFile() async {
+    let h = Harness(); await h.connect()
+    h.model.makeSystemAttachment = { _ in throw URLError(.badURL) }
+    await h.model.posted(note(image: Data([0xFF, 0xD8, 0xFF, 0xD9])))
+    #expect(h.presenter.delivered.last?.content.attachments.isEmpty == true)
+    #expect(attachmentFiles(h).isEmpty)
+}
+
+@MainActor
+@Test func staleAttachmentsAreSweptOnConnect() async {
+    let h = Harness()
+    let att = h.dir.appendingPathComponent("att")
+    try? FileManager.default.createDirectory(at: att, withIntermediateDirectories: true)
+    try? Data([1]).write(to: att.appendingPathComponent("old.jpg"))
+    await h.connect()
+    #expect(attachmentFiles(h).isEmpty)
 }
