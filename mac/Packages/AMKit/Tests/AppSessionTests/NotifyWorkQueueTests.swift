@@ -125,7 +125,7 @@ private final class Rig {
     let r = Rig(); defer { r.cleanUp() }
     await r.connectP1()
     r.presenter.shown += ["n|P2|old", "m|P2|500", "i|P2|notice"]
-    #expect(r.queue.plan(.unpaired(phone("P2"))) == [.notificationsForget("P2"), .contactsForget("P2")])
+    #expect(r.queue.plan(.unpaired(phone("P2"))) == [.notificationsForget("P2"), .contactsForget("P2"), .featureForget("P2")])
 
     r.queue.handle(.unpaired(phone("P2")))
     r.queue.handle(message: posted("k2"))
@@ -149,7 +149,8 @@ private final class Rig {
     r.queue.handle(message: ringing("c1"))
     r.presenter.shown += ["n|P2|other"]
     #expect(r.queue.plan(.unpaired(phone("P1"))) == [
-        .disconnected, .contactsDisconnected, .callsDisconnected, .notificationsForget("P1"), .contactsForget("P1"),
+        .disconnected, .contactsDisconnected, .callsDisconnected, .featureDisconnected,
+        .notificationsForget("P1"), .contactsForget("P1"), .featureForget("P1"),
     ])
     #expect(r.queue.connectedPhoneID == nil)
 
@@ -170,7 +171,9 @@ private final class Rig {
     let r = Rig(); defer { r.cleanUp() }
     await r.connectP1()
     #expect(r.queue.plan(.disconnected(phone("P2"))).isEmpty)
-    #expect(r.queue.plan(.disconnected(phone("P1"))) == [.disconnected, .contactsDisconnected, .callsDisconnected])
+    #expect(r.queue.plan(.disconnected(phone("P1"))) == [
+        .disconnected, .contactsDisconnected, .callsDisconnected, .featureDisconnected,
+    ])
 }
 
 @MainActor @Test func pendingPermissionPromptDoesNotHoldUpCalls() async throws {
