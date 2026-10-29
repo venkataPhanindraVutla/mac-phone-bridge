@@ -55,6 +55,7 @@ final class AppModel {
     private(set) var startupError: String?
 
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
+    @ObservationIgnored private let screenshotFolders: (desktop: URL, downloads: URL, temp: URL)
     /// The second listener, for transfer bytes (SPEC section 13); runs alongside `server`.
     @ObservationIgnored private let bulk: BulkServer
     @ObservationIgnored private let notificationPresenter: UserNotificationPresenter
@@ -162,10 +163,14 @@ final class AppModel {
             }
         )
         self.clipboard = clipboard
+        // Clipboard-mode files and thumbnail copies a previous run left behind.
+        let folders = Self.makeScreenshotFolders()
+        screenshotFolders = folders
+        try? FileManager.default.removeItem(at: folders.temp)
         let screenshots = ScreenshotInbox(
             presenter: presenter,
             destination: { .saved(in: .standard) },
-            folders: Self.screenshotFolders(),
+            folders: folders,
             writeImage: { url in
                 guard let image = NSImage(contentsOf: url) else { return false }
                 NSPasteboard.general.clearContents()
@@ -373,6 +378,20 @@ final class AppModel {
         guard destination != screenshotDestination else { return }
         screenshotDestination = destination
         UserDefaults.standard.set(destination.rawValue, forKey: ScreenshotDestination.defaultsKey)
+        askForScreenshotFolderAccess()
+    }
+
+    /// Looks into the screenshot folder off the main actor, so macOS asks for Desktop or Downloads
+    /// access now rather than when the first screenshot arrives (the engine writes on the main
+    /// actor, and a prompt there would hold up everything behind it).
+    private func askForScreenshotFolderAccess() {
+        let folder: URL
+        switch screenshotDestination {
+        case .desktop: folder = screenshotFolders.desktop
+        case .downloads: folder = screenshotFolders.downloads
+        case .clipboard: return
+        }
+        Task.detached(priority: .utility) { _ = try? FileManager.default.contentsOfDirectory(atPath: folder.path) }
     }
 
     /// The "Show phone calls" switch in Settings.
@@ -493,7 +512,7 @@ final class AppModel {
     }
 
     /// Desktop and Downloads, and a temp folder for Clipboard mode and notification thumbnails.
-    private static func screenshotFolders() -> (desktop: URL, downloads: URL, temp: URL) {
+    private static func makeScreenshotFolders() -> (desktop: URL, downloads: URL, temp: URL) {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         return (
@@ -532,6 +551,7 @@ final class AppModel {
             ring.clearHint()
             notifyWork.handle(event)
             refreshPhones()
+            if shared.contains("screenshots.v1") { askForScreenshotFolderAccess() }
             #if DEBUG
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
             #endif

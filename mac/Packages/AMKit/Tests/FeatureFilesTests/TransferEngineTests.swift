@@ -1131,6 +1131,20 @@ private func item(_ id: String, _ direction: TransferItem.Direction, _ state: Tr
     #expect(queued.map(\.waiting) == [1])
 }
 
+@Test func screenshotReceivesAreNotMenuLines() {
+    // R13: phone screenshots arrive on their own; the menu shows only what the user moves.
+    func shot(_ id: String, _ state: TransferItem.State) -> TransferItem {
+        TransferItem(id: id, direction: .receive, name: id, size: 10, kind: .screenshot, state: state)
+    }
+    #expect(TransferMenu.lines([shot("x1", .active), shot("x2", .queued)]).isEmpty)
+    let lines = TransferMenu.lines([
+        shot("x1", .active), item("r1", .receive, .queued), shot("x2", .queued), item("r2", .receive, .queued),
+        item("s1", .send, .active),
+    ])
+    #expect(lines.map(\.item.id) == ["s1", "r1"])
+    #expect(lines.map(\.waiting) == [0, 1])
+}
+
 @Test func sendableFilesSkipFoldersAndPackages() throws {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-sendable-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: dir) }

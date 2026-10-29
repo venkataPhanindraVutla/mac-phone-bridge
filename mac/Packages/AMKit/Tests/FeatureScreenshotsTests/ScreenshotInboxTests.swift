@@ -174,6 +174,25 @@ private final class Rig {
     #expect(r.revealed.map(\.path) == [saved.path])
 }
 
+@MainActor @Test func revealIgnoresPathsOutsideDestinations() async throws {
+    let r = Rig()
+    await r.connect()
+    // userInfo comes back from the notification centre: only a file in Desktop or Downloads is shown.
+    let outside = [
+        "/etc/passwd",
+        r.desktop.appendingPathComponent("../elsewhere.png").path,
+        r.root.appendingPathComponent("Desktop-2/x.png").path,
+        r.temp.appendingPathComponent("x.png").path,
+    ]
+    for path in outside {
+        #expect(r.inbox.handleResponse(userInfo: ["shot": true, ScreenshotInbox.pathKey: path]))
+    }
+    #expect(r.revealed.isEmpty)
+    let inside = r.downloads.appendingPathComponent("Screenshot_1.png").path
+    #expect(r.inbox.handleResponse(userInfo: ["shot": true, ScreenshotInbox.pathKey: inside]))
+    #expect(r.revealed.map(\.path) == [inside])
+}
+
 @MainActor @Test func otherResponsesAreNotClaimed() async throws {
     let r = Rig()
     await r.connect()

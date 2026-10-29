@@ -17,8 +17,11 @@ data class ImageRow(val id: Long, val relativePath: String?, val dateAddedSec: L
 
 /** The phone's images. Both calls block (run them off the main thread) and return nothing when access is gone. */
 interface ImageQuery {
-    /** Images added at or after [sinceSec] (epoch seconds), newest first. */
-    fun addedSince(sinceSec: Long): List<ImageRow>
+    /**
+     * Images in a screenshot folder added between [sinceSec] and [untilSec] (epoch seconds,
+     * inclusive), newest first, at most a few dozen.
+     */
+    fun addedSince(sinceSec: Long, untilSec: Long): List<ImageRow>
 
     /** The image to send, or null when it can't be read. A [Closeable] result must be closed once its transfer ends. */
     fun open(id: Long): OutgoingFile?
@@ -26,12 +29,12 @@ interface ImageQuery {
 
 /** [ImageQuery] over `MediaStore.Images` (READ_MEDIA_IMAGES, or READ_EXTERNAL_STORAGE up to API 32). */
 class MediaStoreImageQuery(private val resolver: ContentResolver) : ImageQuery {
-    override fun addedSince(sinceSec: Long): List<ImageRow> {
+    override fun addedSince(sinceSec: Long, untilSec: Long): List<ImageRow> {
+        val (selection, selectionArgs) = screenshotSelection(sinceSec, untilSec)
         val args = Bundle().apply {
-            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Images.Media.DATE_ADDED} >= ?")
-            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(sinceSec.toString()))
-            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Images.Media.DATE_ADDED))
-            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, SCREENSHOT_SORT)
             putInt(ContentResolver.QUERY_ARG_LIMIT, LIMIT)
         }
         val rows = ArrayList<ImageRow>()
@@ -100,8 +103,8 @@ class MediaStoreImageQuery(private val resolver: ContentResolver) : ImageQuery {
             MediaStore.Images.Media.IS_PENDING, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE,
             MediaStore.Images.Media.MIME_TYPE,
         )
-        /** More than a burst of screenshots within 30 s. */
-        const val LIMIT = 50
+        /** More than a burst of screenshots within 30 s; as many as the detector remembers. */
+        const val LIMIT = ScreenshotDetector.KEEP_IDS
         const val OCTET_STREAM = "application/octet-stream"
     }
 }
@@ -128,3 +131,16 @@ class ImageFile(
         runCatching { pfd.close() }
     }
 }
+
+/**
+ * The query's selection: the time window, and the folder (so the LIMIT counts only screenshot
+ * candidates, never a burst of other images). SQLite's LIKE ignores ASCII case, so
+ * "Screenshots" and "Screenshot" folders both match; the detector checks the same again.
+ */
+internal fun screenshotSelection(sinceSec: Long, untilSec: Long): Pair<String, Array<String>> =
+    "${MediaStore.Images.Media.DATE_ADDED}>=? AND ${MediaStore.Images.Media.DATE_ADDED}<=? AND " +
+        "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?" to
+        arrayOf(sinceSec.toString(), untilSec.toString(), "%${ScreenshotDetector.FOLDER}%")
+
+/** Newest first, ties by ID, so a LIMIT drops the oldest. */
+internal const val SCREENSHOT_SORT = "date_added DESC, _id DESC"

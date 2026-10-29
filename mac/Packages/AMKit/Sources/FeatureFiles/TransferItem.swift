@@ -78,11 +78,14 @@ public struct TransferMenuLine: Equatable, Sendable {
 }
 
 /// What the menu shows of the transfer list (ruling R11, like the phone's R9): at most one line
-/// per direction, sends first. The full list is the Phone window's.
+/// per direction, sends first. The full list is the Phone window's. Phone screenshots arriving
+/// on their own are not menu lines (R13); they stay in the list, and a failed one still counts.
 public enum TransferMenu {
     public static func lines(_ transfers: [TransferItem]) -> [TransferMenuLine] {
         [TransferItem.Direction.send, .receive].compactMap { direction in
-            let open = transfers.filter { $0.direction == direction && !$0.isFinal }
+            let open = transfers.filter {
+                $0.direction == direction && !$0.isFinal && !($0.direction == .receive && $0.kind == .screenshot)
+            }
             guard let shown = open.first(where: { $0.state != .queued }) ?? open.first else { return nil }
             return TransferMenuLine(item: shown, waiting: open.count - 1)
         }

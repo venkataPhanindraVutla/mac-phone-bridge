@@ -158,10 +158,13 @@ public final class ScreenshotInbox: SessionFeature {
     }
 
     /// A click on a notification: true when it was a screenshot's, after showing the saved file
-    /// in Finder (Clipboard mode has none).
+    /// in Finder (Clipboard mode has none). Only a file in Desktop or Downloads is shown.
     public func handleResponse(userInfo: [AnyHashable: Any]) -> Bool {
         guard userInfo[Self.markerKey] as? Bool == true else { return false }
-        if let path = userInfo[Self.pathKey] as? String { reveal(URL(fileURLWithPath: path)) }
+        if let path = userInfo[Self.pathKey] as? String {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            if [folders.desktop, folders.downloads].contains(where: { Self.isInside(url, $0) }) { reveal(url) }
+        }
         return true
     }
 
@@ -189,6 +192,12 @@ public final class ScreenshotInbox: SessionFeature {
             Self.log.error("no attachment copy: \(String(describing: type(of: error)), privacy: .public)")
             return nil
         }
+    }
+
+    /// Whether `url` (standardized) lies somewhere below `folder`.
+    private static func isInside(_ url: URL, _ folder: URL) -> Bool {
+        let base = folder.standardizedFileURL.path
+        return url.path.hasPrefix(base.hasSuffix("/") ? base : base + "/")
     }
 
     private func remove(_ url: URL) {

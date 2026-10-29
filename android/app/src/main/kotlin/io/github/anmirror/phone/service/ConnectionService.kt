@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.os.Build
@@ -48,6 +49,7 @@ import io.github.anmirror.feature.calls.CallLogMissedCallLookup
 import io.github.anmirror.feature.calls.CallStyleCallActions
 import io.github.anmirror.feature.calls.TelecomCallActions
 import io.github.anmirror.feature.find.AndroidAlarmAudio
+import io.github.anmirror.feature.screenshots.ChangeDebounce
 import io.github.anmirror.feature.find.AndroidDndOverride
 import io.github.anmirror.feature.find.AndroidRingNotifier
 import io.github.anmirror.feature.find.PrefsRingSavedStore
@@ -433,7 +435,8 @@ class ConnectionService : LifecycleService() {
 
     /**
      * Screenshots (F-12): while the feature is open (the Mac shares screenshots.v1, the switch is
-     * on, all photos are readable) a MediaStore observer, debounced by 500 ms, sends each new
+     * on, all photos are readable) a MediaStore observer, debounced by 500 ms (but looking at least
+     * every 1.5 s while changes keep coming), sends each new
      * screenshot as `TRANSFER_KIND_SCREENSHOT`. `screenshots.availability` is sent regardless,
      * while the Mac shares screenshots.v1; with only some photos allowed it says PARTIAL_ACCESS.
      */
@@ -457,6 +460,8 @@ class ConnectionService : LifecycleService() {
 
     private var screenshotObserver: ContentObserver? = null
     private var screenshotDebounce: Job? = null
+    /** Touched only on the main thread (the observer's handler and the state collector). */
+    private val screenshotChanges = ChangeDebounce(SCREENSHOT_DEBOUNCE_MS, SCREENSHOT_MAX_WAIT_MS, SystemClock::elapsedRealtime)
 
     private fun startScreenshotObserver() {
         if (screenshotObserver != null) return
@@ -464,9 +469,11 @@ class ConnectionService : LifecycleService() {
         graph.screenshotDetector.reset()
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
+                val wait = screenshotChanges.onChange()
                 screenshotDebounce?.cancel()
                 screenshotDebounce = lifecycleScope.launch {
-                    delay(SCREENSHOT_DEBOUNCE_MS)
+                    delay(wait)
+                    screenshotChanges.fired()
                     // On the graph's scope: a later change must not cancel a look already under way.
                     graph.scope.launch(Dispatchers.IO) {
                         try {
@@ -490,6 +497,7 @@ class ConnectionService : LifecycleService() {
         screenshotObserver = null
         screenshotDebounce?.cancel()
         screenshotDebounce = null
+        screenshotChanges.fired()
     }
 
     private var contactsObserver: ContentObserver? = null
@@ -613,6 +621,7 @@ class ConnectionService : LifecycleService() {
         )
         private const val CONTACTS_DEBOUNCE_MS = 5_000L
         private const val SCREENSHOT_DEBOUNCE_MS = 500L
+        private const val SCREENSHOT_MAX_WAIT_MS = 1_500L
         const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
 
         private val _ringing = MutableStateFlow(false)
