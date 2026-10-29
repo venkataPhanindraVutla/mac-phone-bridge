@@ -30,6 +30,7 @@ import io.github.anmirror.phone.ui.HomeScreen
 import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +51,7 @@ class MainActivity : ComponentActivity() {
         graph.refreshContactsGranted()
         graph.refreshCallsPermissions()
         graph.refreshMediaAccess()
+        graph.scope.launch(Dispatchers.IO) { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
@@ -92,6 +94,9 @@ private fun AppRoot(graph: AppGraph) {
     val mediaAccess by graph.mediaAccess.collectAsStateWithLifecycle()
     val photosOn by graph.photosOn.collectAsStateWithLifecycle()
     val photosAccess by graph.photosAccess.collectAsStateWithLifecycle()
+    val browseOn by graph.browseOn.collectAsStateWithLifecycle()
+    val allFilesAccess by graph.allFilesAccess.collectAsStateWithLifecycle()
+    val pickedFolders by graph.pickedFolders.folders.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -137,6 +142,14 @@ private fun AppRoot(graph: AppGraph) {
                         photosOn = photosOn,
                         photosAccess = photosAccess,
                         onPhotosToggle = graph::setPhotosOn,
+                        browseOn = browseOn,
+                        allFilesOffered = graph.allFilesOffered(),
+                        allFilesAccess = allFilesAccess,
+                        pickedFolders = pickedFolders,
+                        onBrowseToggle = graph::setBrowseOn,
+                        // The grant and the folder's name come from the provider: off the main thread.
+                        onFolderPicked = { uri -> graph.scope.launch(Dispatchers.IO) { graph.pickedFolders.add(uri) } },
+                        onRemoveFolder = { folder -> graph.scope.launch(Dispatchers.IO) { graph.pickedFolders.remove(folder.root.id) } },
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

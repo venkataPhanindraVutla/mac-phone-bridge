@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Play restricts both; only the oss flavor (GitHub, F-Droid) declares them. Each is asked
          for only when "Calls on your Mac" is turned on: the call log confirms missed calls, and
          answer/decline/hang up from the Mac go through Telecom. -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
+    <!-- All files access, for "Browse phone files from your Mac". Play restricts it too. It is
+         asked for (in Settings, never a prompt) only when the user taps "Allow access to all
+         files" with browsing on; without it, browsing uses the folders the user picks. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 </manifest>

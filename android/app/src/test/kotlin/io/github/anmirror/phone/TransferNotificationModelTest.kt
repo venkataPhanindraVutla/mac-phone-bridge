@@ -150,4 +150,29 @@ class TransferNotificationModelTest {
         assertEquals("f", views.ongoing.getValue(Direction.SEND).id)
         assertEquals(0, views.ongoing.getValue(Direction.SEND).waiting)
     }
+
+    @Test fun browseTransfersAreNotShown() {
+        // R16: browse read answers (request ID set) and browse writes (offer with a target) are driven from the Mac's Files tab.
+        val read = t("read", Direction.SEND, TransferState.ACTIVE).copy(requestId = 7)
+        val write = t("write", Direction.RECEIVE, TransferState.ACTIVE).copy(browseTarget = true)
+        var views = model.update(listOf(read, write), emptySet())
+        assertTrue(views.ongoing.isEmpty())
+        views = model.update(
+            listOf(
+                read.copy(state = TransferState.FAILED, error = TransferError.TRANSFER_ERROR_INTERRUPTED),
+                write.copy(state = TransferState.DONE, savedAs = "up.txt"),
+            ),
+            emptySet(),
+        )
+        assertTrue(views.ongoing.isEmpty())
+        assertTrue(views.results.isEmpty())
+        assertTrue(views.changed.isEmpty())
+
+        // A file from the Mac for Downloads and a file shared from the phone still show.
+        views = model.update(
+            listOf(t("dl", Direction.RECEIVE, TransferState.ACTIVE), t("share", Direction.SEND, TransferState.ACTIVE)),
+            emptySet(),
+        )
+        assertEquals(setOf(Direction.SEND, Direction.RECEIVE), views.ongoing.keys)
+    }
 }

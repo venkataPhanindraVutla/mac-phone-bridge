@@ -6,6 +6,7 @@ import io.github.anmirror.connection.BulkStream
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.envelope
 import io.github.anmirror.protocol.v1.BulkHello
+import io.github.anmirror.protocol.v1.BrowseTarget
 import io.github.anmirror.protocol.v1.BulkRole
 import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.TransferAccept
@@ -687,5 +688,23 @@ class TransferEngineTest {
         h2.awaitState("m2", TransferState.FAILED)
         assertEquals(TransferError.TRANSFER_ERROR_IO, h2.last<TransferReject>(MessageType.FILES_REJECT).reason)
         assertFalse(MessageType.FILES_FAILED in h2.types())
+    }
+
+    @Test
+    fun statusCarriesRequestIdAndBrowseTarget() {
+        // R16: the app tells browse traffic apart by these two.
+        val h = harness(Harness(sinkFor = { SinkResult.Refused(TransferError.TRANSFER_ERROR_DENIED) }))
+        val read = h.engine.send(listOf(MemSource("a.txt", ByteArray(1), "text/plain")), requestId = 42).single()
+        val plain = h.engine.send(listOf(MemSource("b.txt", ByteArray(1), "text/plain"))).single()
+        assertEquals(42L, h.status(read).requestId)
+        assertEquals(0L, h.status(plain).requestId)
+        assertFalse(h.status(read).browseTarget)
+
+        val target = BrowseTarget.newBuilder().setRootId("r").setDirPath("d").build()
+        h.deliver(MessageType.FILES_OFFER, h.offer("w1", 1).toBuilder().setTarget(target).build())
+        h.deliver(MessageType.FILES_OFFER, h.offer("w2", 1))
+        assertTrue(h.status("w1").browseTarget)
+        assertFalse(h.status("w2").browseTarget)
+        assertEquals(0L, h.status("w1").requestId)
     }
 }

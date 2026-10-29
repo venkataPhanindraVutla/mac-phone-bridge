@@ -37,7 +37,9 @@ data class TransferViews(
  * per direction, however many transfers there are (Android caps an app's notifications and
  * drops fast updates). A transfer the user cancelled on the phone adds no result. Background
  * auto-sends (screenshots, photos) are not shown at all (R12): the user did not start them on
- * the phone. Pure and single-threaded: call [update] from one collector.
+ * the phone. Nor is browse traffic (R16): answers to a Mac request (browse reads) and writes
+ * into a browse root are driven from the Mac's Files tab, and "Saved to Download/Android
+ * Mirroring" would be wrong for them. Pure and single-threaded: call [update] from one collector.
  */
 class TransferNotificationModel {
     private val handled = HashSet<String>()
@@ -47,7 +49,7 @@ class TransferNotificationModel {
     private val closed = HashMap<Direction, Boolean>()
 
     fun update(all: List<TransferStatus>, cancelledHere: Set<String>): TransferViews {
-        val list = all.filter { it.kind !in BACKGROUND_KINDS }
+        val list = all.filter { it.kind !in BACKGROUND_KINDS && it.requestId == 0L && !it.browseTarget }
         val ongoing = HashMap<Direction, OngoingView>()
         val changed = HashSet<Direction>()
         for (direction in Direction.entries) {

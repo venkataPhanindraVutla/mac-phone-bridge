@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +48,7 @@ import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.R
+import io.github.anmirror.feature.browse.PickedFolders
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.forgetBodyRes
 import io.github.anmirror.phone.messageRes
@@ -79,6 +81,13 @@ fun HomeScreen(
     photosOn: Boolean,
     photosAccess: MediaAccess,
     onPhotosToggle: (Boolean) -> Unit,
+    browseOn: Boolean,
+    allFilesOffered: Boolean,
+    allFilesAccess: Boolean,
+    pickedFolders: List<PickedFolders.Folder>,
+    onBrowseToggle: (Boolean) -> Unit,
+    onFolderPicked: (Uri) -> Unit,
+    onRemoveFolder: (PickedFolders.Folder) -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -129,6 +138,10 @@ fun HomeScreen(
             onPermissionResult = onMediaPermissionResult,
         )
         PhotosRow(on = photosOn, access = photosAccess, onToggle = onPhotosToggle, onPermissionResult = onMediaPermissionResult)
+        BrowseRow(
+            on = browseOn, allFilesOffered = allFilesOffered, allFilesAccess = allFilesAccess, folders = pickedFolders,
+            onToggle = onBrowseToggle, onFolderPicked = onFolderPicked, onRemove = onRemoveFolder,
+        )
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -392,6 +405,70 @@ private fun PhotosRow(on: Boolean, access: MediaAccess, onToggle: (Boolean) -> U
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_screenshots_allow)) }
+        }
+    }
+}
+
+/**
+ * "Browse phone files from your Mac": nothing is asked for when the switch is turned on. While it
+ * is on, the row offers "Allow access to all files" (this build has it and the system is API 30+,
+ * until it is granted, in Settings), and always "Add folder" (the system folder picker; the grant is
+ * kept), with each picked folder and its "Remove".
+ */
+@Composable
+private fun BrowseRow(
+    on: Boolean,
+    allFilesOffered: Boolean,
+    allFilesAccess: Boolean,
+    folders: List<PickedFolders.Folder>,
+    onToggle: (Boolean) -> Unit,
+    onFolderPicked: (Uri) -> Unit,
+    onRemove: (PickedFolders.Folder) -> Unit,
+) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_browse_title)
+    val picked by rememberUpdatedState(onFolderPicked)
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { picked(it) } }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = onToggle,
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (!on) return@Column
+        if (allFilesOffered && !allFilesAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            OutlinedButton(
+                onClick = { context.openAllFilesAccessSettings() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_browse_allow_all)) }
+        }
+        OutlinedButton(onClick = { pick.launch(null) }, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.home_browse_add_folder))
+        }
+        for (folder in folders) {
+            val removeLabel = stringResource(R.string.home_browse_remove_label, folder.root.name)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(folder.root.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { onRemove(folder) },
+                    modifier = Modifier.semantics { contentDescription = removeLabel },
+                ) { Text(stringResource(R.string.home_browse_remove)) }
+            }
         }
     }
 }

@@ -141,7 +141,7 @@ class TransferEngine(
         val id = newId()
         val x = Xfer(
             id, Direction.SEND,
-            TransferStatus(id, Direction.SEND, f.name, f.size, 0, kind, TransferState.QUEUED),
+            TransferStatus(id, Direction.SEND, f.name, f.size, 0, kind, TransferState.QUEUED, requestId = requestId),
             requestId,
         )
         register(x)
@@ -471,7 +471,10 @@ class TransferEngine(
         val name = FileNames.sanitize(offer.name)
         val x = Xfer(
             offer.transferId, Direction.RECEIVE,
-            TransferStatus(offer.transferId, Direction.RECEIVE, name, offer.size, 0, offer.kind, TransferState.QUEUED),
+            TransferStatus(
+                offer.transferId, Direction.RECEIVE, name, offer.size, 0, offer.kind, TransferState.QUEUED,
+                browseTarget = offer.hasTarget(),
+            ),
             offer.requestId,
         )
         synchronized(lock) {

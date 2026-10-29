@@ -13,24 +13,32 @@ fun bulkShared(shared: Set<String>): Boolean = BULK_CAPABILITIES.any { it in sha
 
 /**
  * R5: whether the phone takes a Mac `files.offer`. A plain offer is a file for Downloads and
- * needs files.v1; one with a browse target is a browse write and needs browse.v1. Null to take
- * it, else the reason for `files.reject`.
+ * needs files.v1; one with a browse target is a browse write and needs browse open ([browseOpen]:
+ * the Mac shares browse.v1, the switch is on, there is a root). Null to take it, else the reason
+ * for `files.reject`.
  */
-fun offerRefusal(hasTarget: Boolean, shared: Set<String>): TransferError? {
-    val needed = if (hasTarget) "browse.v1" else "files.v1"
-    return if (needed in shared) null else TransferError.TRANSFER_ERROR_DISABLED
+fun offerRefusal(hasTarget: Boolean, shared: Set<String>, browseOpen: Boolean): TransferError? {
+    val allowed = if (hasTarget) "browse.v1" in shared && browseOpen else "files.v1" in shared
+    return if (allowed) null else TransferError.TRANSFER_ERROR_DISABLED
 }
 
 /**
  * R5 for the phone's own offers, on top of [bulkShared]: a screenshot goes only while its
- * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable),
- * and a photo only while photos is (photos.v1, the switch, some photos readable); any other bulk
- * capability is not enough.
+ * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable), a
+ * photo only while photos is (photos.v1, the switch, some photos readable), and a file answering a
+ * browse.read ([requestId] set) only while browse is; any other bulk capability is not enough. A
+ * file the user shared (no request) needs nothing more.
  */
-fun phoneOfferAllowed(kind: TransferKind, screenshotsOpen: Boolean, photosOpen: Boolean): Boolean = when (kind) {
+fun phoneOfferAllowed(
+    kind: TransferKind,
+    requestId: Long,
+    screenshotsOpen: Boolean,
+    photosOpen: Boolean,
+    browseOpen: Boolean,
+): Boolean = when (kind) {
     TransferKind.TRANSFER_KIND_SCREENSHOT -> screenshotsOpen
     TransferKind.TRANSFER_KIND_PHOTO -> photosOpen
-    else -> true
+    else -> requestId == 0L || browseOpen
 }
 
 /**

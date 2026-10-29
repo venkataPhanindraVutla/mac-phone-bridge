@@ -26,11 +26,13 @@ android {
     productFlavors {
         create("oss") {
             dimension = "distribution"
-            // READ_CALL_LOG and ANSWER_PHONE_CALLS are declared in src/oss only. `-PplayLike=true`
-            // turns both switches off, to check that a build without them still works.
+            // READ_CALL_LOG, ANSWER_PHONE_CALLS and MANAGE_EXTERNAL_STORAGE are declared in src/oss
+            // only. `-PplayLike=true` turns all three switches off, to check that a build without
+            // them still works (browsing then uses picked folders only).
             val playLike = providers.gradleProperty("playLike").orNull == "true"
             buildConfigField("boolean", "FEATURE_CALL_LOG", (!playLike).toString())
             buildConfigField("boolean", "FEATURE_ANSWER_CALLS", (!playLike).toString())
+            buildConfigField("boolean", "FEATURE_ALL_FILES", (!playLike).toString())
         }
     }
 
@@ -68,6 +70,7 @@ dependencies {
     implementation(project(":feature:share"))
     implementation(project(":feature:screenshots"))
     implementation(project(":feature:photos"))
+    implementation(project(":feature:browse"))
     implementation(project(":core:transfer"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)

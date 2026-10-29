@@ -6,10 +6,12 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -195,5 +197,20 @@ fun Context.openNotificationAccessSettings() {
     } catch (e: android.content.ActivityNotFoundException) {
         // Some builds lack the detail page: fall back to the list.
         startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+/**
+ * Opens this app's "All files access" page in Settings (API 30+; the oss flavor only). The grant
+ * is only ever given there, never in a runtime prompt. Some builds lack the per-app page: then the
+ * list of apps.
+ */
+@RequiresApi(Build.VERSION_CODES.R)
+fun Context.openAllFilesAccessSettings() {
+    val app = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.fromParts("package", packageName, null))
+    try {
+        startActivity(app.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: android.content.ActivityNotFoundException) {
+        startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }

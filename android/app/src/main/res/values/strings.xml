@@ -91,6 +91,16 @@
     <string name="home_photos_title">Show recent photos on your Mac</string>
     <string name="home_photos_partial">Only the photos you picked are shown on your Mac.</string>
 
+    <!-- Home: browse phone files from the Mac (F-04) -->
+    <string name="home_browse_title">Browse phone files from your Mac</string>
+    <string name="home_browse_allow_all">Allow access to all files</string>
+    <string name="home_browse_add_folder">Add folder</string>
+    <string name="home_browse_remove">Remove</string>
+    <!-- VoiceOver/TalkBack label of a picked folder's Remove button. -->
+    <string name="home_browse_remove_label">Remove %1$s</string>
+    <!-- The All files access root, as the Mac shows it. -->
+    <string name="browse_root_all">Phone storage</string>
+
     <!-- Clipboard: entry points and outcomes -->
     <string name="tile_send_clipboard">Send clipboard to Mac</string>
     <string name="notification_send_clipboard">Send clipboard</string>

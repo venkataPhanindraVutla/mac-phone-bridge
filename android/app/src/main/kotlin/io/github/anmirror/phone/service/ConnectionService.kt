@@ -57,6 +57,10 @@ import io.github.anmirror.feature.find.RingController
 import io.github.anmirror.feature.status.AndroidStatusSource
 import io.github.anmirror.feature.status.StatusPublisher
 import io.github.anmirror.protocol.MessageType
+import io.github.anmirror.protocol.v1.BrowseListRequest
+import io.github.anmirror.protocol.v1.BrowsePath
+import io.github.anmirror.protocol.v1.BrowseRename
+import io.github.anmirror.protocol.v1.BrowseRootsRequest
 import io.github.anmirror.protocol.v1.CallCommand
 import io.github.anmirror.protocol.v1.CallCommandOutcome
 import io.github.anmirror.protocol.v1.CallCommandResult
@@ -124,6 +128,7 @@ class ConnectionService : LifecycleService() {
         setUpTransfers()
         setUpScreenshots()
         setUpPhotos()
+        setUpBrowse()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -510,6 +515,80 @@ class ConnectionService : LifecycleService() {
             } catch (e: Exception) {
                 // The class only: a message could carry a path.
                 Log.e(TAG, "photos: $what failed (${e.javaClass.simpleName})")
+            }
+        }
+    }
+
+    /**
+     * Browse (F-04): `browse.*` requests are answered only while browsing is open (the Mac shares
+     * browse.v1, the switch is on, there is a root: All files access or a picked folder); each runs
+     * on its own, off the main thread. `browse.availability` is sent regardless, while the Mac
+     * shares browse.v1, and `browse.roots` is pushed whenever browsing opens (on connect, say) or
+     * the roots change while it is open. Closing it stops browse transfers still under way.
+     */
+    private fun setUpBrowse() {
+        graph.manager.on(MessageType.BROWSE_ROOTS_REQUEST) { env ->
+            BrowseRootsRequest.parseFrom(env.payload)
+            browseRequest("roots") { graph.browse.onRootsRequest() }
+        }
+        graph.manager.on(MessageType.BROWSE_LIST) { env ->
+            val request = BrowseListRequest.parseFrom(env.payload)
+            browseRequest("list") { graph.browse.onList(request) }
+        }
+        graph.manager.on(MessageType.BROWSE_STAT) { env ->
+            val path = BrowsePath.parseFrom(env.payload)
+            browseRequest("stat") { graph.browse.onStat(path) }
+        }
+        graph.manager.on(MessageType.BROWSE_MKDIR) { env ->
+            val path = BrowsePath.parseFrom(env.payload)
+            browseRequest("mkdir") { graph.browse.onMkdir(path) }
+        }
+        graph.manager.on(MessageType.BROWSE_DELETE) { env ->
+            val path = BrowsePath.parseFrom(env.payload)
+            browseRequest("delete") { graph.browse.onDelete(path) }
+        }
+        graph.manager.on(MessageType.BROWSE_RENAME) { env ->
+            val rename = BrowseRename.parseFrom(env.payload)
+            browseRequest("rename") { graph.browse.onRename(rename) }
+        }
+        graph.manager.on(MessageType.BROWSE_READ) { env ->
+            val path = BrowsePath.parseFrom(env.payload)
+            browseRequest("read") { graph.browse.onRead(path) }
+        }
+        // Picked folders whose grant went away while the app was not running.
+        graph.scope.launch(Dispatchers.IO) { graph.refreshBrowseAccess() }
+        lifecycleScope.launch {
+            var wasOpen = false
+            combine(
+                graph.manager.state.map { it is Connected && "browse.v1" in it.shared }.distinctUntilChanged(),
+                graph.browseOn,
+                graph.browseRoots,
+            ) { shared, on, roots -> Triple(shared, on, roots) }
+                .distinctUntilChanged()
+                .collect { (shared, on, roots) ->
+                    if (shared) {
+                        val availability = featureAvailability(granted = roots.isNotEmpty(), userOn = on)
+                        graph.manager.send(Channel.CHANNEL_BROWSE, MessageType.BROWSE_AVAILABILITY, availability)
+                    }
+                    val open = shared && on && roots.isNotEmpty()
+                    if (open) browseRequest("push roots") { graph.browse.pushRoots() }
+                    if (wasOpen && !open) graph.cancelBrowseTransfers()
+                    wasOpen = open
+                }
+        }
+    }
+
+    /** Runs one browse request off the main thread, only while [AppGraph.browseOpen]; logs the failure class only. */
+    private fun browseRequest(what: String, handle: suspend () -> Unit) {
+        graph.scope.launch(Dispatchers.IO) {
+            if (!graph.browseOpen()) return@launch
+            try {
+                handle()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The class only: a message could carry a path.
+                Log.e(TAG, "browse: $what failed (${e.javaClass.simpleName})")
             }
         }
     }

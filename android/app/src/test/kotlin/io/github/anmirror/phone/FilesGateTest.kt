@@ -13,15 +13,21 @@ import kotlin.test.assertTrue
 
 class FilesGateTest {
     @Test fun plainMacOfferNeedsFilesV1() {
-        // R5: an offer without a target is a plain file for Downloads.
-        assertNull(offerRefusal(hasTarget = false, shared = setOf("files.v1")))
-        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = false, shared = setOf("browse.v1", "photos.v1")))
-        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = false, shared = emptySet()))
+        // R5: an offer without a target is a plain file for Downloads; browse being open is not enough.
+        assertNull(offerRefusal(hasTarget = false, shared = setOf("files.v1"), browseOpen = false))
+        assertEquals(
+            TransferError.TRANSFER_ERROR_DISABLED,
+            offerRefusal(hasTarget = false, shared = setOf("browse.v1", "photos.v1"), browseOpen = true),
+        )
+        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = false, shared = emptySet(), browseOpen = false))
     }
 
-    @Test fun targetedMacOfferNeedsBrowseV1() {
-        assertNull(offerRefusal(hasTarget = true, shared = setOf("browse.v1")))
-        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = true, shared = setOf("files.v1")))
+    @Test fun targetedMacOfferNeedsBrowseOpen() {
+        // A browse write needs browse.v1 shared AND browse open (switch on, a root to write to).
+        assertNull(offerRefusal(hasTarget = true, shared = setOf("browse.v1"), browseOpen = true))
+        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = true, shared = setOf("browse.v1"), browseOpen = false))
+        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = true, shared = setOf("files.v1"), browseOpen = false))
+        assertEquals(TransferError.TRANSFER_ERROR_DISABLED, offerRefusal(hasTarget = true, shared = setOf("files.v1"), browseOpen = true))
     }
 
     @Test fun anyBulkFeatureCarriesFilesMessages() {
@@ -29,17 +35,33 @@ class FilesGateTest {
         assertFalse(bulkShared(setOf("clipboard.v1", "share.v1")))
     }
 
+    private fun allowed(
+        kind: TransferKind,
+        requestId: Long = 0,
+        screenshotsOpen: Boolean = false,
+        photosOpen: Boolean = false,
+        browseOpen: Boolean = false,
+    ) = phoneOfferAllowed(kind, requestId, screenshotsOpen = screenshotsOpen, photosOpen = photosOpen, browseOpen = browseOpen)
+
     @Test fun screenshotOfferNeedsScreenshotsOpen() {
         // files.v1 (or any bulk feature) shared is not enough for a screenshot.
-        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = false, photosOpen = true))
-        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = true, photosOpen = false))
-        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_FILE, screenshotsOpen = false, photosOpen = false))
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_SCREENSHOT, photosOpen = true, browseOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_FILE))
     }
 
     @Test fun photoOfferNeedsPhotosOpen() {
         // files.v1 or screenshots.v1 shared is not enough for a photo (R5).
-        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_PHOTO, screenshotsOpen = true, photosOpen = false))
-        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_PHOTO, screenshotsOpen = false, photosOpen = true))
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_PHOTO, requestId = 9, screenshotsOpen = true, browseOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_PHOTO, requestId = 9, photosOpen = true))
+    }
+
+    @Test fun browseReadAnswerNeedsBrowseOpen() {
+        // A FILE send answering a browse.read (request ID set) goes only while browse is open.
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_FILE, requestId = 5, screenshotsOpen = true, photosOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_FILE, requestId = 5, browseOpen = true))
+        // A file the user shared (no request) is not a browse answer.
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_FILE, requestId = 0, browseOpen = false))
     }
 
     @Test fun onlyFinishedOrDroppedSharesAreReleased() {

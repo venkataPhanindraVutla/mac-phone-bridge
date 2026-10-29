@@ -5,11 +5,13 @@ import android.annotation.SuppressLint
 import android.app.Notification
 import android.content.Context
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.service.notification.StatusBarNotification
 import android.telecom.TelecomManager
 import android.util.AtomicFile
 import android.util.Log
+import android.webkit.MimeTypeMap
 import com.google.protobuf.MessageLite
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
@@ -27,6 +29,13 @@ import io.github.anmirror.feature.clipboard.AndroidClipboard
 import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
 import io.github.anmirror.feature.contacts.ContactsSync
+import io.github.anmirror.feature.browse.BrowseService
+import io.github.anmirror.feature.browse.FileTree
+import io.github.anmirror.feature.browse.JavaFileTree
+import io.github.anmirror.feature.browse.PickedFolders
+import io.github.anmirror.feature.browse.RootInfo
+import io.github.anmirror.feature.browse.RootsSource
+import io.github.anmirror.feature.browse.SafFileTree
 import io.github.anmirror.feature.notify.ActionInvoker
 import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
@@ -52,10 +61,14 @@ import io.github.anmirror.protocol.v1.ActionOutcome
 import io.github.anmirror.protocol.v1.BulkEndpoint
 import io.github.anmirror.protocol.v1.BulkHello
 import io.github.anmirror.protocol.v1.Envelope
+import io.github.anmirror.protocol.v1.RootKind
+import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.protocol.v1.TransferKind
 import io.github.anmirror.protocol.v1.TransferOffer
 import io.github.anmirror.protocol.v1.TransferReject
 import io.github.anmirror.transfer.BulkOpener
+import io.github.anmirror.transfer.IncomingSinks
+import io.github.anmirror.transfer.SinkResult
 import io.github.anmirror.transfer.OutgoingFile
 import io.github.anmirror.transfer.TransferEngine
 import io.github.anmirror.protocol.v1.Channel as ProtoChannel
@@ -337,13 +350,16 @@ class AppGraph private constructor(context: Context) {
 
     /**
      * Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. A
-     * screenshot offer also needs [screenshotsOpen], and a photo offer [photosOpen] (R5): the
-     * transfer fails before the Mac hears of it.
+     * screenshot offer also needs [screenshotsOpen], a photo offer [photosOpen], and a browse.read
+     * answer [browseOpen] (R5): the transfer fails before the Mac hears of it.
      */
     suspend fun sendTransfer(type: String, payload: MessageLite): Boolean {
         if (!transferShared()) return false
         if (payload is TransferOffer &&
-            !phoneOfferAllowed(payload.kind, screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen())
+            !phoneOfferAllowed(
+                payload.kind, payload.requestId,
+                screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen(), browseOpen = browseOpen(),
+            )
         ) {
             return false
         }
@@ -363,7 +379,7 @@ class AppGraph private constructor(context: Context) {
      * Phone side of `files.*`. Its own supervised scope: an orphaned bulk dial that throws must
      * not cancel the engine (or anything else).
      */
-    val transfers = TransferEngine(
+    val transfers: TransferEngine = TransferEngine(
         scope = CoroutineScope(
             SupervisorJob() + Dispatchers.Default +
                 // The class only: a message could carry a path, and so a file name.
@@ -371,8 +387,9 @@ class AppGraph private constructor(context: Context) {
         ),
         send = ::sendTransfer,
         bulk = BulkOpener(::openBulk),
-        sinks = downloads,
-        freeBytes = { downloads.freeBytes() },
+        // A Mac offer with a browse target is a write into a browse root; the rest go to Downloads.
+        sinks = IncomingSinks { offer -> if (offer.hasTarget()) browseSink(offer) else downloads.open(offer) },
+        freeBytes = { offer -> if (offer.hasTarget()) browse.freeBytes(offer) else downloads.freeBytes() },
     )
 
     /** Shared files, screenshots and photos whose descriptors stay open until their transfer ends. */
@@ -489,6 +506,124 @@ class AppGraph private constructor(context: Context) {
         log = { Log.i(TAG, it) },
     )
 
+    private val browsePrefs = app.getSharedPreferences("browse", Context.MODE_PRIVATE)
+    private val _browseOn = MutableStateFlow(browsePrefs.getBoolean(KEY_BROWSE_ON, false))
+
+    /** The user's "Browse phone files from your Mac" switch. Off until they turn it on. */
+    val browseOn: StateFlow<Boolean> = _browseOn.asStateFlow()
+
+    fun setBrowseOn(on: Boolean) {
+        browsePrefs.edit { putBoolean(KEY_BROWSE_ON, on) }
+        _browseOn.value = on
+    }
+
+    /** The folders picked for browsing, each with a persisted read and write grant. */
+    val pickedFolders = PickedFolders(app)
+
+    /** This build offers All files access (the oss flavor, not `-PplayLike`) and the system has it (API 30+). */
+    fun allFilesOffered(): Boolean = BuildConfig.FEATURE_ALL_FILES && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
+    private fun readAllFilesAccess(): Boolean = allFilesOffered() && Environment.isExternalStorageManager()
+
+    private val _allFilesAccess = MutableStateFlow(readAllFilesAccess())
+
+    /** Whether All files access is granted (re-read on resume, and whenever the roots are read). */
+    val allFilesAccess: StateFlow<Boolean> = _allFilesAccess.asStateFlow()
+
+    /** Re-reads All files access, and forgets picked folders whose grant is gone. Blocking. */
+    fun refreshBrowseAccess() {
+        _allFilesAccess.value = readAllFilesAccess()
+        pickedFolders.prune()
+    }
+
+    private val allFilesRoot by lazy {
+        RootInfo(ALL_FILES_ROOT_ID, app.getString(R.string.browse_root_all), RootKind.ROOT_KIND_ALL_FILES, writable = true)
+    }
+
+    /** With All files access, the one root "Phone storage"; otherwise one per picked folder. */
+    private fun rootsFor(allFiles: Boolean, folders: List<PickedFolders.Folder>): List<RootInfo> =
+        if (allFiles) listOf(allFilesRoot) else folders.map { it.root }
+
+    /** The browse roots as they change: each change is pushed to the Mac while browsing is open. */
+    val browseRoots: Flow<List<RootInfo>> =
+        combine(allFilesAccess, pickedFolders.folders, ::rootsFor).distinctUntilChanged()
+
+    /** The roots now. All files access is read live (it can be revoked while the app is away). */
+    private fun currentRoots(): List<RootInfo> {
+        val all = readAllFilesAccess()
+        if (all != _allFilesAccess.value) _allFilesAccess.value = all
+        return rootsFor(all, pickedFolders.folders.value)
+    }
+
+    /** The trees for the current roots, kept for the session (a SAF tree caches its path lookups). */
+    private class Trees(val roots: List<RootInfo>, val trees: List<FileTree>)
+
+    private val trees = AtomicReference<Trees?>(null)
+
+    private fun browseTrees(): List<FileTree> {
+        val roots = currentRoots()
+        trees.get()?.takeIf { it.roots == roots }?.let { return it.trees }
+        val folders = pickedFolders.folders.value.associateBy { it.root.id }
+        val made = roots.mapNotNull { root ->
+            when (root.kind) {
+                RootKind.ROOT_KIND_ALL_FILES ->
+                    JavaFileTree(Environment.getExternalStorageDirectory(), root, ::mimeFor) { downloads.freeBytes() }
+                else -> folders[root.id]?.let { SafFileTree(app, it.uri, root) }
+            }
+        }
+        trees.set(Trees(roots, made))
+        return made
+    }
+
+    private fun mimeFor(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+    }
+
+    /** The connected Mac shares browse.v1. */
+    fun browseShared(): Boolean = shares("browse.v1")
+
+    /**
+     * The phone answers no `browse.*` request, takes no browse write and sends no browse read
+     * unless the Mac shares browse.v1, the switch is on and there is a root (All files access,
+     * or a picked folder). `browse.availability` is the exception (R5).
+     */
+    fun browseOpen(): Boolean = browseShared() && _browseOn.value && currentRoots().isNotEmpty()
+
+    /** Sends a `browse.*` answer when [browseOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendBrowse(type: String, payload: MessageLite): Boolean =
+        browseOpen() && manager.send(ProtoChannel.CHANNEL_BROWSE, type, payload)
+
+    /**
+     * `browse.*` from the Mac (F-04): roots, listings and changes in the roots, reads sent as
+     * `TRANSFER_KIND_FILE` answers (each descriptor closed when its transfer ends), and writes
+     * through [browseSink]. A folder whose grant is gone is forgotten and the roots pushed again.
+     * The caller checks [browseOpen] before handing a request over.
+     */
+    val browse: BrowseService = BrowseService(
+        roots = RootsSource(::browseTrees),
+        send = ::sendBrowse,
+        transfers = transfers,
+        onRevoked = { root ->
+            pickedFolders.remove(root.id)
+            trees.set(null)
+        },
+        onQueued = { id, file -> track(listOf(id), listOf(file)) },
+        scope = scope,
+        log = { Log.i(TAG, it) },
+    )
+
+    /** A browse write, checked again here: browsing may have closed while the offer waited its turn. */
+    private fun browseSink(offer: TransferOffer): SinkResult =
+        if (browseOpen()) browse.sinkFor(offer) else SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED)
+
+    /** Browsing closed: browse reads and writes still queued or running stop (the Mac is told). */
+    fun cancelBrowseTransfers() {
+        transfers.transfers.value
+            .filter { it.state.isOngoing() && (it.browseTarget || (it.requestId != 0L && it.kind == TransferKind.TRANSFER_KIND_FILE)) }
+            .forEach { transfers.cancel(it.id) }
+    }
+
     /**
      * Closes the descriptors of shares whose transfer ended. The tracked IDs are taken before the
      * engine's list is read, so a share queued meanwhile is either not looked at or seen as live.
@@ -529,7 +664,7 @@ class AppGraph private constructor(context: Context) {
                 }
                 MessageType.FILES_OFFER -> {
                     val offer = TransferOffer.parseFrom(env.payload)
-                    val reason = offerRefusal(offer.hasTarget(), s.shared)
+                    val reason = offerRefusal(offer.hasTarget(), s.shared, browseOpen())
                     if (reason != null) {
                         Log.i(TAG, "transfers: ${offer.transferId} refused $reason")
                         val reject = TransferReject.newBuilder().setTransferId(offer.transferId).setReason(reason).build()
@@ -552,6 +687,7 @@ class AppGraph private constructor(context: Context) {
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
         bulkEndpoint.update { if (it?.session === ended) null else it }
         photos.stop()
+        trees.set(null) // a new session starts with fresh path lookups
         transfers.onDisconnected()
     }
 
@@ -635,13 +771,15 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
         private const val KEY_CLIPBOARD_ON = "share_with_mac"
         private const val KEY_SCREENSHOTS_ON = "send_to_mac"
         private const val KEY_PHOTOS_ON = "show_on_mac"
+        private const val KEY_BROWSE_ON = "browse_from_mac"
+        private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
         private const val ENDPOINT_WAIT_MS = 10_000L

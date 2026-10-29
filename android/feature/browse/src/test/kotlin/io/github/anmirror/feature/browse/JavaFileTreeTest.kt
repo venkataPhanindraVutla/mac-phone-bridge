@@ -1,0 +1,232 @@
+package io.github.anmirror.feature.browse
+
+import io.github.anmirror.protocol.v1.BrowseOutcome
+import io.github.anmirror.protocol.v1.RootKind
+import io.github.anmirror.transfer.IncomingFile
+import io.github.anmirror.transfer.OutgoingFile
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
+import java.io.Closeable
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+class JavaFileTreeTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    private lateinit var rootDir: File
+    private lateinit var outside: File
+    private lateinit var secret: File
+
+    private fun tree(): JavaFileTree {
+        rootDir = tmp.newFolder("root")
+        outside = tmp.newFolder("outside")
+        secret = File(outside, "secret.txt").apply { writeText("secret") }
+        return JavaFileTree(
+            rootDir,
+            RootInfo("all", "Phone storage", RootKind.ROOT_KIND_ALL_FILES, true),
+            mimeFor = { name -> if (name.endsWith(".jpg")) "image/jpeg" else "application/octet-stream" },
+        )
+    }
+
+    private fun link(at: File, target: File) = Files.createSymbolicLink(at.toPath(), target.toPath())
+
+    private fun <T> ok(r: TreeResult<T>): T = assertIs<TreeResult.Ok<T>>(r, "expected Ok, got $r").value
+
+    private fun err(r: TreeResult<*>): BrowseOutcome = assertIs<TreeResult.Err>(r, "expected Err, got $r").outcome
+
+    private fun names(dir: File) = dir.list().orEmpty().sorted()
+
+    private fun IncomingFile.write(text: String) = output.write(text.toByteArray())
+
+    private fun OutgoingFile.readText(): String = open().use { String(it.readBytes()) }
+
+    @Test fun symlinkOutOfRootIsBadPath() {
+        val t = tree()
+        link(File(rootDir, "escape"), outside)
+        link(File(rootDir, "secret-link.txt"), secret)
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.stat("escape")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.list("escape")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.stat("escape/secret.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openRead("escape/secret.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openRead("secret-link.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openWrite("escape", "x.txt", overwrite = false)))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openWrite("", "secret-link.txt", overwrite = true)))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.mkdir("escape/new")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.rename("escape/secret.txt", "s.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.delete("escape/secret.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.stat("../outside/secret.txt")))
+        assertEquals(listOf("secret.txt"), names(outside))
+        assertEquals("secret", secret.readText())
+        assertFalse(File(outside, "new").exists())
+    }
+
+    @Test fun symlinkOutOfRootIsNotListed() {
+        val t = tree()
+        File(rootDir, "docs").mkdir()
+        File(rootDir, "a.jpg").writeText("abc")
+        link(File(rootDir, "escape"), outside)
+        link(File(rootDir, "secret-link.txt"), secret)
+        link(File(rootDir, "dangling"), File(rootDir, "nothing-here"))
+        link(File(rootDir, "inner"), File(rootDir, "docs"))
+        // The engine's own in-progress file is never shown.
+        File(rootDir, ".0f8fad5b-d9cb-469f-a165-70867728950e.part").writeText("partial")
+        File(rootDir, ".hidden").writeText("h")
+
+        val entries = ok(t.list("")).associateBy { it.name }
+        assertEquals(setOf("docs", "a.jpg", "inner", ".hidden"), entries.keys)
+        assertTrue(entries.getValue("docs").isDir)
+        assertTrue(entries.getValue("inner").isDir)
+        assertEquals(EntryInfo("a.jpg", false, 3, File(rootDir, "a.jpg").lastModified(), "image/jpeg"), entries["a.jpg"])
+        assertEquals("", entries.getValue("docs").mime)
+    }
+
+    @Test fun deleteDoesNotFollowSymlinkOutOfRoot() {
+        val t = tree()
+        val dir = File(rootDir, "dir").apply { mkdir() }
+        File(dir, "mine.txt").writeText("m")
+        link(File(dir, "escape"), outside)
+        link(File(dir, "secret-link.txt"), secret)
+        File(rootDir, "docs").mkdir()
+        File(rootDir, "docs/keep.txt").writeText("k")
+        link(File(rootDir, "inner"), File(rootDir, "docs"))
+
+        ok(t.delete("dir"))
+        assertFalse(dir.exists())
+        assertEquals(listOf("secret.txt"), names(outside))
+        assertEquals("secret", secret.readText())
+
+        // A link inside the root goes, its target stays.
+        ok(t.delete("inner"))
+        assertFalse(Files.exists(File(rootDir, "inner").toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertEquals("k", File(rootDir, "docs/keep.txt").readText())
+
+        // A link out of the root is not something the Mac can see.
+        link(File(rootDir, "escape"), outside)
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.delete("escape")))
+        assertEquals(listOf("secret.txt"), names(outside))
+    }
+
+    @Test fun deleteIsRecursive() {
+        val t = tree()
+        File(rootDir, "a/b/c").mkdirs()
+        File(rootDir, "a/one.txt").writeText("1")
+        File(rootDir, "a/b/c/two.txt").writeText("2")
+        File(rootDir, "keep.txt").writeText("k")
+        ok(t.delete("a"))
+        assertEquals(listOf("keep.txt"), names(rootDir))
+        ok(t.delete("keep.txt"))
+        assertEquals(emptyList(), names(rootDir))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, err(t.delete("keep.txt")))
+        // The root itself is never deleted.
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.delete("")))
+        assertTrue(rootDir.isDirectory)
+    }
+
+    @Test fun mkdirExistingIsExists() {
+        val t = tree()
+        val made = ok(t.mkdir("photos"))
+        assertEquals("photos", made.name)
+        assertTrue(made.isDir)
+        assertTrue(File(rootDir, "photos").isDirectory)
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_EXISTS, err(t.mkdir("photos")))
+        File(rootDir, "file.txt").writeText("f")
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_EXISTS, err(t.mkdir("file.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, err(t.mkdir("missing/inner")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.mkdir("")))
+        ok(t.mkdir("photos/2026"))
+        assertTrue(File(rootDir, "photos/2026").isDirectory)
+    }
+
+    @Test fun writeWithoutOverwriteGetsCounter() {
+        val t = tree()
+        File(rootDir, "photo.jpg").writeText("old")
+        val sink = ok(t.openWrite("", "photo.jpg", overwrite = false))
+        sink.write("new")
+        assertEquals("photo (1).jpg", sink.commit())
+        assertEquals("old", File(rootDir, "photo.jpg").readText())
+        assertEquals("new", File(rootDir, "photo (1).jpg").readText())
+        assertEquals(listOf("photo (1).jpg", "photo.jpg"), names(rootDir))
+
+        // Collisions are case-insensitive (SPEC 16).
+        val again = ok(t.openWrite("", "PHOTO.jpg", overwrite = false))
+        again.write("third")
+        assertEquals("PHOTO (2).jpg", again.commit())
+    }
+
+    @Test fun writeWithOverwriteReplacesOnCommit() {
+        val t = tree()
+        File(rootDir, "docs").mkdir()
+        File(rootDir, "docs/report.txt").writeText("old")
+        val sink = ok(t.openWrite("docs", "report.txt", overwrite = true))
+        sink.write("new")
+        // Until commit the old file is untouched, and the partial is hidden.
+        assertEquals("old", File(rootDir, "docs/report.txt").readText())
+        assertEquals(listOf("report.txt"), ok(t.list("docs")).map { it.name })
+        assertEquals("report.txt", sink.commit())
+        assertEquals("new", File(rootDir, "docs/report.txt").readText())
+        assertEquals(listOf("report.txt"), names(File(rootDir, "docs")))
+    }
+
+    @Test fun abortedWriteLeavesNoPart() {
+        val t = tree()
+        File(rootDir, "keep.txt").writeText("k")
+        val sink = ok(t.openWrite("", "new.bin", overwrite = false))
+        sink.write("partial")
+        assertEquals(2, names(rootDir).size, "the partial file exists while writing")
+        sink.abort()
+        assertEquals(listOf("keep.txt"), names(rootDir))
+        assertFailsWith<IOException> { sink.output.write(1) } // the output was closed
+    }
+
+    @Test fun commitRefusesDirectorySwappedForSymlink() {
+        val t = tree()
+        val dir = File(rootDir, "up").apply { mkdir() }
+        val sink = ok(t.openWrite("up", "x.txt", overwrite = false))
+        sink.write("data")
+        // The checked directory is replaced by a link out of the root before the rename.
+        val moved = File(rootDir, "up-moved")
+        assertTrue(dir.renameTo(moved))
+        link(dir, outside)
+        assertFailsWith<IOException> { sink.commit() }
+        sink.abort() // the engine aborts after a commit that threw
+        // Nothing was written or deleted through the link.
+        assertEquals(listOf("secret.txt"), names(outside))
+        assertEquals("secret", secret.readText())
+        assertFalse(File(moved, "x.txt").exists())
+    }
+
+    @Test fun renameRenamesInPlace() {
+        val t = tree()
+        File(rootDir, "docs").mkdir()
+        File(rootDir, "docs/a.txt").writeText("a")
+        File(rootDir, "docs/b.txt").writeText("b")
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_EXISTS, err(t.rename("docs/a.txt", "b.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.rename("docs/a.txt", "../a.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.rename("", "x")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, err(t.rename("docs/zzz.txt", "y.txt")))
+        val renamed = ok(t.rename("docs/a.txt", "c.txt"))
+        assertEquals("c.txt", renamed.name)
+        assertEquals(listOf("b.txt", "c.txt"), names(File(rootDir, "docs")))
+    }
+
+    @Test fun readOpensTheFileAndCloses() {
+        val t = tree()
+        File(rootDir, "a.jpg").writeText("hello")
+        val file = ok(t.openRead("a.jpg"))
+        assertEquals("a.jpg", file.name)
+        assertEquals(5, file.size)
+        assertEquals("image/jpeg", file.mime)
+        assertEquals("hello", file.readText())
+        assertIs<Closeable>(file).close()
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, err(t.openRead("missing.jpg")))
+        File(rootDir, "dir").mkdir()
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openRead("dir")))
+    }
+}
