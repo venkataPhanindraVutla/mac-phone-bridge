@@ -88,6 +88,8 @@
     <string name="home_screenshots_partial">With access to only some photos, new screenshots can\'t be found. Allow all photos to send screenshots.</string>
     <string name="home_screenshots_needs_permission">Android Mirroring needs access to your photos to do this. Allow it in Settings.</string>
     <string name="home_screenshots_allow">Allow access to all photos</string>
+    <string name="home_photos_title">Show recent photos on your Mac</string>
+    <string name="home_photos_partial">Only the photos you picked are shown on your Mac.</string>
 
     <!-- Clipboard: entry points and outcomes -->
     <string name="tile_send_clipboard">Send clipboard to Mac</string>

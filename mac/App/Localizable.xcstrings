@@ -1475,6 +1475,83 @@
           }
         }
       }
+    },
+    "Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos"
+          }
+        }
+      }
+    },
+    "Save to Downloads": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save to Downloads"
+          }
+        }
+      }
+    },
+    "Showing only the photos you allowed on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing only the photos you allowed on the phone."
+          }
+        }
+      }
+    },
+    "Turn on photo access in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on photo access in the phone app."
+          }
+        }
+      }
+    },
+    "Couldn't save to Downloads.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save to Downloads."
+          }
+        }
+      }
+    },
+    "Photo, %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo, %@"
+          }
+        }
+      }
+    },
+    "Video, %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video, %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

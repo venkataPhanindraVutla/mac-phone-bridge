@@ -30,6 +30,8 @@ import io.github.anmirror.feature.contacts.ContactsSync
 import io.github.anmirror.feature.notify.ActionInvoker
 import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
+import io.github.anmirror.feature.photos.MediaStoreLibrary
+import io.github.anmirror.feature.photos.PhotosService
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
@@ -334,11 +336,16 @@ class AppGraph private constructor(context: Context) {
 
     /**
      * Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. A
-     * screenshot offer also needs [screenshotsOpen] (R5): the transfer fails before the Mac hears of it.
+     * screenshot offer also needs [screenshotsOpen], and a photo offer [photosOpen] (R5): the
+     * transfer fails before the Mac hears of it.
      */
     suspend fun sendTransfer(type: String, payload: MessageLite): Boolean {
         if (!transferShared()) return false
-        if (payload is TransferOffer && !phoneOfferAllowed(payload.kind, screenshotsOpen())) return false
+        if (payload is TransferOffer &&
+            !phoneOfferAllowed(payload.kind, screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen())
+        ) {
+            return false
+        }
         return manager.send(ProtoChannel.CHANNEL_FILES, type, payload)
     }
 
@@ -367,7 +374,7 @@ class AppGraph private constructor(context: Context) {
         freeBytes = { downloads.freeBytes() },
     )
 
-    /** Shared files and screenshots whose descriptors stay open until their transfer ends. */
+    /** Shared files, screenshots and photos whose descriptors stay open until their transfer ends. */
     private val openShares = ConcurrentHashMap<String, Closeable>()
 
     /** Queues [files] for sending (the caller checked [filesShared]); each descriptor is closed when its transfer ends. */
@@ -431,6 +438,50 @@ class AppGraph private constructor(context: Context) {
         Log.i(TAG, "screenshots: queued ${ids.joinToString(",")}")
     }
 
+    private val photosPrefs = app.getSharedPreferences("photos", Context.MODE_PRIVATE)
+    private val _photosOn = MutableStateFlow(photosPrefs.getBoolean(KEY_PHOTOS_ON, false))
+
+    /** The user's "Show recent photos on your Mac" switch. Off until they turn it on. */
+    val photosOn: StateFlow<Boolean> = _photosOn.asStateFlow()
+
+    fun setPhotosOn(on: Boolean) {
+        photosPrefs.edit { putBoolean(KEY_PHOTOS_ON, on) }
+        _photosOn.value = on
+    }
+
+    /** The connected Mac shares photos.v1. */
+    fun photosShared(): Boolean = shares("photos.v1")
+
+    /**
+     * The phone answers no `photos.*` request and sends no photo unless the Mac shares photos.v1,
+     * the switch is on and some photos are readable (with only the picked ones, those are listed).
+     */
+    fun photosOpen(): Boolean = photosShared() && _photosOn.value && app.mediaAccess() != MediaAccess.NONE
+
+    /**
+     * Sends a photos answer when [photosOpen]; false (and nothing sent) otherwise. Its
+     * `files.failed` (a fetch that found nothing) goes on the files channel, through [sendTransfer].
+     */
+    suspend fun sendPhotos(type: String, payload: MessageLite): Boolean {
+        if (!photosOpen()) return false
+        return if (type.startsWith("files.")) sendTransfer(type, payload) else manager.send(ProtoChannel.CHANNEL_PHOTOS, type, payload)
+    }
+
+    /**
+     * `photos.*` from the Mac (F-13): lists, thumbnails over one bulk stream, and fetches sent as
+     * `TRANSFER_KIND_PHOTO`, each descriptor closed when its transfer ends. The caller checks
+     * [photosOpen] before handing a request over.
+     */
+    val photos = PhotosService(
+        library = MediaStoreLibrary(app.contentResolver),
+        send = ::sendPhotos,
+        bulk = BulkOpener(::openBulk),
+        transfers = transfers,
+        partial = { app.mediaAccess() == MediaAccess.PARTIAL },
+        onQueued = { id, file -> track(listOf(id), listOf(file)) },
+        log = { Log.i(TAG, it) },
+    )
+
     /**
      * Closes the descriptors of shares whose transfer ended. The tracked IDs are taken before the
      * engine's list is read, so a share queued meanwhile is either not looked at or seen as live.
@@ -493,6 +544,7 @@ class AppGraph private constructor(context: Context) {
      */
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
         bulkEndpoint.update { if (it?.session === ended) null else it }
+        photos.stop()
         transfers.onDisconnected()
     }
 
@@ -576,12 +628,13 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
         private const val KEY_CLIPBOARD_ON = "share_with_mac"
         private const val KEY_SCREENSHOTS_ON = "send_to_mac"
+        private const val KEY_PHOTOS_ON = "show_on_mac"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
         private const val ENDPOINT_WAIT_MS = 10_000L

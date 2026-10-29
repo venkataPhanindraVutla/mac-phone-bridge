@@ -23,11 +23,15 @@ fun offerRefusal(hasTarget: Boolean, shared: Set<String>): TransferError? {
 
 /**
  * R5 for the phone's own offers, on top of [bulkShared]: a screenshot goes only while its
- * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable);
- * any other bulk capability is not enough.
+ * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable),
+ * and a photo only while photos is (photos.v1, the switch, some photos readable); any other bulk
+ * capability is not enough.
  */
-fun phoneOfferAllowed(kind: TransferKind, screenshotsOpen: Boolean): Boolean =
-    kind != TransferKind.TRANSFER_KIND_SCREENSHOT || screenshotsOpen
+fun phoneOfferAllowed(kind: TransferKind, screenshotsOpen: Boolean, photosOpen: Boolean): Boolean = when (kind) {
+    TransferKind.TRANSFER_KIND_SCREENSHOT -> screenshotsOpen
+    TransferKind.TRANSFER_KIND_PHOTO -> photosOpen
+    else -> true
+}
 
 /**
  * Which tracked shared files can be closed: those whose transfer ended, or dropped off the

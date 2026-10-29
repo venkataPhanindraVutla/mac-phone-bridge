@@ -55,6 +55,18 @@ fun screenshotPermissions(): List<String> =
         listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
 
+/**
+ * "Show recent photos on your Mac": photos and videos, READ_MEDIA_IMAGES + READ_MEDIA_VIDEO
+ * (API 33+, asked together so the system shows one dialog), or READ_EXTERNAL_STORAGE (up to 32).
+ * On API 34+ "Select photos" grants only READ_MEDIA_VISUAL_USER_SELECTED: the picked items are listed.
+ */
+fun photosPermissions(): List<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+    } else {
+        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
 /** How much of the phone's photos this app may read right now. */
 fun Context.mediaAccess(): MediaAccess = when {
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isGranted(Manifest.permission.READ_MEDIA_IMAGES) -> MediaAccess.FULL

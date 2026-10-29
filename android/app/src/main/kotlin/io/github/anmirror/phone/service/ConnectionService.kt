@@ -67,6 +67,9 @@ import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NotificationFilter
+import io.github.anmirror.protocol.v1.PhotoFetch
+import io.github.anmirror.protocol.v1.PhotosListRequest
+import io.github.anmirror.protocol.v1.PhotosThumbsRequest
 import io.github.anmirror.protocol.v1.SharedLink
 import io.github.anmirror.protocol.v1.SharedText
 import kotlinx.coroutines.CancellationException
@@ -120,6 +123,7 @@ class ConnectionService : LifecycleService() {
         setUpShare()
         setUpTransfers()
         setUpScreenshots()
+        setUpPhotos()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -455,6 +459,58 @@ class ConnectionService : LifecycleService() {
                     }
                     if (shared && on && access == MediaAccess.FULL) startScreenshotObserver() else stopScreenshotObserver()
                 }
+        }
+    }
+
+    /**
+     * Photos (F-13): `photos.list`, `photos.thumbs` and `photos.fetch` are answered only while the
+     * feature is open (the Mac shares photos.v1, the switch is on, some photos are readable); each
+     * runs on its own, so a thumbnail stream never holds up the next message. With only the picked
+     * photos readable, those are listed. `photos.availability` is sent regardless, while the Mac
+     * shares photos.v1; closing the feature ends a thumbnail stream in progress.
+     */
+    private fun setUpPhotos() {
+        graph.manager.on(MessageType.PHOTOS_LIST) { env ->
+            val request = PhotosListRequest.parseFrom(env.payload)
+            photosRequest("list") { graph.photos.onList(request) }
+        }
+        graph.manager.on(MessageType.PHOTOS_THUMBS) { env ->
+            val request = PhotosThumbsRequest.parseFrom(env.payload)
+            photosRequest("thumbs") { graph.photos.onThumbs(request) }
+        }
+        graph.manager.on(MessageType.PHOTOS_FETCH) { env ->
+            val fetch = PhotoFetch.parseFrom(env.payload)
+            photosRequest("fetch") { graph.photos.onFetch(fetch) }
+        }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "photos.v1" in it.shared }.distinctUntilChanged(),
+                graph.photosOn,
+                graph.mediaAccess,
+            ) { shared, on, access -> Triple(shared, on, access) }
+                .distinctUntilChanged()
+                .collect { (shared, on, access) ->
+                    if (shared) {
+                        val availability = mediaFeatureAvailability(access, on, partialWorks = true)
+                        graph.manager.send(Channel.CHANNEL_PHOTOS, MessageType.PHOTOS_AVAILABILITY, availability)
+                    }
+                    if (!(shared && on && access != MediaAccess.NONE)) graph.photos.stop()
+                }
+        }
+    }
+
+    /** Runs one photos request off the main thread, only while [AppGraph.photosOpen]; logs the failure class only. */
+    private fun photosRequest(what: String, handle: suspend () -> Unit) {
+        graph.scope.launch(Dispatchers.IO) {
+            if (!graph.photosOpen()) return@launch
+            try {
+                handle()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The class only: a message could carry a path.
+                Log.e(TAG, "photos: $what failed (${e.javaClass.simpleName})")
+            }
         }
     }
 

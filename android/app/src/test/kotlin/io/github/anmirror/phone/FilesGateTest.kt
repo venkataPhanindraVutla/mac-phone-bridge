@@ -31,9 +31,15 @@ class FilesGateTest {
 
     @Test fun screenshotOfferNeedsScreenshotsOpen() {
         // files.v1 (or any bulk feature) shared is not enough for a screenshot.
-        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = false))
-        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = true))
-        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_FILE, screenshotsOpen = false))
+        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = false, photosOpen = true))
+        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = true, photosOpen = false))
+        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_FILE, screenshotsOpen = false, photosOpen = false))
+    }
+
+    @Test fun photoOfferNeedsPhotosOpen() {
+        // files.v1 or screenshots.v1 shared is not enough for a photo (R5).
+        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_PHOTO, screenshotsOpen = true, photosOpen = false))
+        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_PHOTO, screenshotsOpen = false, photosOpen = true))
     }
 
     @Test fun onlyFinishedOrDroppedSharesAreReleased() {

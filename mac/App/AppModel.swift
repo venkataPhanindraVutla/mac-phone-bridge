@@ -9,6 +9,7 @@ import FeatureContacts
 import FeatureFiles
 import FeatureFind
 import FeatureNotify
+import FeaturePhotos
 import FeatureScreenshots
 import FeatureShare
 import FeatureStatus
@@ -23,7 +24,7 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
-        "screenshots.v1",
+        "screenshots.v1", "photos.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -40,6 +41,8 @@ final class AppModel {
     let share: ShareModel
     /// Phone screenshots, saved where Settings says and announced with a thumbnail.
     let screenshots: ScreenshotInbox
+    /// The phone's newest photos and videos for the Phone window; thumbnails in memory only.
+    let photos: PhotosModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -197,8 +200,26 @@ final class AppModel {
             guard item.kind == .screenshot else { return }
             Task { await screenshots.finished(item, at: url) }
         }
-        bulk.onLink = { [weak transfers] pipe, grant in
-            if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
+        let photos = PhotosModel(
+            engine: transfers, bulk: bulk,
+            send: { type, message in
+                // Only a phone that shares photos.v1 gets photos messages.
+                guard server.activePhone?.shared.contains("photos.v1") == true else { return }
+                try? await server.send(type, message, channel: .photos)
+            },
+            downloads: folders.downloads
+        )
+        self.photos = photos
+        // Drag-out files a previous run left behind.
+        try? FileManager.default.removeItem(at: FilePromise.folder)
+        // Thumbnail streams go to the photos model; the transfer roles to the engine.
+        bulk.onLink = { [weak transfers, weak photos] pipe, grant in
+            switch grant.role {
+            case .thumbnails:
+                if let photos { Task { await photos.thumbnailLink(pipe) } } else { pipe.close() }
+            default:
+                if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
+            }
         }
         // After wake the port may change, and the phone may be back before it is ready.
         bulk.onPortChange = { [weak transfers] _ in transfers?.bulkPortChanged() }
@@ -216,6 +237,7 @@ final class AppModel {
         notifyWork.register(transfers)
         notifyWork.register(share)
         notifyWork.register(screenshots)
+        notifyWork.register(photos)
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
@@ -287,6 +309,9 @@ final class AppModel {
 
     /// Phone screenshots arrive only while the connected phone shares `screenshots.v1`.
     var canScreenshots: Bool { server.activePhone?.shared.contains("screenshots.v1") ?? false }
+
+    /// Phone photos are browsed only while the connected phone shares `photos.v1`.
+    var canPhotos: Bool { server.activePhone?.shared.contains("photos.v1") ?? false }
 
     /// Why the last thing the user sent (dropped, picked, or the clipboard) did not all go.
     /// Shown in the menu and the Send tab until the next send, connect or disconnect.

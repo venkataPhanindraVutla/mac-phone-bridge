@@ -5,6 +5,8 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -73,6 +76,8 @@ fun HomeScreen(
     mediaAccess: MediaAccess,
     onScreenshotsToggle: (Boolean) -> Unit,
     onMediaPermissionResult: () -> Unit,
+    photosOn: Boolean,
+    onPhotosToggle: (Boolean) -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -122,6 +127,7 @@ fun HomeScreen(
             on = screenshotsOn, access = mediaAccess, onToggle = onScreenshotsToggle,
             onPermissionResult = onMediaPermissionResult,
         )
+        PhotosRow(on = photosOn, access = mediaAccess, onToggle = onPhotosToggle, onPermissionResult = onMediaPermissionResult)
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -327,6 +333,54 @@ private fun ScreenshotsRow(on: Boolean, access: MediaAccess, onToggle: (Boolean)
         }
         if (on && access != MediaAccess.FULL) {
             val note = if (access == MediaAccess.PARTIAL) R.string.home_screenshots_partial else R.string.home_screenshots_needs_permission
+            Text(stringResource(note), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_screenshots_allow)) }
+        }
+    }
+}
+
+/**
+ * "Show recent photos on your Mac": photo and video access is asked for only when the switch is
+ * turned on, in one system dialog. With only some photos allowed, those are shown on the Mac, and
+ * the row says so; with none, it says access is needed. Either way back is the app's page in Settings.
+ */
+@Composable
+private fun PhotosRow(on: Boolean, access: MediaAccess, onToggle: (Boolean) -> Unit, onPermissionResult: () -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_photos_title)
+    val done by rememberUpdatedState(onPermissionResult)
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { done() }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    // Not just "access != FULL": images may be allowed (for screenshots) and videos not.
+                    val missing = photosPermissions().filterNot { context.isGranted(it) }
+                    if (checked && missing.isNotEmpty()) ask.launch(missing.toTypedArray())
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && access != MediaAccess.FULL) {
+            val note = if (access == MediaAccess.PARTIAL) R.string.home_photos_partial else R.string.home_screenshots_needs_permission
             Text(stringResource(note), style = MaterialTheme.typography.bodyMedium)
             OutlinedButton(
                 onClick = {
