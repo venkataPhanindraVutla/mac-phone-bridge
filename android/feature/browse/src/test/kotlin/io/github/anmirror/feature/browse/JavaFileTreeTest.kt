@@ -246,6 +246,17 @@ class JavaFileTreeTest {
         assertEquals(emptyList(), names(moved))
     }
 
+    @Test fun abortAlsoDeletesByPathWhenTheDescriptorPathIsUnreachable() {
+        val fds = ReportingDescriptors()
+        val t = tree(fds)
+        val sink = ok(t.openWrite("", "x.txt", overwrite = false))
+        sink.write("data")
+        // A path form this app can't reach (say /data/media/0/...).
+        fds.writePath = { f -> "/nonexistent/form/${f.name}" }
+        sink.abort()
+        assertEquals(emptyList(), names(rootDir))
+    }
+
     @Test fun readOfDescriptorOutsideRootIsBadPath() {
         // As if a folder on the way had been swapped for a link between the check and the open.
         val fds = ReportingDescriptors(readPath = { secret.path })

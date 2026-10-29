@@ -89,6 +89,15 @@ class SafRulesTest {
         assertTrue(fitsFreeSpace(size = 1L shl 40, free = null), "unknown free space: take it")
     }
 
+    @Test fun fstatvfsIsTrustedOnlyForARegularFileOnARealVolume() {
+        assertEquals(4096L * 10, trustedFreeBytes(regular = true, blocks = 1_000, availableBlocks = 10, blockSize = 4096))
+        // A pipe, socket or provider proxy: statvfs says nothing about the destination.
+        assertNull(trustedFreeBytes(regular = false, blocks = 1_000, availableBlocks = 10, blockSize = 4096))
+        // A filesystem reporting no blocks (FUSE proxies, some providers) would read as full.
+        assertNull(trustedFreeBytes(regular = true, blocks = 0, availableBlocks = 0, blockSize = 4096))
+        assertEquals(0L, trustedFreeBytes(regular = true, blocks = 1_000, availableBlocks = 0, blockSize = 4096), "really full")
+    }
+
     @Test fun securityExceptionIsRevokedOnlyWhenTheGrantIsGone() {
         val tree = "content://com.android.externalstorage.documents/tree/primary%3ADocs"
         val other = "content://com.android.externalstorage.documents/tree/primary%3AMusic"

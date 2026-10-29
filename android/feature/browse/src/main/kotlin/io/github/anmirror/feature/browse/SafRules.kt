@@ -126,3 +126,7 @@ internal class DocPaths<D : Any>(
         return null
     }
 }
+
+/** What `fstatvfs` on a write's descriptor says is free; trusted only for a regular file on a volume with blocks. */
+internal fun trustedFreeBytes(regular: Boolean, blocks: Long, availableBlocks: Long, blockSize: Long): Long? =
+    if (regular && blocks > 0) availableBlocks * blockSize else null

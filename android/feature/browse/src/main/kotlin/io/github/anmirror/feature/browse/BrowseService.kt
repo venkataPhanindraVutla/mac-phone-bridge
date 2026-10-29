@@ -52,11 +52,20 @@ class BrowseService(
     private val log: (String) -> Unit = {},
 ) {
     /** A browse transfer: its root, and for a write the folder it writes into. */
-    private class Tracked(val rootId: String, val write: Boolean, val dir: List<String>)
+    private open class Tracked(val rootId: String, val write: Boolean, val dir: List<String>)
+
+    /**
+     * A transfer being opened (tree lookup and open under way). [cancelled] is set, under [lock],
+     * when its root goes or browsing closes meanwhile: the open's handle is then closed at once
+     * and no transfer starts.
+     */
+    private class Pending(rootId: String, write: Boolean, dir: List<String>) : Tracked(rootId, write, dir) {
+        var cancelled: TransferError? = null
+    }
 
     private val lock = Any()
     private val tracked = HashMap<String, Tracked>() // transfer ID → what it is; under [lock]
-    private var readsOpening = 0 // reads past the cap check, not yet tracked; under [lock]
+    private val pending = HashSet<Pending>() // under [lock]
 
     /** `browse.roots_request`: answered by `browse.roots`. */
     suspend fun onRootsRequest() = pushRoots()
@@ -123,49 +132,75 @@ class BrowseService(
      */
     suspend fun onRead(p: BrowsePath) {
         if (p.requestId == 0L) return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH)))
+        // Pending before the lookup and the open, so a root that goes meanwhile cancels it.
+        val mine = Pending(p.rootId, write = false, dir = emptyList())
         val room = synchronized(lock) {
             prune()
-            val open = tracked.values.count { !it.write } + readsOpening
-            (open < MAX_READS).also { if (it) readsOpening++ }
+            val open = tracked.values.count { !it.write } + pending.count { !it.write }
+            (open < MAX_READS).also { if (it) pending += mine }
         }
         if (!room) {
             log("browse: read ${p.requestId} refused, $MAX_READS outstanding")
             return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_IO)))
         }
-        try {
-            val ran = run(p.rootId, p.path) { it.openRead(p.path) }
-            when (val result = ran.result) {
-                is TreeResult.Err -> answer("read", p.requestId, ran)
-                is TreeResult.Ok -> {
-                    val file = result.value
-                    val id = try {
-                        transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
-                    } catch (e: Exception) {
-                        (file as? Closeable)?.close()
-                        throw e
-                    }
-                    synchronized(lock) { tracked[id] = Tracked(p.rootId, write = false, dir = emptyList()) }
-                    onQueued(id, file)
-                    log("browse: read ${p.requestId} queued as $id")
-                }
+        val ran = try {
+            run(p.rootId, p.path) { it.openRead(p.path) }
+        } catch (e: Throwable) {
+            synchronized(lock) { pending -= mine }
+            throw e
+        }
+        when (val result = ran.result) {
+            is TreeResult.Err -> {
+                synchronized(lock) { pending -= mine }
+                answer("read", p.requestId, ran)
             }
-        } finally {
-            synchronized(lock) { readsOpening-- }
+            is TreeResult.Ok -> {
+                val file = result.value
+                // The engine only queues here: starting the transfer and tracking it happen together.
+                val id = synchronized(lock) {
+                    pending -= mine
+                    if (mine.cancelled != null) {
+                        null
+                    } else {
+                        transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
+                            .also { tracked[it] = Tracked(p.rootId, write = false, dir = emptyList()) }
+                    }
+                }
+                if (id == null) {
+                    (file as? Closeable)?.close()
+                    log("browse: read ${p.requestId} cancelled while opening")
+                    return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND)))
+                }
+                onQueued(id, file)
+                log("browse: read ${p.requestId} queued as $id")
+            }
         }
     }
 
-    /** The roots changed: browse transfers whose root is gone (removed, revoked, access withdrawn) stop. */
+    /**
+     * The roots changed: browse transfers whose root is gone (removed, revoked, access withdrawn)
+     * stop, including those still being opened.
+     */
     fun onRootsChanged() {
         val live = roots.trees().mapTo(HashSet()) { it.root.id }
-        cancelWhere { it.rootId !in live }
+        cancelWhere(TransferError.TRANSFER_ERROR_BAD_TARGET) { it.rootId !in live }
     }
 
-    /** Browsing closed: every browse transfer still under way stops (the Mac is told). */
-    fun cancelAll() = cancelWhere { true }
+    /**
+     * Browsing closed: every browse transfer stops (the Mac is told), those being opened, and
+     * browse writes still waiting their turn (they would go ahead if browsing reopened first).
+     */
+    fun cancelAll() {
+        cancelWhere(TransferError.TRANSFER_ERROR_DISABLED) { true }
+        val waiting = transfers.transfers.value.filter { it.browseTarget && it.state == TransferState.QUEUED }
+        waiting.forEach { transfers.cancel(it.id) }
+        if (waiting.isNotEmpty()) log("browse: cancelled ${waiting.size} queued writes")
+    }
 
-    private fun cancelWhere(gone: (Tracked) -> Boolean) {
+    private fun cancelWhere(reason: TransferError, gone: (Tracked) -> Boolean) {
         val ids = synchronized(lock) {
             prune()
+            pending.filter(gone).forEach { it.cancelled = reason }
             val ids = tracked.filterValues(gone).keys.toList()
             ids.forEach(tracked::remove)
             ids
@@ -186,7 +221,7 @@ class BrowseService(
         if (segments.isEmpty()) return false
         return synchronized(lock) {
             prune()
-            tracked.values.any { t ->
+            (tracked.values + pending).any { t ->
                 t.write && t.rootId == rootId && t.dir.size >= segments.size &&
                     t.dir.subList(0, segments.size).map(FileNames::key) == segments
             }
@@ -204,6 +239,18 @@ class BrowseService(
         val target = offer.target
         val segments = BrowsePaths.segments(target.dirPath)
         if (segments == null || segments.any { PART_NAME.matches(it) }) return SinkResult.Refused(TransferError.TRANSFER_ERROR_BAD_TARGET)
+        // Pending before the lookup and the open, so a root that goes meanwhile refuses it.
+        val mine = Pending(target.rootId, write = true, dir = segments)
+        synchronized(lock) { pending += mine }
+        try {
+            return openWrite(offer, mine)
+        } finally {
+            synchronized(lock) { pending -= mine }
+        }
+    }
+
+    private fun openWrite(offer: TransferOffer, mine: Pending): SinkResult {
+        val target = offer.target
         val tree = tree(target.rootId) ?: return SinkResult.Refused(TransferError.TRANSFER_ERROR_BAD_TARGET)
         if (!tree.root.writable) return SinkResult.Refused(TransferError.TRANSFER_ERROR_DENIED)
         return when (val r = tree.openWrite(target.dirPath, offer.name, target.overwrite)) {
@@ -215,7 +262,14 @@ class BrowseService(
                     log("browse: write ${offer.transferId} refused NO_SPACE")
                     return SinkResult.Refused(TransferError.TRANSFER_ERROR_NO_SPACE)
                 }
-                synchronized(lock) { tracked[offer.transferId] = Tracked(tree.root.id, write = true, dir = segments) }
+                val cancelled = synchronized(lock) {
+                    mine.cancelled.also { if (it == null) tracked[offer.transferId] = Tracked(tree.root.id, write = true, dir = mine.dir) }
+                }
+                if (cancelled != null) {
+                    runCatching { file.abort() }
+                    log("browse: write ${offer.transferId} cancelled while opening")
+                    return SinkResult.Refused(cancelled)
+                }
                 SinkResult.Ready(file)
             }
             is TreeResult.Err -> {

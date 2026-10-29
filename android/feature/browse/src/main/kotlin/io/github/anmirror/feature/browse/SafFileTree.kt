@@ -9,6 +9,7 @@ import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.system.ErrnoException
 import android.system.Os
+import android.system.OsConstants
 import io.github.anmirror.protocol.v1.BrowseOutcome
 import io.github.anmirror.transfer.FileNames
 import io.github.anmirror.transfer.IncomingFile
@@ -148,12 +149,16 @@ class SafFileTree(
     ) : IncomingFile, SpaceAware {
         override val output: OutputStream = ParcelFileDescriptor.AutoCloseOutputStream(pfd)
 
-        /** Off the primary volume: what the part's own volume has free (null when unknown). */
+        /**
+         * Off the primary volume: what the part's own volume has free. Unknown (null, so the write is
+         * not refused) unless the descriptor is a regular file on a volume that reports blocks.
+         */
         override fun freeBytes(): Long? {
             if (primary) return null // the engine already checked it against [primaryFree]
             return try {
+                val regular = OsConstants.S_ISREG(Os.fstat(pfd.fileDescriptor).st_mode)
                 val st = Os.fstatvfs(pfd.fileDescriptor)
-                st.f_bavail * st.f_frsize
+                trustedFreeBytes(regular, st.f_blocks, st.f_bavail, st.f_frsize)
             } catch (e: ErrnoException) {
                 null
             }

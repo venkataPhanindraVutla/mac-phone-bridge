@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import java.io.ByteArrayInputStream
@@ -61,6 +62,32 @@ private open class MemSink : IncomingFile {
 /** A sink on a nearly full volume. */
 private class TightSink(private val free: Long) : MemSink(), SpaceAware {
     override fun freeBytes(): Long = free
+}
+
+/** A file whose descriptor the test can see closed. */
+private class ClosableFile(override val name: String) : OutgoingFile, java.io.Closeable {
+    @Volatile var closed = false
+    override val size = 1L
+    override val mime = "text/plain"
+    override val modifiedMs = 1L
+    override fun open(): InputStream = ByteArrayInputStream(ByteArray(1))
+    override fun close() { closed = true }
+}
+
+/** [inner], with opens that wait for [gate] (after counting down [entered]). */
+private class GatedTree(val inner: FakeTree) : FileTree by inner {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val gate = java.util.concurrent.CountDownLatch(1)
+    override fun openRead(path: String): TreeResult<OutgoingFile> {
+        entered.countDown()
+        gate.await()
+        return inner.openRead(path)
+    }
+    override fun openWrite(dirPath: String, name: String, overwrite: Boolean): TreeResult<IncomingFile> {
+        entered.countDown()
+        gate.await()
+        return inner.openWrite(dirPath, name, overwrite)
+    }
 }
 
 private fun file(name: String, size: Long = 1) = EntryInfo(name, false, size, 1, "text/plain")
@@ -476,4 +503,71 @@ class BrowseServiceTest {
         val ok = writeOffer("aaaaaaaaaaaaaaaa", "").toBuilder().setSize(10).build()
         assertIs<SinkResult.Ready>(roomy.sinkFor(ok))
     }
+
+    @Test fun rootRemovedDuringOpenCancelsTheTransfer() = runBlocking {
+        val f = ClosableFile("a.txt")
+        val gated = GatedTree(FakeTree(picked, readable = mapOf("a.txt" to f)))
+        val browse = service(gated, FakeTree(other))
+        val reading = scope.launch { browse.onRead(path(7, picked.id, "a.txt")) }
+        assertTrue(gated.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        trees.remove(gated)
+        browse.onRootsChanged()
+        gated.gate.countDown()
+        reading.join()
+        assertTrue(f.closed, "the descriptor opened after the cancel is closed")
+        assertTrue(queued.isEmpty())
+        assertTrue(engine.transfers.value.isEmpty(), "no transfer was started")
+        assertTrue(sent.none { it.first == MessageType.FILES_OFFER })
+        val result = last<BrowseResult>(MessageType.BROWSE_RESULT)
+        assertEquals(7L, result.requestId)
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, result.outcome)
+    }
+
+    @Test fun rootRemovedDuringWriteOpenRefusesTheWrite() {
+        val gated = GatedTree(FakeTree(picked))
+        val browse = service(gated, FakeTree(other))
+        val result = java.util.concurrent.atomic.AtomicReference<SinkResult>()
+        val opening = Thread { result.set(browse.sinkFor(writeOffer(picked.id, "docs"))) }.apply { start() }
+        assertTrue(gated.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // The pending write already counts as one under way.
+        assertTrue(runBlocking { browse.onDelete(path(1, picked.id, "docs")); last<BrowseResult>(MessageType.BROWSE_RESULT).outcome } == BrowseOutcome.BROWSE_OUTCOME_EXISTS)
+        trees.remove(gated)
+        browse.onRootsChanged()
+        gated.gate.countDown()
+        opening.join(5_000)
+        assertEquals(SinkResult.Refused(TransferError.TRANSFER_ERROR_BAD_TARGET), result.get())
+        assertTrue(gated.inner.sink.aborted, "the part opened after the cancel is removed")
+    }
+
+    @Test fun browsingClosedDuringWriteOpenRefusesDisabled() {
+        val gated = GatedTree(FakeTree(picked))
+        val browse = service(gated)
+        val result = java.util.concurrent.atomic.AtomicReference<SinkResult>()
+        val opening = Thread { result.set(browse.sinkFor(writeOffer(picked.id, ""))) }.apply { start() }
+        assertTrue(gated.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        browse.cancelAll()
+        gated.gate.countDown()
+        opening.join(5_000)
+        assertEquals(SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED), result.get())
+        assertTrue(gated.inner.sink.aborted)
+    }
+
+    @Test fun closingBrowsingCancelsQueuedWrites() = runBlocking {
+        val browse = service(FakeTree(picked))
+        macWrite("m1", picked.id, "") // active: the receive direction is busy
+        val queuedOffer = writeOffer(picked.id, "").toBuilder().setTransferId("m2").build()
+        engine.onMessage(envelope(Channel.CHANNEL_FILES, 2, MessageType.FILES_OFFER, queuedOffer))
+        assertEquals(TransferState.QUEUED, state("m2"))
+        // A plain file for Downloads waiting its turn is not browse traffic.
+        val plain = TransferOfferPlain("m3")
+        engine.onMessage(envelope(Channel.CHANNEL_FILES, 3, MessageType.FILES_OFFER, plain))
+        browse.cancelAll()
+        awaitUntil("cancelled") { state("m1") == TransferState.CANCELLED && state("m2") == TransferState.CANCELLED }
+        // m3 then gets its turn (this test's sinks refuse a plain offer, so it fails): it was not cancelled.
+        awaitUntil("m3 ran") { state("m3") != TransferState.QUEUED }
+        assertTrue(state("m3") != TransferState.CANCELLED)
+    }
+
+    private fun TransferOfferPlain(id: String) = TransferOffer.newBuilder()
+        .setTransferId(id).setName("plain.txt").setSize(1).setKind(TransferKind.TRANSFER_KIND_FILE).build()
 }

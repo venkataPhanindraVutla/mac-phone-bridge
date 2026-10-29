@@ -282,7 +282,9 @@ class JavaFileTree internal constructor(
         override fun abort() {
             val real = runCatching { handle.realPath() }.getOrNull()?.let(::File)?.takeIf { it.name == part.name }
             runCatching { output.close() }
-            Files.deleteIfExists((real ?: part).toPath())
+            // The descriptor's path form may be one this app can't reach: then by the path it was made at.
+            val removed = real?.let { runCatching { Files.deleteIfExists(it.toPath()) }.getOrDefault(false) } ?: false
+            if (!removed) Files.deleteIfExists(part.toPath())
         }
     }
 
