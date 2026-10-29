@@ -93,6 +93,9 @@
     <string name="clipboard_not_connected">Not connected to your Mac</string>
     <string name="clipboard_too_long">Text is too long to send</string>
     <string name="clipboard_already_on_mac">Your Mac already has this text</string>
+    <string name="clipboard_off">Clipboard sharing is off</string>
+    <!-- "Sent to %1$s" when the Mac's name is not known. -->
+    <string name="clipboard_mac_unnamed">your Mac</string>
 
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>

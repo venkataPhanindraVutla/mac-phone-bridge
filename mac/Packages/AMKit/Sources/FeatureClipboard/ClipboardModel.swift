@@ -39,8 +39,9 @@ public final class ClipboardModel: SessionFeature {
     @ObservationIgnored private var active = false
     /// The change count already looked at; a poll acts only when it moves.
     @ObservationIgnored private var seenCount = 0
-    @ObservationIgnored private var lastReceived: SHA256.Digest?
-    @ObservationIgnored private var lastSent: SHA256.Digest?
+    /// The SHA-256 of the text the phone has now, as far as this session knows: set on every
+    /// send and every receive, cleared on disconnect. Equal text is never sent to it again.
+    @ObservationIgnored private var phoneHas: SHA256.Digest?
     @ObservationIgnored private var loop: Task<Void, Never>?
 
     public init(pasteboard: any PasteboardAccess, sendEnabled: Bool,
@@ -74,8 +75,8 @@ public final class ClipboardModel: SessionFeature {
     public func disconnected() {
         stop()
         phoneAvailability = nil
-        // The phone's clipboard may change while apart; the next session starts afresh.
-        lastSent = nil
+        // The phone's clipboard may change while apart, and the next phone may be another one.
+        phoneHas = nil
     }
 
     public func message(_ envelope: AMEnvelope) async {
@@ -100,13 +101,16 @@ public final class ClipboardModel: SessionFeature {
         let count = pasteboard.changeCount
         guard count != seenCount else { return }
         seenCount = count
-        guard sendEnabled,
-              Set(pasteboard.types).isDisjoint(with: Self.skippedTypes),
-              let text = pasteboard.readString(), !text.isEmpty,
-              text.utf8.count <= Self.maxBytes else { return }
+        // Switched off: the pasteboard is not read, and turning it on never sends what is there now.
+        guard sendEnabled, Set(pasteboard.types).isDisjoint(with: Self.skippedTypes) else { return }
+        let text = pasteboard.readString()
+        // Written while being read: the types checked may not be this text's (a password manager's
+        // concealed item). The next tick sees the moved count and looks at it afresh.
+        guard pasteboard.changeCount == count else { return }
+        guard let text, !text.isEmpty, text.utf8.count <= Self.maxBytes else { return }
         let digest = SHA256.hash(data: Data(text.utf8))
-        guard digest != lastReceived, digest != lastSent else { return }
-        lastSent = digest
+        guard digest != phoneHas else { return }
+        phoneHas = digest
         var message = AMClipboardText()
         message.text = text
         await send(.clipboardText, message)
@@ -114,7 +118,7 @@ public final class ClipboardModel: SessionFeature {
 
     /// Puts the phone's text on the pasteboard and remembers it, so it is not sent back.
     public func acceptFromPhone(_ text: String) {
-        lastReceived = SHA256.hash(data: Data(text.utf8))
+        phoneHas = SHA256.hash(data: Data(text.utf8))
         pasteboard.writeString(text)
     }
 

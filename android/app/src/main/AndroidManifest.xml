@@ -80,6 +80,7 @@
         <!-- Sends the clipboard to the Mac: no UI, reads the clipboard once it has focus (Android 10+). -->
         <activity
             android:name=".share.ClipboardSendActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"

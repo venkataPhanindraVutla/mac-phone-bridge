@@ -6,6 +6,7 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import io.github.anmirror.phone.AppGraph
+import io.github.anmirror.phone.ClipboardGate
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.share.ClipboardSendActivity
 import kotlinx.coroutines.Dispatchers
@@ -13,10 +14,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Quick Settings tile "Send clipboard to Mac". Active only while connected, the Mac shares
- * clipboard.v1 and "Share clipboard with your Mac" is on (followed live while the tile is
- * shown); a tap opens [ClipboardSendActivity], which reads the clipboard (it needs focus) and
- * sends it.
+ * Quick Settings tile "Send clipboard to Mac", following [AppGraph.clipboardGates] live while it
+ * is shown: active while connected, the Mac shares clipboard.v1 and "Share clipboard with your
+ * Mac" is on; unavailable while connected with the switch off; inactive otherwise. A tap opens
+ * [ClipboardSendActivity], which reads the clipboard (it needs focus) and sends it.
  */
 class ClipboardTileService : TileService() {
     private var watching: Job? = null
@@ -26,7 +27,7 @@ class ClipboardTileService : TileService() {
         val graph = AppGraph.get(this)
         watching?.cancel()
         watching = graph.scope.launch(Dispatchers.Main) {
-            graph.clipboardReady.collect { ready -> show(ready) }
+            graph.clipboardGates.collect { gate -> show(gate) }
         }
     }
 
@@ -41,10 +42,14 @@ class ClipboardTileService : TileService() {
         if (isLocked) unlockAndRun { open() } else open()
     }
 
-    private fun show(ready: Boolean) {
+    private fun show(gate: ClipboardGate) {
         val tile = qsTile ?: return
         tile.label = getString(R.string.tile_send_clipboard)
-        tile.state = if (ready) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = when (gate) {
+            ClipboardGate.OPEN -> Tile.STATE_ACTIVE
+            ClipboardGate.OFF -> Tile.STATE_UNAVAILABLE
+            ClipboardGate.NOT_CONNECTED -> Tile.STATE_INACTIVE
+        }
         tile.updateTile()
     }
 

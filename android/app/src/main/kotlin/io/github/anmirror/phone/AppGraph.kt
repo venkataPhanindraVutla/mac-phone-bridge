@@ -12,6 +12,7 @@ import android.util.AtomicFile
 import android.util.Log
 import com.google.protobuf.MessageLite
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.edit
 import io.github.anmirror.connection.ConnectionManager
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.connection.PROTOCOL_VERSION
@@ -49,7 +50,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -252,24 +252,19 @@ class AppGraph private constructor(context: Context) {
     val clipboardOn: StateFlow<Boolean> = _clipboardOn.asStateFlow()
 
     fun setClipboardOn(on: Boolean) {
-        clipboardPrefs.edit().putBoolean(KEY_CLIPBOARD_ON, on).apply()
+        clipboardPrefs.edit { putBoolean(KEY_CLIPBOARD_ON, on) }
         _clipboardOn.value = on
     }
 
-    /** The connected Mac shares clipboard.v1. */
-    fun clipboardShared(): Boolean {
-        val s = manager.state.value
-        return s is PhoneConnectionState.Connected && "clipboard.v1" in s.shared
-    }
+    /** Whether the phone may send its clipboard now, and if not, why. */
+    fun clipboardGateNow(): ClipboardGate = clipboardGate(manager.state.value, _clipboardOn.value)
 
     /** The phone sends and takes no clipboard text unless the Mac shares clipboard.v1 and the switch is on. */
-    fun clipboardOpen(): Boolean = clipboardShared() && _clipboardOn.value
+    fun clipboardOpen(): Boolean = clipboardGateNow() == ClipboardGate.OPEN
 
-    /** [clipboardOpen] as it changes, for the Quick Settings tile. */
-    val clipboardReady: Flow<Boolean> = combine(
-        manager.state.map { it is PhoneConnectionState.Connected && "clipboard.v1" in it.shared },
-        clipboardOn,
-    ) { shared, on -> shared && on }.distinctUntilChanged()
+    /** [clipboardGateNow] as it changes, for the Quick Settings tile. */
+    val clipboardGates: Flow<ClipboardGate> =
+        combine(manager.state, clipboardOn, ::clipboardGate).distinctUntilChanged()
 
     /** Sends a `clipboard.*` message when [clipboardOpen]; false (and nothing sent) otherwise. */
     suspend fun sendClipboard(type: String, payload: MessageLite): Boolean =

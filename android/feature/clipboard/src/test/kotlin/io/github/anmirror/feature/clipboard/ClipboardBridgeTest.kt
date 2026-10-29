@@ -6,12 +6,15 @@ import io.github.anmirror.protocol.v1.ClipboardText
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 private class FakeClipboard : ClipboardAccess {
     val writes = mutableListOf<String>()
     var current: String? = null
+    var fails = false
     override fun write(text: String) {
+        if (fails) throw SecurityException("refused")
         writes += text
         current = text
     }
@@ -73,5 +76,37 @@ class ClipboardBridgeTest {
         connected = false
         assertEquals(ClipSendResult.NOT_CONNECTED, ClipboardBridge(clipboard, send).sendText("hello"))
         assertTrue(sent.isEmpty())
+    }
+
+    @Test fun resendAfterSentIsNotRefused() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        bridge.onMacText(macText("X"))
+        assertEquals(ClipSendResult.SENT, bridge.sendText("Y"))
+        // The Mac has Y now, so X goes again; Y does not.
+        assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
+        assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendText("X"))
+        assertEquals(listOf("Y", "X"), sent)
+    }
+
+    @Test fun disconnectForgetsWhatTheMacHas() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        bridge.onMacText(macText("X"))
+        bridge.onDisconnected()
+        assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
+    }
+
+    @Test fun failedWriteIsNotRemembered() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        clipboard.fails = true
+        assertFailsWith<SecurityException> { bridge.onMacText(macText("X")) }
+        assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
+    }
+
+    @Test fun failedSendIsNotRemembered() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        connected = false
+        assertEquals(ClipSendResult.NOT_CONNECTED, bridge.sendText("X"))
+        connected = true
+        assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
     }
 }

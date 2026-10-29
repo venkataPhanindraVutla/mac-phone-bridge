@@ -368,6 +368,8 @@ class ConnectionService : LifecycleService() {
                 .collect { (shared, on) ->
                     if (shared) {
                         graph.manager.send(Channel.CHANNEL_CLIPBOARD, MessageType.CLIPBOARD_AVAILABILITY, featureAvailability(granted = true, userOn = on))
+                    } else {
+                        graph.clipboard.onDisconnected()
                     }
                     val ready = shared && on
                     if (ready != clipboardAction) {

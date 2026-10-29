@@ -11,8 +11,18 @@ private final class FakePasteboard: PasteboardAccess {
     var types: [String] = []
     var string: String?
     var writes: [String] = []
+    var reads = 0
+    /// Runs inside the next `readString()`, once: another app writing mid-read.
+    var duringRead: (() -> Void)?
 
-    func readString() -> String? { string }
+    func readString() -> String? {
+        reads += 1
+        if let hook = duringRead {
+            duringRead = nil
+            hook()
+        }
+        return string
+    }
 
     func writeString(_ s: String) {
         writes.append(s)
@@ -157,6 +167,8 @@ private func clipboardText(_ text: String) -> AMEnvelope {
     board.copy("hello")
     await model.poll()
     #expect(sent.messages.isEmpty)
+    // Switched off, the pasteboard is not even read.
+    #expect(board.reads == 0)
     // Turning it on later does not send what was copied while it was off.
     model.sendEnabled = true
     await model.poll()
@@ -234,4 +246,47 @@ private func clipboardText(_ text: String) -> AMEnvelope {
     board.copy("after")
     try await Task.sleep(for: .milliseconds(100))
     #expect(sent.messages.map(\.text) == ["looped"])
+}
+
+@MainActor @Test func recopyAfterSendIsSent() async {
+    let (model, board, sent) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    await model.message(clipboardText("X"))
+    await model.poll()
+    board.copy("Z")
+    await model.poll()
+    // The phone now has Z, so X goes again.
+    board.copy("X")
+    await model.poll()
+    #expect(sent.messages.map(\.text) == ["Z", "X"])
+}
+
+@MainActor @Test func digestClearedOnDisconnect() async {
+    let (model, board, sent) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    await model.message(clipboardText("X"))
+    await model.poll()
+    model.disconnected()
+    // Another session (maybe another phone): what the last one had says nothing about this one.
+    await model.connected(phoneID: "P2", phoneName: "Other", shared: shared)
+    board.copy("X")
+    await model.poll()
+    #expect(sent.messages.map(\.text) == ["X"])
+}
+
+@MainActor @Test func itemWrittenMidReadIsNotSent() async {
+    let (model, board, sent) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    board.copy("ordinary")
+    // A password manager writes its concealed item between the type check and the read.
+    board.duringRead = { board.copy("hunter2", types: ["org.nspasteboard.ConcealedType"]) }
+    await model.poll()
+    #expect(sent.messages.isEmpty)
+    // The next tick looks at the new item, and skips it for its type.
+    await model.poll()
+    #expect(sent.messages.isEmpty)
+    #expect(board.reads == 1)
+    board.copy("after")
+    await model.poll()
+    #expect(sent.messages.map(\.text) == ["after"])
 }
