@@ -1,0 +1,72 @@
+# The Full build: the Contributor app (project.yml) plus the Share menu's "Send to Phone" and the
+# Finder sidebar's File Provider (docs/ARCHITECTURE.md section 4). App Groups and File Providers
+# need a team: set DEVELOPMENT_TEAM in Config/Local.xcconfig, then
+#   xcodegen --spec mac/project-full.yml
+# xcodegen cannot embed an extension per build configuration, so "Full" is a second spec, not a
+# configuration. project.yml stays extension-free.
+include:
+  - project.yml
+name: AndroidMirroringFull
+configFiles:
+  Debug: Config/Full.xcconfig
+  Release: Config/Full.xcconfig
+targets:
+  AndroidMirroring:
+    dependencies:
+      - package: AMKit
+        product: FileProviderShared
+      - target: PhoneFileProvider
+      - target: ShareToPhone
+    settings:
+      base:
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) FULL_BUILD
+        CODE_SIGN_ENTITLEMENTS: Config/AndroidMirroringFull.entitlements
+  PhoneFileProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Extensions/FileProvider
+        excludes:
+          - Info.plist
+          - FileProvider.entitlements
+    dependencies:
+      - package: AMKit
+        product: FileProviderShared
+      - sdk: FileProvider.framework
+    settings:
+      base:
+        PRODUCT_NAME: PhoneFileProvider
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.anmirror.mac.fileprovider
+        INFOPLIST_FILE: Extensions/FileProvider/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Extensions/FileProvider/FileProvider.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+  ShareToPhone:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Extensions/Share
+        excludes:
+          - Info.plist
+          - Share.entitlements
+    dependencies:
+      - package: AMKit
+        product: FileProviderShared
+    settings:
+      base:
+        PRODUCT_NAME: ShareToPhone
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.anmirror.mac.share
+        INFOPLIST_FILE: Extensions/Share/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Extensions/Share/Share.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES

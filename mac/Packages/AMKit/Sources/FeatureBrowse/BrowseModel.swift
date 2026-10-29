@@ -101,6 +101,8 @@ public final class BrowseModel: SessionFeature {
     @ObservationIgnored private var sentReads: [UInt64: Read] = [:]
     /// Uploads under way, by transfer ID, with the folder they go into.
     @ObservationIgnored private var uploads: [String: BrowseLocation] = [:]
+    /// `upload(file:into:)` calls waiting for their transfer to end, by transfer ID.
+    @ObservationIgnored private var uploadWaiters: [String: Answer<Result<TransferItem, TransferFailure>>] = [:]
     @ObservationIgnored private var reloadRunning = false
     @ObservationIgnored private var reloadAgain = false
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "browse")
@@ -291,9 +293,71 @@ public final class BrowseModel: SessionFeature {
         Self.log.info("upload of \(files.count, privacy: .public) into root \(location.rootID, privacy: .public)")
     }
 
+    // MARK: any folder (the Full build's Finder sidebar)
+
+    /// One page (`pageSize` entries) of the folder `path` of `rootID` from `offset`, whatever the
+    /// Files tab shows: nothing shown changes, and no notice is set. Fails `INTERRUPTED` with no
+    /// phone or when the session ends first, `DISABLED` when browsing is not shared or is off on
+    /// the phone, `TIMED_OUT` after `requestTimeout`, else with the phone's outcome.
+    public func list(rootID: String, path: String, offset: Int) async -> Result<AMBrowseListing, TransferFailure> {
+        guard isConnected else { return .failure(.transfer(.interrupted)) }
+        guard sharesBrowse else { return .failure(.transfer(.disabled)) }
+        let from = UInt32(clamping: max(0, offset))
+        let reply = await ask(.browseList) { id in
+            var m = AMBrowseListRequest()
+            m.requestID = id
+            m.rootID = rootID
+            m.path = path
+            m.offset = from
+            m.limit = Self.pageSize
+            return m
+        }
+        switch reply {
+        case let .listing(l) where l.outcome == .ok:
+            return .success(l)
+        case let .listing(l):
+            Self.log.info("list in root \(rootID, privacy: .public) failed: \(l.outcome.rawValue, privacy: .public)")
+            return .failure(.browse(l.outcome))
+        case let .result(r):
+            return .failure(.browse(r.outcome == .ok ? .io : r.outcome))
+        case .timedOut:
+            return .failure(.transfer(.timedOut))
+        case .failed:
+            let off = isConnected && phoneAvailability?.enabled == false
+            return .failure(.transfer(off ? .disabled : .interrupted))
+        }
+    }
+
+    /// Sends `file` into `folder`, never over an existing file (the phone adds a counter), and
+    /// returns once its transfer has ended: the item when the phone has it, else why not. A
+    /// folder or a package is not sent (`BAD_PATH`). The folder reloads if it is the one shown.
+    public func upload(file: URL, into folder: BrowseLocation) async -> Result<TransferItem, TransferFailure> {
+        guard isConnected else { return .failure(.transfer(.interrupted)) }
+        guard sharesBrowse else { return .failure(.transfer(.disabled)) }
+        guard SendableFiles.split([file]).files.count == 1 else { return .failure(.browse(.badPath)) }
+        var target = AMBrowseTarget()
+        target.rootID = folder.rootID
+        target.dirPath = folder.path
+        target.overwrite = false
+        guard let id = engine.send(files: [file], target: target).first else { return .failure(.transfer(.io)) }
+        uploads[id] = folder
+        let answer = Answer<Result<TransferItem, TransferFailure>>()
+        uploadWaiters[id] = answer
+        Self.log.info("upload \(id, privacy: .public) into root \(folder.rootID, privacy: .public)")
+        return await answer.wait() ?? .failure(.transfer(.interrupted))
+    }
+
     /// The engine finished a transfer (`TransferEngine.onFinished`): an upload that the phone
     /// received reloads the folder it went into, if that is still the one shown.
     public func transferFinished(_ item: TransferItem) {
+        if let waiter = uploadWaiters.removeValue(forKey: item.id) {
+            switch item.state {
+            case .done: waiter.resolve(.success(item))
+            case let .failed(reason): waiter.resolve(.failure(.transfer(reason)))
+            case .cancelled: waiter.resolve(.failure(.transfer(.cancelled)))
+            case .queued, .waiting, .active: waiter.resolve(.failure(.transfer(.interrupted)))
+            }
+        }
         guard let into = uploads.removeValue(forKey: item.id), case .done = item.state, into == location else { return }
         reloadSoon()
     }
@@ -322,6 +386,9 @@ public final class BrowseModel: SessionFeature {
         for id in sent { engine.failRequest(id, .transfer(.interrupted)) }
         for r in reads { r.answer.resolve(.failure(.transfer(.interrupted))) }
         uploads = [:]
+        let uploading = uploadWaiters
+        uploadWaiters = [:]
+        for a in uploading.values { a.resolve(.failure(.transfer(.interrupted))) }
         rootsTimer?.cancel()
         rootsTimer = nil
         roots = []

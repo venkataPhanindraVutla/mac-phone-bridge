@@ -101,6 +101,23 @@ By default the Mac app is ad-hoc signed, so it builds with no Apple account. The
 
 To avoid them, sign with a free Personal Team. Copy `mac/Config/Local.xcconfig.example` to `mac/Config/Local.xcconfig` (gitignored), set `DEVELOPMENT_TEAM` to your team ID, and run `xcodegen` again.
 
+### Full build (Finder sidebar and Share menu)
+
+The build above is the **Contributor build**. It has no extensions and needs no Apple account. The **Full build** adds two extensions:
+
+- **File Provider:** shows the phone in Finder's sidebar while it is connected and shares file browsing.
+- **Share:** adds "Send to Phone" to the Share menu.
+
+Both extensions share an App Group with the app, and App Groups need a team. Set `DEVELOPMENT_TEAM` in `mac/Config/Local.xcconfig` as above. A paid team works. A free Personal Team may not be able to sign the App Group or the File Provider. If it can't, use the Contributor build: its Files tab in the Phone window does the same browsing.
+
+```sh
+xcodegen --spec mac/project-full.yml                  # generates mac/AndroidMirroringFull.xcodeproj
+xcodebuild -project mac/AndroidMirroringFull.xcodeproj -scheme AndroidMirroring \
+  -configuration Release -destination 'platform=macOS' build
+```
+
+The Full build uses the same app, plus the extensions and the code under `#if FULL_BUILD`. `mac/project.yml` stays the Contributor build.
+
 ### Trying it with a phone
 
 Install the debug APK on an Android 10+ phone. In the Mac app, open the menu-bar icon and choose "Pair a phone…". A QR code appears. Either scan it from the phone app's in-app scanner, or scan it with the phone's camera app, which opens an `anmirror://pair` link in the app. Confirm that the same code shows on both devices.

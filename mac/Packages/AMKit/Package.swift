@@ -19,6 +19,8 @@ let package = Package(
         .library(name: "FeaturePhotos", targets: ["FeaturePhotos"]),
         .library(name: "FeatureBrowse", targets: ["FeatureBrowse"]),
         .library(name: "AppSession", targets: ["AppSession"]),
+        // The Full build's extensions and the app's FULL_BUILD code only (docs/ARCHITECTURE.md section 4).
+        .library(name: "FileProviderShared", targets: ["FileProviderShared"]),
         .executable(name: "am-mac-sim", targets: ["am-mac-sim"]),
     ],
     dependencies: [
@@ -94,6 +96,8 @@ let package = Package(
             name: "AppSession",
             dependencies: ["AMProtocol", "ConnectionCore", "FeatureNotify", "FeatureContacts", "FeatureCalls"]
         ),
+        // Foundation only: the sandboxed extensions link it too.
+        .target(name: "FileProviderShared"),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
@@ -162,6 +166,7 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
+        .testTarget(name: "FileProviderSharedTests", dependencies: ["FileProviderShared"]),
         .testTarget(
             name: "AppSessionTests",
             dependencies: [

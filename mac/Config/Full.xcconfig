@@ -1,0 +1,4 @@
+// The Full build (project-full.yml): the app plus the File Provider and Share extensions.
+// App Groups and File Providers need a team: set DEVELOPMENT_TEAM in Local.xcconfig.
+#include "Base.xcconfig"
+APP_GROUP_ID = $(DEVELOPMENT_TEAM).io.github.anmirror

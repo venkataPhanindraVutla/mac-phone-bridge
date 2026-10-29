@@ -657,3 +657,96 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     r.disconnect()
     for t in tasks { _ = await t.value }
 }
+
+// MARK: any folder (Finder, Full build)
+
+@MainActor @Test func listOfAnyFolderLeavesTheShownFolderAlone() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("docs", [entry("a.txt")])
+    let task = Task { await r.model.list(rootID: "r1", path: "pics/2026", offset: 500) }
+    try await until("browse.list") { r.lists.count == 2 }
+    let request = try #require(r.lists.last)
+    #expect(request.rootID == "r1")
+    #expect(request.path == "pics/2026")
+    #expect(request.offset == 500)
+    #expect(request.limit == BrowseModel.pageSize)
+    await r.answerList([entry("p.jpg"), entry("q", dir: true)], next: 502, more: true)
+    let listing = try #require(try? await task.value.get())
+    #expect(listing.entries.map(\.name) == ["p.jpg", "q"])
+    #expect(listing.nextOffset == 502)
+    #expect(listing.more)
+    // The Files tab still shows its own folder.
+    #expect(r.model.location == BrowseLocation(rootID: "r1", path: "docs"))
+    #expect(r.model.entries.map(\.name) == ["a.txt"])
+
+    // A refusal is the phone's outcome, and no notice for the tab.
+    let refused = Task { await r.model.list(rootID: "r1", path: "gone", offset: 0) }
+    try await until("browse.list") { r.lists.count == 3 }
+    await r.answerList([], outcome: .notFound)
+    #expect(await refused.value == .failure(.browse(.notFound)))
+    #expect(r.model.notice == nil)
+    #expect(r.model.location?.path == "docs")
+}
+
+@MainActor @Test func listOfAnyFolderNeedsBrowseShared() async throws {
+    let off = Rig(); defer { off.cleanUp() }
+    #expect(await off.model.list(rootID: "r1", path: "", offset: 0) == .failure(.transfer(.interrupted)))
+    await off.connect(shared: ["files.v1"])
+    #expect(await off.model.list(rootID: "r1", path: "", offset: 0) == .failure(.transfer(.disabled)))
+    #expect(off.browseTypes.isEmpty)
+
+    // The session ends while waiting: interrupted.
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let task = Task { await r.model.list(rootID: "r1", path: "", offset: 0) }
+    try await until("browse.list") { r.lists.count == 1 }
+    r.disconnect()
+    #expect(await task.value == .failure(.transfer(.interrupted)))
+
+    // No answer: timed out.
+    let slow = Rig(requestTimeout: .milliseconds(50)); defer { slow.cleanUp() }
+    await slow.connect()
+    #expect(await slow.model.list(rootID: "r1", path: "", offset: 0) == .failure(.transfer(.timedOut)))
+}
+
+@MainActor @Test func uploadIntoAnyFolderEndsWithTheTransfer() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("docs", [entry("a.txt")])
+    let bytes = Data(repeating: 7, count: 300)
+    let file = try r.write(bytes, as: "c.txt")
+    let task = Task { await r.model.upload(file: file, into: BrowseLocation(rootID: "r1", path: "pics")) }
+    try await until("files.offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    let offer = try #require(r.sent.of(.filesOffer, AMTransferOffer.self).last)
+    #expect(offer.name == "c.txt")
+    #expect(offer.target.rootID == "r1")
+    #expect(offer.target.dirPath == "pics")
+    #expect(!offer.target.overwrite)
+    var accept = AMTransferAccept(); accept.transferID = offer.transferID
+    await r.engine.message(envelope(.files, .filesAccept, accept))
+    let (mac, phone) = MemoryPipe.pair()
+    r.engine.link(mac, grant: BulkGrant(role: .phoneReceives, context: offer.transferID))
+    #expect(try await readAll(phone, bytes.count) == bytes)
+    var received = AMTransferReceived(); received.transferID = offer.transferID
+    await r.engine.message(envelope(.files, .filesReceived, received))
+    let item = try #require(try? await task.value.get())
+    #expect(item.name == "c.txt")
+    #expect(item.size == 300)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.lists.count == 1, "another folder than the shown one: no reload")
+
+    // Refused by the phone: its reason.
+    let second = try r.write(bytes, as: "d.txt")
+    let refused = Task { await r.model.upload(file: second, into: BrowseLocation(rootID: "r1", path: "docs")) }
+    try await until("files.offer") { r.sent.of(.filesOffer, AMTransferOffer.self).count == 2 }
+    var reject = AMTransferReject()
+    reject.transferID = try #require(r.sent.of(.filesOffer, AMTransferOffer.self).last).transferID
+    reject.reason = .noSpace
+    await r.engine.message(envelope(.files, .filesReject, reject))
+    #expect(await refused.value == .failure(.transfer(.noSpace)))
+
+    // A folder is not sent.
+    let folder = r.dir.appendingPathComponent("folder", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    #expect(await r.model.upload(file: folder, into: BrowseLocation(rootID: "r1")) == .failure(.browse(.badPath)))
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).count == 2)
+}

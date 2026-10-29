@@ -73,6 +73,11 @@ final class AppModel {
     /// is handled one at a time in arrival order.
     @ObservationIgnored private let notifyWork: NotifyWorkQueue
     @ObservationIgnored private var activeObserver: NSObjectProtocol?
+    #if FULL_BUILD
+    /// The Finder sidebar's phone and the Share menu's outbox; nil when the build has no App Group.
+    @ObservationIgnored private var fileProviderBridge: FileProviderBridge?
+    @ObservationIgnored private var shareOutbox: ShareOutbox?
+    #endif
     /// Held for the life of the process (the model is never deallocated).
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private static let portKey = "listenPort"
@@ -253,6 +258,19 @@ final class AppModel {
         notifyWork.register(screenshots)
         notifyWork.register(photos)
         notifyWork.register(browse)
+        #if FULL_BUILD
+        // After the models they use, so those are connected first.
+        if let group = AppGroup.id, let container = AppGroup.container {
+            let paired: @MainActor () -> Set<String> = { Set(((try? store.all()) ?? []).map(\.id)) }
+            let bridge = FileProviderBridge(browse: browse, container: container, pairedPhoneIDs: paired)
+            let outbox = ShareOutbox(container: container, defaults: UserDefaults(suiteName: group),
+                                     transfers: transfers, share: share, pairedPhoneIDs: paired)
+            notifyWork.register(bridge)
+            notifyWork.register(outbox)
+            fileProviderBridge = bridge
+            shareOutbox = outbox
+        }
+        #endif
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
