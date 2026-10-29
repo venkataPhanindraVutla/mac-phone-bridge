@@ -381,7 +381,8 @@ Channel `SHARE`.
 
 ## 16. Files (`files.v1`)
 
-Channel `FILES`.
+Channel `FILES`. `files.*` messages are the transport for `files.v1`, `browse.v1` (reads and writes),
+`screenshots.v1` and `photos.v1`; a side may send them when the feature the transfer serves is shared.
 
 - **Steps.** `files.offer`, then `files.accept` or `files.reject`, then the bulk bytes
   (section 13). During the bytes the receiver sends `files.progress` (at most every 500 ms).

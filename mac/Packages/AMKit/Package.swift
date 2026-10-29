@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "FeatureNotify", targets: ["FeatureNotify"]),
         .library(name: "FeatureContacts", targets: ["FeatureContacts"]),
         .library(name: "FeatureCalls", targets: ["FeatureCalls"]),
+        .library(name: "FeatureFiles", targets: ["FeatureFiles"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         .executable(name: "am-mac-sim", targets: ["am-mac-sim"]),
     ],
@@ -52,13 +53,17 @@ let package = Package(
             ]
         ),
         .target(
+            name: "FeatureFiles",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .target(
             name: "AppSession",
             dependencies: ["AMProtocol", "ConnectionCore", "FeatureNotify", "FeatureContacts", "FeatureCalls"]
         ),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
-                "AMProtocol", "ConnectionCore",
+                "AMProtocol", "ConnectionCore", "FeatureFiles",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
@@ -83,6 +88,13 @@ let package = Package(
         .testTarget(
             name: "FeatureCallsTests",
             dependencies: ["FeatureCalls", "AMProtocol", "FeatureNotify", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .testTarget(
+            name: "FeatureFilesTests",
+            dependencies: [
+                "FeatureFiles", "AMProtocol", "ConnectionCore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
         ),
         .testTarget(
             name: "AppSessionTests",
