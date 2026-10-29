@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "FeatureShare", targets: ["FeatureShare"]),
         .library(name: "FeatureScreenshots", targets: ["FeatureScreenshots"]),
         .library(name: "FeaturePhotos", targets: ["FeaturePhotos"]),
+        .library(name: "FeatureBrowse", targets: ["FeatureBrowse"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         .executable(name: "am-mac-sim", targets: ["am-mac-sim"]),
     ],
@@ -77,6 +78,13 @@ let package = Package(
         ),
         .target(
             name: "FeaturePhotos",
+            dependencies: [
+                "FeatureFiles", "AMProtocol", "ConnectionCore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
+        ),
+        .target(
+            name: "FeatureBrowse",
             dependencies: [
                 "FeatureFiles", "AMProtocol", "ConnectionCore",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
@@ -144,6 +152,13 @@ let package = Package(
             name: "FeaturePhotosTests",
             dependencies: [
                 "FeaturePhotos", "FeatureFiles", "AMProtocol", "ConnectionCore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
+        ),
+        .testTarget(
+            name: "FeatureBrowseTests",
+            dependencies: [
+                "FeatureBrowse", "FeatureFiles", "AMProtocol", "ConnectionCore",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),

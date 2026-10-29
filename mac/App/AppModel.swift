@@ -3,6 +3,7 @@ import AMProtocol
 import AppSession
 import ConnectionCore
 import CryptoKit
+import FeatureBrowse
 import FeatureCalls
 import FeatureClipboard
 import FeatureContacts
@@ -24,7 +25,7 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
-        "screenshots.v1", "photos.v1",
+        "screenshots.v1", "photos.v1", "browse.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -43,6 +44,8 @@ final class AppModel {
     let screenshots: ScreenshotInbox
     /// The phone's newest photos and videos for the Phone window; thumbnails in memory only.
     let photos: PhotosModel
+    /// The phone's files for the Phone window's Files tab.
+    let browse: BrowseModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -195,8 +198,19 @@ final class AppModel {
             destination: { Self.destination(for: $0, screenshots: screenshots) }
         )
         self.transfers = transfers
+        let browse = BrowseModel(
+            engine: transfers,
+            send: { type, message in
+                // Only a phone that shares browse.v1 gets browse messages.
+                guard server.activePhone?.shared.contains("browse.v1") == true else { return }
+                try? await server.send(type, message, channel: .browse)
+            }
+        )
+        self.browse = browse
         transfers.onFinished = { item, _, url in
             // Every ending comes here; the inbox looks at the state (only a done one is saved and shown).
+            // An upload from the Files tab reloads the folder it went into.
+            browse.transferFinished(item)
             guard item.kind == .screenshot else { return }
             Task { await screenshots.finished(item, at: url) }
         }
@@ -238,6 +252,7 @@ final class AppModel {
         notifyWork.register(share)
         notifyWork.register(screenshots)
         notifyWork.register(photos)
+        notifyWork.register(browse)
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
