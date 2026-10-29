@@ -227,6 +227,49 @@ case6() {
   [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
 }
 
+# files_case <n> <label> <bytes>: phone-sim sends <bytes> deterministic bytes, the Mac stores them and
+# sends the file back; both sides print the SHA-256 of what they received.
+EMPTY_SHA=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# SHA-256 of phone-sim's deterministic source: byte i = (i*131 + (i>>8)*7 + 17) & 0xff
+source_sha() {
+  python3 - "$1" <<'PY'
+import hashlib, sys
+n = int(sys.argv[1]); h = hashlib.sha256(); b = 0
+while n > 0:
+    blk = bytes((j * 131 + b * 7 + 17) & 0xff for j in range(256))[:min(n, 256)]
+    h.update(blk); n -= len(blk); b += 1
+print(h.hexdigest())
+PY
+}
+
+files_case() {
+  local n="$1" label="$2" bytes="$3" want
+  begin_case "$n $label"
+  if [[ "$bytes" -eq 0 ]]; then want="$EMPTY_SHA"; else want="$(source_sha "$bytes")"; fi
+  local pstate fdir; pstate="$(new_dir c$n-phone)"; fdir="$(new_dir c$n-files)"
+  start_mac "c$n" --auto-confirm --files "$fdir" || return 1
+  start_phone "c$n" pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --send-bytes "$bytes"
+  need "$MAC_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "mac EVENT files-received bytes=$bytes" || return 1
+  need "$PHONE_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "phone EVENT files-received bytes=$bytes" || return 1
+  wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit"; return 1; }
+  [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
+  local mac_sha phone_sha
+  mac_sha="$(extract "$MAC_LOG" '^EVENT files-received bytes=[0-9]+ sha256=([0-9a-f]+) .*$')"
+  phone_sha="$(extract "$PHONE_LOG" '^EVENT files-received bytes=[0-9]+ sha256=([0-9a-f]+) .*$')"
+  [[ "$mac_sha" == "$want" ]] || { fail_reason="mac sha256 $mac_sha != source $want"; return 1; }
+  [[ "$phone_sha" == "$want" ]] || { fail_reason="phone sha256 $phone_sha != source $want"; return 1; }
+  P2M="$(extract "$MAC_LOG" '^EVENT files-received .* mbps=([0-9.]+)$')"
+  M2P="$(extract "$PHONE_LOG" '^EVENT files-received .* mbps=([0-9.]+)$')"
+}
+
+P2M=""; M2P=""
+case7() {
+  files_case 7 "files 64 MiB both ways" 67108864 || return 1
+  echo "interop: 64 MiB phone→mac $P2M MB/s, mac→phone $M2P MB/s"
+}
+
+case8() { files_case 8 "files 0 bytes both ways" 0; }
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -239,10 +282,12 @@ run_case case3
 run_case case4
 run_case case5
 run_case case6
+run_case case7
+run_case case8
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 6 cases passed"
+  echo "interop: all 8 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1

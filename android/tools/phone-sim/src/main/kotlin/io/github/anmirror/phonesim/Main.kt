@@ -9,6 +9,9 @@
 //   EVENT connected shared=<a,b>
 //   EVENT ring
 //   EVENT stop
+//   EVENT files-received bytes=<n> sha256=<hex> mbps=<x>   (with --send-bytes)
+//   EVENT files-sent bytes=<n>                              (with --send-bytes)
+//   EVENT files-failed <id> <reason>                        (with --send-bytes; the process then exits 1)
 //   EVENT notify-invoke key=<key> action=<n> reply=<text>   (with --notify; the process then exits 0)
 //   EVENT unpaired <mac-id>
 //   EVENT disconnected <reason>
@@ -49,12 +52,13 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.channels.Channel as KChannel
 
 private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> --state-dir <dir> [--auto-confirm]
-                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--send-bytes <n>] [common options]
        phone-sim connect --state-dir <dir> --identity <p12>
                       [--status <battery>,<charging>,<signal>,<network>] [--notify] [common options]
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
+  --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 
 private val CAPABILITIES = listOf("find.v1", "status.v1")
@@ -85,6 +89,7 @@ private class Options(
     val autoConfirm: Boolean,
     val status: StatusUpdate?,
     val notify: Boolean,
+    val sendBytes: Long?,
     val name: String,
     val model: String,
 )
@@ -125,6 +130,7 @@ private fun parse(args: Array<String>): Options {
     var autoConfirm = false
     var status: StatusUpdate? = null
     var notify = false
+    var sendBytes: Long? = null
     var name = "phone-sim"
     var model = "phone-sim"
     var i = 1
@@ -138,6 +144,7 @@ private fun parse(args: Array<String>): Options {
             "--auto-confirm" -> autoConfirm = true
             "--status" -> status = parseStatus(value(arg))
             "--notify" -> notify = true
+            "--send-bytes" -> sendBytes = value(arg).toLongOrNull()?.takeIf { it >= 0 } ?: usageError("--send-bytes needs a size in bytes")
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
             "-h", "--help" -> {
@@ -154,7 +161,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, notify, name, model,
+        autoConfirm, status, notify, sendBytes, name, model,
     )
 }
 
@@ -185,7 +192,9 @@ fun main(args: Array<String>) {
     val hello = Hello.newBuilder()
         .setProtocolVersion(PROTOCOL_VERSION)
         .setAppVersion("0.1.0-sim")
-        .addAllCapabilities(if (options.notify) (CAPABILITIES + "notify.v1").sorted() else CAPABILITIES)
+        .addAllCapabilities(
+            (CAPABILITIES + listOfNotNull("notify.v1".takeIf { options.notify }, "files.v1".takeIf { options.sendBytes != null })).sorted(),
+        )
         .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
         .setDeviceName(options.name)
         .setDeviceModel(options.model)
@@ -241,7 +250,7 @@ fun main(args: Array<String>) {
                 mac to channel
             }
         }
-        val end = session(mac, channel, hello, options.status, options.notify, store)
+        val end = session(mac, channel, hello, options, connector, store)
         if (end == SessionEnd.UNPAIRED) {
             store.remove(mac.id)
             emit("EVENT unpaired ${mac.id}")
@@ -268,8 +277,8 @@ private suspend fun session(
     mac: PairedMac,
     channel: ControlChannel,
     hello: Hello,
-    status: StatusUpdate?,
-    notify: Boolean,
+    options: Options,
+    connector: TlsConnector,
     store: JsonFilePairedMacStore,
 ): SessionEnd {
     val shared = when (val r = exchangeHello(channel, hello)) {
@@ -278,6 +287,8 @@ private suspend fun session(
         is HelloResult.Ok -> r.shared
     }
     store.save(mac.copy(lastHost = channel.host, lastPort = channel.port, lastConnectedAt = System.currentTimeMillis()))
+    val status = options.status
+    val notify = options.notify
     emit("EVENT connected shared=${shared.sorted().joinToString(",")}")
     if (status != null && "status.v1" in shared) {
         channel.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, status)
@@ -290,7 +301,13 @@ private suspend fun session(
         }
         channel.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_POSTED, sampleNotification())
     }
-    return PhoneSession(channel, shared).run { env ->
+    val transfers = options.sendBytes?.takeIf { "files.v1" in shared }?.let { bytes ->
+        val tempDir = File(options.stateDir, "received").apply { mkdirs() }
+        SimTransfers(channel, connector, mac.fingerprintHex, bytes, tempDir, ::emit) { ok -> exitProcess(if (ok) 0 else 1) }
+            .also { it.start() }
+    }
+    val end = PhoneSession(channel, shared).run { env ->
+        if (transfers?.onMessage(env) == true) return@run
         when (env.type) {
             MessageType.NOTIFY_INVOKE -> {
                 val i = InvokeAction.parseFrom(env.payload)
@@ -312,4 +329,6 @@ private suspend fun session(
             }
         }
     }
+    transfers?.onDisconnected()
+    return end
 }

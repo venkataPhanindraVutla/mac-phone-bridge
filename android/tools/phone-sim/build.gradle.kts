@@ -22,4 +22,5 @@ application {
 
 dependencies {
     implementation(project(":core:connection"))
+    implementation(project(":core:transfer"))
 }
