@@ -63,8 +63,9 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored private var isConnected = false
     /// The phone in session, while connected.
     @ObservationIgnored private var phoneID: String?
-    /// The phone shares `files.v1`: only then does the Mac offer files.
-    @ObservationIgnored private var filesShared = false
+    /// The capabilities shared with the phone in session. A Mac offer needs `files.v1`, or
+    /// `browse.v1` when it has a target (a browse write): SPEC section 16.
+    @ObservationIgnored private var shared: Set<String> = []
     /// Moves on with every connect and disconnect; messages queued in an older session are dropped.
     @ObservationIgnored private let session = SessionCounter()
     /// Transfers that have not ended, in arrival order.
@@ -102,7 +103,7 @@ public final class TransferEngine: SessionFeature {
         session.value += 1
         isConnected = true
         self.phoneID = phoneID
-        filesShared = shared.contains("files.v1")
+        self.shared = shared
         // Before any token: changing the allowed phone revokes every outstanding one.
         bulk.allow(peerFingerprint: Self.bytes(hex: phoneID))
         if !shared.isDisjoint(with: Self.bulkCapabilities), let port = bulk.port {
@@ -118,7 +119,7 @@ public final class TransferEngine: SessionFeature {
         session.value += 1
         isConnected = false
         phoneID = nil
-        filesShared = false
+        shared = []
         bulk.revokeAll()
         bulk.allow(peerFingerprint: nil)
         for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
@@ -152,7 +153,8 @@ public final class TransferEngine: SessionFeature {
     // MARK: API
 
     /// Queues `files` for the phone in session, into `target` (a browse root) when given, else
-    /// its Downloads. With no phone connected, or one that does not share `files.v1`, each file
+    /// its Downloads. With no phone connected, or one that does not share `files.v1` (`browse.v1`
+    /// for a target), each file
     /// fails `INTERRUPTED` at once; a folder or an unreadable file fails `IO` at once. Returns
     /// the transfer IDs.
     @discardableResult
@@ -168,7 +170,7 @@ public final class TransferEngine: SessionFeature {
             offer.name = FileNameSanitizer.sanitize(url.lastPathComponent)
             offer.kind = .file
             if let target { offer.target = target }
-            guard isConnected, filesShared else {
+            guard isConnected, shared.contains(target == nil ? "files.v1" : "browse.v1") else {
                 let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
                                         state: .failed(.interrupted))
                 Self.log.info("\(id, privacy: .public) not sent: no phone takes files")

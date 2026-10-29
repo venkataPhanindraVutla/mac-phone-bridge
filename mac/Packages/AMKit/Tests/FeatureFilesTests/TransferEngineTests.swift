@@ -956,3 +956,17 @@ extension Data {
     #expect(try Data(contentsOf: expected) == bytes)
     #expect(r.files().count == 2)
 }
+
+@MainActor @Test func noTargetOfferWithoutFilesButTargetOfferWithBrowse() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["browse.v1"])
+    let plain = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")])
+    #expect(r.item(plain[0])?.state == .failed(.interrupted))
+    var target = AMBrowseTarget()
+    target.rootID = "r1"; target.dirPath = "Docs"
+    let write = r.engine.send(files: [try r.write(randomBytes(10), as: "b.txt")], target: target)
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    let offers = r.sent.of(.filesOffer, AMTransferOffer.self)
+    #expect(offers.map(\.transferID) == [write[0]])
+    #expect(offers.first?.target == target)
+}
