@@ -87,6 +87,33 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- The "Send to Mac" share target: no UI, sends in onCreate and finishes. -->
+        <activity
+            android:name=".share.ShareToMacActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/share_target"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Cancel on a transfer notification; only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.TransferActionReceiver"
+            android:exported="false" />
+
         <service
             android:name=".service.ClipboardTileService"
             android:exported="true"

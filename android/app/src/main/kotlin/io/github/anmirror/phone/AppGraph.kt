@@ -13,6 +13,8 @@ import android.util.Log
 import com.google.protobuf.MessageLite
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
+import io.github.anmirror.connection.BulkConnector
+import io.github.anmirror.connection.BulkStream
 import io.github.anmirror.connection.ConnectionManager
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.connection.PROTOCOL_VERSION
@@ -28,13 +30,28 @@ import io.github.anmirror.feature.contacts.ContactsSync
 import io.github.anmirror.feature.notify.ActionInvoker
 import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
+import io.github.anmirror.feature.share.ShareReceiver
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
 import io.github.anmirror.phone.platform.KeystoreCipher
+import io.github.anmirror.phone.platform.MediaStoreDownloads
+import io.github.anmirror.phone.platform.SharedFile
 import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.ui.isGranted
 import io.github.anmirror.phone.service.ConnectionService
+import io.github.anmirror.phone.service.SharedNotifications
+import io.github.anmirror.phone.service.TransferNotifier
+import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.ActionOutcome
+import io.github.anmirror.protocol.v1.BulkEndpoint
+import io.github.anmirror.protocol.v1.BulkHello
+import io.github.anmirror.protocol.v1.Envelope
+import io.github.anmirror.protocol.v1.TransferOffer
+import io.github.anmirror.protocol.v1.TransferReject
+import io.github.anmirror.transfer.BulkOpener
+import io.github.anmirror.transfer.TransferEngine
+import io.github.anmirror.transfer.TransferState
+import io.github.anmirror.transfer.TransferStatus
 import io.github.anmirror.protocol.v1.Channel as ProtoChannel
 import io.github.anmirror.protocol.v1.Hello
 import io.github.anmirror.protocol.v1.SetupLevel
@@ -50,8 +67,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import com.google.protobuf.InvalidProtocolBufferException
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 /** Log tag for the whole app. */
 const val TAG = "AnMirror"
@@ -276,6 +301,153 @@ class AppGraph private constructor(context: Context) {
     /** The connected Mac's name, for "Sent to %1$s"; null when not connected. */
     fun connectedMacName(): String? = (manager.state.value as? PhoneConnectionState.Connected)?.mac?.name
 
+    /** The connected Mac shares [capability]. */
+    private fun shares(capability: String): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && capability in s.shared
+    }
+
+    /** The connected Mac shares share.v1. There is no switch and no permission: sharing is always explicit. */
+    fun shareShared(): Boolean = shares("share.v1")
+
+    /** Sends a `share.*` message when [shareShared]; false (and nothing sent) otherwise. */
+    suspend fun sendShare(type: String, payload: MessageLite): Boolean =
+        shareShared() && manager.send(ProtoChannel.CHANNEL_SHARE, type, payload)
+
+    /** Links and text from the Mac (`share.*`); text goes on the clipboard and is remembered (R6). */
+    val shareReceiver = ShareReceiver(clipboard, SharedNotifications(app)) {
+        connectedMacName() ?: app.getString(R.string.clipboard_mac_unnamed)
+    }
+
+    /** The connected Mac shares files.v1: phone-initiated file sends (the share target) need it. */
+    fun filesShared(): Boolean = shares("files.v1")
+
+    /** `files.*` flows while the Mac shares any feature it carries (R5). */
+    fun transferShared(): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && bulkShared(s.shared)
+    }
+
+    /** Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. */
+    suspend fun sendTransfer(type: String, payload: MessageLite): Boolean =
+        transferShared() && manager.send(ProtoChannel.CHANNEL_FILES, type, payload)
+
+    /** The Mac's bulk port, valid only for the session that announced it. */
+    private class Endpoint(val session: PhoneConnectionState.Connected, val port: Int)
+
+    private val bulkEndpoint = MutableStateFlow<Endpoint?>(null)
+    private val bulkConnector = BulkConnector(connector)
+
+    /** Received files land in Download/Android Mirroring. */
+    val downloads = MediaStoreDownloads(app)
+
+    /**
+     * Phone side of `files.*`. Its own supervised scope: an orphaned bulk dial that throws must
+     * not cancel the engine (or anything else).
+     */
+    val transfers = TransferEngine(
+        scope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default +
+                CoroutineExceptionHandler { _, e -> Log.e(TAG, "uncaught in transfers", e) },
+        ),
+        send = ::sendTransfer,
+        bulk = BulkOpener(::openBulk),
+        sinks = downloads,
+        freeBytes = { downloads.freeBytes() },
+    )
+
+    /** Shared files whose descriptors stay open until their transfer ends. */
+    private val openShares = ConcurrentHashMap<String, SharedFile>()
+
+    /** Queues [files] for sending (the caller checked [filesShared]); each descriptor is closed when its transfer ends. */
+    fun sendFiles(files: List<SharedFile>): List<String> {
+        val ids = transfers.send(files)
+        ids.zip(files).forEach { (id, file) -> openShares[id] = file }
+        releaseFinished(transfers.transfers.value) // one may have ended before it was tracked
+        return ids
+    }
+
+    private fun releaseFinished(list: List<TransferStatus>) {
+        val byId = list.associateBy { it.id }
+        for (id in openShares.keys) {
+            val state = byId[id]?.state
+            // Unlisted means finished and dropped from the engine's recent list.
+            if (state == null || state == TransferState.DONE || state == TransferState.FAILED || state == TransferState.CANCELLED) {
+                openShares.remove(id)?.close()
+            }
+        }
+    }
+
+    /**
+     * Routes a `files.*` message from the Mac. `files.endpoint` is ours (the engine returns it
+     * unhandled); a Mac offer the phone may not take (R5) is rejected here, before the engine
+     * lists it; the rest goes to the engine. Nothing is taken unless a bulk feature is shared.
+     */
+    suspend fun onFilesMessage(env: Envelope) {
+        val s = manager.state.value as? PhoneConnectionState.Connected ?: return
+        if (!bulkShared(s.shared)) return
+        try {
+            when (env.type) {
+                MessageType.FILES_ENDPOINT -> {
+                    val port = BulkEndpoint.parseFrom(env.payload).port
+                    if (port in 1..65_535) bulkEndpoint.value = Endpoint(s, port)
+                    return
+                }
+                MessageType.FILES_OFFER -> {
+                    val offer = TransferOffer.parseFrom(env.payload)
+                    val reason = offerRefusal(offer.hasTarget(), s.shared)
+                    if (reason != null) {
+                        Log.i(TAG, "transfers: ${offer.transferId} refused $reason")
+                        val reject = TransferReject.newBuilder().setTransferId(offer.transferId).setReason(reason).build()
+                        manager.send(ProtoChannel.CHANNEL_FILES, MessageType.FILES_REJECT, reject)
+                        return
+                    }
+                }
+            }
+        } catch (e: InvalidProtocolBufferException) {
+            Log.w(TAG, "transfers: bad ${env.type} payload")
+            return
+        }
+        transfers.onMessage(env)
+    }
+
+    /**
+     * [ended] is over: fail its unfinished transfers and forget its endpoint (an endpoint a newer
+     * session already announced stays).
+     */
+    fun onSessionEnded(ended: PhoneConnectionState.Connected) {
+        bulkEndpoint.update { if (it?.session === ended) null else it }
+        transfers.onDisconnected()
+    }
+
+    /**
+     * Dials the Mac's bulk port for this session. Never lets a timeout escape as a cancellation
+     * (the engine would take it for its own): a slow dial is an IOException, and a stream that
+     * arrives after giving up is closed.
+     */
+    private suspend fun openBulk(hello: BulkHello): BulkStream {
+        val ep = withTimeoutOrNull(ENDPOINT_WAIT_MS) {
+            bulkEndpoint.filterNotNull().first { it.session === manager.state.value }
+        } ?: throw IOException("no bulk endpoint")
+        val s = manager.state.value
+        if (s !== ep.session) throw IOException("session ended")
+        val host = ep.session.mac.lastHost ?: throw IOException("no host")
+        val dialed = AtomicReference<BulkStream?>(null)
+        try {
+            val stream = withTimeoutOrNull(BULK_DIAL_MS) {
+                bulkConnector.open(host, ep.port, ep.session.mac.fingerprintHex, hello).also { dialed.set(it) }
+            }
+            if (stream == null) {
+                dialed.getAndSet(null)?.let { runCatching { it.close() } }
+                throw IOException("bulk dial timed out")
+            }
+            return stream
+        } catch (e: CancellationException) {
+            dialed.getAndSet(null)?.let { runCatching { it.close() } }
+            throw e
+        }
+    }
+
     /** Points at the notification listener while it is bound; the active call notification comes from it. */
     val callNotifications = DelegatingCallNotifications(app)
 
@@ -299,6 +471,8 @@ class AppGraph private constructor(context: Context) {
             }
         }
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
+        scope.launch { transfers.transfers.collect(::releaseFinished) }
+        TransferNotifier(app, transfers.transfers, downloads::saved).launchIn(scope)
     }
 
     private fun hello(): Hello = Hello.newBuilder()
@@ -321,11 +495,15 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
         private const val KEY_CLIPBOARD_ON = "share_with_mac"
+
+        /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
+        private const val ENDPOINT_WAIT_MS = 10_000L
+        private const val BULK_DIAL_MS = 15_000L
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")

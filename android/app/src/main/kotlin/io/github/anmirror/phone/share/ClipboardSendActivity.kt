@@ -15,8 +15,8 @@ import io.github.anmirror.phone.TAG
 import kotlinx.coroutines.launch
 
 /**
- * Sends the phone's clipboard to the Mac: started by the Quick Settings tile, the persistent
- * notification's "Send clipboard" action and the share target. It has no UI (a translucent
+ * Sends the phone's clipboard to the Mac: started by the Quick Settings tile and the persistent
+ * notification's "Send clipboard" action (the share target sends its text itself). It has no UI (a translucent
  * theme). Android 10+ lets only the focused app read the clipboard, so it reads once its window
  * has focus, shows the outcome as a toast and finishes. While sharing is off or no Mac is
  * connected it says so without reading the clipboard at all.

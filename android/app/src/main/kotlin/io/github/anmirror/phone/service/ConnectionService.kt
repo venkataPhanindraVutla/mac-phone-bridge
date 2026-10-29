@@ -62,6 +62,8 @@ import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.NotificationFilter
+import io.github.anmirror.protocol.v1.SharedLink
+import io.github.anmirror.protocol.v1.SharedText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -108,6 +110,8 @@ class ConnectionService : LifecycleService() {
         setUpContacts()
         setUpCalls()
         setUpClipboard()
+        setUpShare()
+        setUpTransfers()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -136,6 +140,8 @@ class ConnectionService : LifecycleService() {
         calls.stop()
         network.stop()
         graph.manager.stop()
+        session?.let(graph::onSessionEnded) // the collector below is cancelled before it sees Stopped
+        session = null
         Log.i(TAG, "service: destroyed")
         super.onDestroy()
     }
@@ -351,8 +357,8 @@ class ConnectionService : LifecycleService() {
 
     /**
      * Clipboard: the Mac's `clipboard.text` is written only while [AppGraph.clipboardOpen]; the
-     * phone sends only on an explicit trigger (tile, notification action, share target), each of
-     * which opens [ClipboardSendActivity]. `clipboard.availability` is sent regardless, while the
+     * phone sends only on an explicit trigger (tile, notification action), each of which opens
+     * [ClipboardSendActivity]. `clipboard.availability` is sent regardless, while the
      * Mac shares clipboard.v1. No permission is involved.
      */
     private fun setUpClipboard() {
@@ -378,6 +384,39 @@ class ConnectionService : LifecycleService() {
                         lastText?.let(::update)
                     }
                 }
+        }
+    }
+
+    /**
+     * Share: links and text from the Mac, taken while it shares share.v1 (no switch: each share
+     * is an explicit act on the Mac). Text lands on the clipboard and is remembered there (R6).
+     */
+    private fun setUpShare() {
+        graph.manager.on(MessageType.SHARE_LINK) { env ->
+            val link = SharedLink.parseFrom(env.payload)
+            if (graph.shareShared()) graph.shareReceiver.onLink(link)
+        }
+        graph.manager.on(MessageType.SHARE_TEXT) { env ->
+            val text = SharedText.parseFrom(env.payload)
+            if (graph.shareShared()) graph.shareReceiver.onText(text)
+        }
+    }
+
+    /** The Connected state of the session in progress; a different state means it ended. */
+    private var session: Connected? = null
+
+    /**
+     * Transfers: every `files.*` message goes through [AppGraph.onFilesMessage] (endpoint, R5
+     * gating, then the engine). When a session ends, its transfers fail and its endpoint goes.
+     */
+    private fun setUpTransfers() {
+        for (type in FILES_TYPES) graph.manager.on(type) { env -> graph.onFilesMessage(env) }
+        lifecycleScope.launch {
+            graph.manager.state.collect { state ->
+                val ended = session
+                if (ended != null && state !== ended) graph.onSessionEnded(ended)
+                session = state as? Connected
+            }
         }
     }
 
@@ -495,6 +534,11 @@ class ConnectionService : LifecycleService() {
 
     companion object {
         const val CHANNEL_ID = "connection"
+        private val FILES_TYPES = listOf(
+            MessageType.FILES_ENDPOINT, MessageType.FILES_OFFER, MessageType.FILES_ACCEPT, MessageType.FILES_REJECT,
+            MessageType.FILES_PROGRESS, MessageType.FILES_COMPLETE, MessageType.FILES_RECEIVED, MessageType.FILES_CANCEL,
+            MessageType.FILES_FAILED,
+        )
         private const val CONTACTS_DEBOUNCE_MS = 5_000L
         const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
 

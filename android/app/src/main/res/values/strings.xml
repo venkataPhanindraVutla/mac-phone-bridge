@@ -97,6 +97,38 @@
     <!-- "Sent to %1$s" when the Mac's name is not known. -->
     <string name="clipboard_mac_unnamed">your Mac</string>
 
+    <!-- Share target: send to the Mac -->
+    <string name="share_target">Send to Mac</string>
+    <!-- Toast when a shared file's size can't be known, so it can't be sent. -->
+    <string name="share_file_unreadable">Couldn\'t send %1$s</string>
+
+    <!-- Shared from the Mac -->
+    <string name="channel_shared">Shared from your Mac</string>
+    <string name="channel_shared_description">Links and text your Mac sends to this phone.</string>
+    <string name="shared_link_from">Open link from %1$s</string>
+    <string name="shared_text_from">Copied from %1$s</string>
+
+    <!-- File transfers -->
+    <string name="channel_transfers">File transfers</string>
+    <string name="channel_transfers_description">Shows files being sent to and received from your Mac.</string>
+    <string name="transfer_sending">Sending %1$s</string>
+    <string name="transfer_receiving">Receiving %1$s</string>
+    <string name="transfer_saved">Saved to Download/Android Mirroring</string>
+    <string name="transfer_send_failed">Couldn\'t send %1$s</string>
+    <string name="transfer_receive_failed">Couldn\'t receive %1$s</string>
+    <string name="transfer_cancel">Cancel</string>
+    <string name="transfer_reason_no_space_mac">Not enough space on the Mac.</string>
+    <string name="transfer_reason_no_space_phone">Not enough space on the phone.</string>
+    <string name="transfer_reason_connection_lost">The connection was lost.</string>
+    <string name="transfer_reason_damaged">The file changed or was damaged on the way.</string>
+    <string name="transfer_reason_cancelled">Cancelled.</string>
+    <string name="transfer_reason_no_answer">Your Mac didn\'t answer.</string>
+    <string name="transfer_reason_read_failed">The file couldn\'t be read.</string>
+    <string name="transfer_reason_save_failed">The file couldn\'t be saved.</string>
+    <string name="transfer_reason_not_found">The file is no longer there.</string>
+    <string name="transfer_reason_refused">Your Mac didn\'t take the file.</string>
+    <string name="transfer_reason_refused_here">This phone can\'t take this file.</string>
+
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>
     <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>

@@ -65,6 +65,8 @@ dependencies {
     implementation(project(":feature:contacts"))
     implementation(project(":feature:calls"))
     implementation(project(":feature:clipboard"))
+    implementation(project(":feature:share"))
+    implementation(project(":core:transfer"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 
