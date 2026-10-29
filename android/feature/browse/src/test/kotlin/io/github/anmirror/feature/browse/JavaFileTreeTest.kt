@@ -45,7 +45,9 @@ class JavaFileTreeTest {
         var readPath: (File) -> String? = { null },
         var writePath: (File) -> String? = { null },
         val beforeRead: (File) -> Unit = {},
+        var dirPath: (File) -> String? = { null },
     ) : Descriptors {
+        override fun realDirPath(dir: File): String? = dirPath(dir)
         val closed = java.util.concurrent.atomic.AtomicInteger()
         override fun openRead(file: File): ReadHandle {
             beforeRead(file)
@@ -253,6 +255,36 @@ class JavaFileTreeTest {
         assertEquals(1, fds.closed.get(), "the descriptor is closed")
         fds.readPath = { f -> f.path }
         assertEquals("a", ok(t.openRead("a.txt")).readText())
+    }
+
+    @Test fun rootAndFileInAnotherPathFormStillPass() {
+        // FUSE may show descriptors as /mnt/user/0/emulated/0/... : the root's real path comes the same way.
+        val form = "/mnt/user/0/emulated/0"
+        val fds = ReportingDescriptors()
+        val t = tree(fds)
+        val canon = rootDir.canonicalPath
+        fds.dirPath = { form }
+        fds.readPath = { f -> form + f.path.removePrefix(canon) }
+        fds.writePath = { f -> form + f.path.removePrefix(canon) }
+        File(rootDir, "docs").mkdir()
+        File(rootDir, "docs/a.txt").writeText("a")
+        assertEquals("a", ok(t.openRead("docs/a.txt")).readText())
+        val sink = ok(t.openWrite("docs", "b.txt", overwrite = false))
+        sink.write("b")
+        assertEquals("b.txt", sink.commit())
+        assertEquals("b", File(rootDir, "docs/b.txt").readText())
+    }
+
+    @Test fun fileEscapingInAnotherPathFormFails() {
+        val form = "/mnt/user/0/emulated/0"
+        val fds = ReportingDescriptors()
+        val t = tree(fds)
+        fds.dirPath = { form }
+        fds.readPath = { "/mnt/user/0/emulated/elsewhere/secret.txt" }
+        fds.writePath = { f -> "/mnt/user/0/emulated/elsewhere/${f.name}" }
+        File(rootDir, "a.txt").writeText("a")
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openRead("a.txt")))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH, err(t.openWrite("", "b.txt", overwrite = false)))
     }
 
     @Test fun readSideSwapIsRefused() {

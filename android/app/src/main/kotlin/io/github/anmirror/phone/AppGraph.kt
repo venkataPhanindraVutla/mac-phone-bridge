@@ -567,7 +567,11 @@ class AppGraph private constructor(context: Context) {
         val made = roots.mapNotNull { root ->
             when (root.kind) {
                 RootKind.ROOT_KIND_ALL_FILES ->
-                    JavaFileTree(Environment.getExternalStorageDirectory(), root, ::mimeFor) { downloads.freeBytes() }
+                    JavaFileTree(
+                        Environment.getExternalStorageDirectory(), root, ::mimeFor,
+                        free = { downloads.freeBytes() },
+                        log = { Log.i(TAG, it) },
+                    )
                 else -> folders[root.id]?.let { SafFileTree(app, it.uri, root) { downloads.freeBytes() } }
             }
         }

@@ -40,6 +40,12 @@ interface Descriptors {
     /** Creates [file]; it must not exist (`O_EXCL`, so never through a link). */
     fun createNew(file: File): WriteHandle
 
+    /**
+     * Where the folder [dir] really is, in the same form as [ReadHandle.realPath] (the same mount
+     * namespace and kernel path form); null when the system can't tell.
+     */
+    fun realDirPath(dir: File): String? = null
+
     companion object {
         /** On Android, [ProcFdDescriptors]; elsewhere (the JVM test host) [NioDescriptors]. */
         fun platform(): Descriptors =
@@ -62,6 +68,20 @@ internal object ProcFdDescriptors : Descriptors {
         val flags = OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC
         val pfd = open(file, flags)
         return WriteHandle(ParcelFileDescriptor.AutoCloseOutputStream(pfd)) { realPath(pfd) }
+    }
+
+    /**
+     * `O_DIRECTORY` is not in the SDK's OsConstants (its value differs by architecture), so the
+     * folder is opened `O_RDONLY | O_CLOEXEC` and checked to be a directory with `fstat`.
+     */
+    override fun realDirPath(dir: File): String? = try {
+        open(dir, OsConstants.O_RDONLY or OsConstants.O_CLOEXEC).use { pfd ->
+            if (OsConstants.S_ISDIR(Os.fstat(pfd.fileDescriptor).st_mode)) realPath(pfd) else null
+        }
+    } catch (e: IOException) {
+        null
+    } catch (e: ErrnoException) {
+        null
     }
 
     private fun open(file: File, flags: Int): ParcelFileDescriptor {

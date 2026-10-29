@@ -57,13 +57,15 @@ class JavaFileTree internal constructor(
     private val mimeFor: (String) -> String,
     private val free: () -> Long?,
     private val fds: Descriptors,
+    private val log: (String) -> Unit = {},
 ) : FileTree {
     constructor(
         rootDir: File,
         root: RootInfo,
         mimeFor: (String) -> String,
         free: () -> Long? = { null },
-    ) : this(rootDir, root, mimeFor, free, Descriptors.platform())
+        log: (String) -> Unit = {},
+    ) : this(rootDir, root, mimeFor, free, Descriptors.platform(), log)
 
     private val rootCanon: File = rootDir.canonicalFile
     private val rootPrefix = rootCanon.path.trimEnd(File.separatorChar) + File.separatorChar
@@ -198,7 +200,7 @@ class JavaFileTree internal constructor(
             throw e
         }
         // Opened: the descriptor (or, where the system can't tell, the path) must still be in the root.
-        val inside = handle.realPath?.let { inRoot(File(it)) } ?: stillChecked(file)
+        val inside = handle.realPath?.let(::realInRoot) ?: stillChecked(file)
         if (!inside) {
             handle.close()
             return@guard badPath
@@ -247,7 +249,7 @@ class JavaFileTree internal constructor(
         /** The part is (still) in the checked folder, and that folder's path still resolves to itself. */
         fun inPlace(): Boolean {
             val real = handle.realPath()
-            if (real != null && File(real).parent != dir.path) return false
+            if (real != null && File(real).parent != realFormOf(dir)) return false
             return stillChecked(dir)
         }
 
@@ -312,6 +314,24 @@ class JavaFileTree internal constructor(
     // ---- resolving -------------------------------------------------------------------------
 
     private fun inRoot(f: File): Boolean = f.path == rootCanon.path || f.path.startsWith(rootPrefix)
+
+    /**
+     * The root as descriptors report paths ([Descriptors.realDirPath]): the same mount namespace
+     * and kernel path form (`/storage/emulated/0`, `/mnt/user/0/emulated/0`, `/data/media/0`) as a
+     * file's real path. Read once; when the system can't tell, the canonical path.
+     */
+    private val realRoot: String by lazy {
+        fds.realDirPath(rootCanon)?.trimEnd(File.separatorChar)?.ifEmpty { null } ?: run {
+            log("browse: root real path unknown, using the canonical path")
+            rootCanon.path.trimEnd(File.separatorChar)
+        }
+    }
+
+    /** A descriptor's real path lies in the root. */
+    private fun realInRoot(real: String): Boolean = real == realRoot || real.startsWith(realRoot + File.separatorChar)
+
+    /** [checked] (a canonical path in the root) in the form descriptors report. */
+    private fun realFormOf(checked: File): String = realRoot + checked.path.removePrefix(rootCanon.path.trimEnd(File.separatorChar))
 
     /** Every segment followed: the canonical file, which must be in the root. */
     private fun resolve(path: String): TreeResult<File> {
