@@ -16,3 +16,10 @@ fun clipboardGate(state: PhoneConnectionState, on: Boolean): ClipboardGate = whe
     "clipboard.v1" !in state.shared -> ClipboardGate.NOT_CONNECTED
     else -> ClipboardGate.OPEN
 }
+
+/**
+ * Whether the bridge's "the Mac has this text" digest stays valid. Mac text is taken only while the
+ * Mac shares clipboard.v1 and the switch is on; otherwise it is dropped, so the digest goes stale
+ * and must be cleared.
+ */
+fun clipboardTracksMac(shared: Boolean, on: Boolean): Boolean = shared && on

@@ -109,4 +109,14 @@ class ClipboardBridgeTest {
         connected = true
         assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
     }
+
+    @Test fun switchOffClearsDigest() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        bridge.onMacText(macText("X"))
+        // Switched off: the app clears the digest (Mac text is dropped meanwhile, so it would go stale).
+        bridge.onDisconnected()
+        // Switched on again: the phone's X goes, even though the Mac once sent X.
+        assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
+        assertEquals(listOf("X"), sent)
+    }
 }

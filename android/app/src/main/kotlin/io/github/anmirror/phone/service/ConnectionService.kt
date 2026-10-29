@@ -29,6 +29,7 @@ import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
 import io.github.anmirror.phone.answerInvoke
+import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
@@ -368,9 +369,9 @@ class ConnectionService : LifecycleService() {
                 .collect { (shared, on) ->
                     if (shared) {
                         graph.manager.send(Channel.CHANNEL_CLIPBOARD, MessageType.CLIPBOARD_AVAILABILITY, featureAvailability(granted = true, userOn = on))
-                    } else {
-                        graph.clipboard.onDisconnected()
                     }
+                    // Mac text is dropped meanwhile, so what the bridge knows of the Mac's clipboard goes stale.
+                    if (!clipboardTracksMac(shared, on)) graph.clipboard.onDisconnected()
                     val ready = shared && on
                     if (ready != clipboardAction) {
                         clipboardAction = ready

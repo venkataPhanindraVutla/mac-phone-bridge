@@ -24,4 +24,12 @@ class ClipboardGateTest {
         assertEquals(ClipboardGate.NOT_CONNECTED, clipboardGate(PhoneConnectionState.Unreachable(mac), on = false))
         assertEquals(ClipboardGate.NOT_CONNECTED, clipboardGate(notSharing, on = true))
     }
+
+    @Test fun switchOffClearsDigest() {
+        // Only while shared and on is Mac text taken, so only then can the bridge know what the Mac has.
+        assertEquals(false, clipboardTracksMac(shared = true, on = false))
+        assertEquals(false, clipboardTracksMac(shared = false, on = true))
+        assertEquals(false, clipboardTracksMac(shared = false, on = false))
+        assertEquals(true, clipboardTracksMac(shared = true, on = true))
+    }
 }
