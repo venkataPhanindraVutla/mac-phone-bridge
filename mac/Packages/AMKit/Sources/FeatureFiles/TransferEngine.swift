@@ -30,6 +30,9 @@ public struct TransferTiming: Sendable {
 
 /// File transfers with the phone, both ways (SPEC sections 13 and 16). One transfer runs at a
 /// time per direction; the bytes go over bulk connections, read and written off the main actor.
+/// Every transfer uses its own bulk connection, an empty file too (it carries no bytes).
+/// Transfers live for one session only: nothing is queued while no phone is connected, and
+/// nothing queued in one session reaches the next.
 @MainActor
 @Observable
 public final class TransferEngine: SessionFeature {
@@ -39,7 +42,9 @@ public final class TransferEngine: SessionFeature {
     public private(set) var transfers: [TransferItem] = []
 
     /// Called once for every transfer that ends (done, failed or cancelled), with where a
-    /// received file was saved. Check `item.state`.
+    /// received file was saved. Check `item.state`. `item.name` is the sanitized name; the
+    /// offer is as it went over the wire, so a phone offer's `name` is the phone's raw name and
+    /// must not be used as a path. Never called before `send(files:)` has returned the item's ID.
     @ObservationIgnored public var onFinished: (@MainActor (TransferItem, AMTransferOffer, URL?) -> Void)?
 
     nonisolated static let chunkBytes = BulkLink.bufferBytes
@@ -56,6 +61,12 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
 
     @ObservationIgnored private var isConnected = false
+    /// The phone in session, while connected.
+    @ObservationIgnored private var phoneID: String?
+    /// The phone shares `files.v1`: only then does the Mac offer files.
+    @ObservationIgnored private var filesShared = false
+    /// Moves on with every connect and disconnect; messages queued in an older session are dropped.
+    @ObservationIgnored private let session = SessionCounter()
     /// Transfers that have not ended, in arrival order.
     @ObservationIgnored private var jobs: [Job] = []
     /// Newest first, at most `keptFinished`.
@@ -77,8 +88,9 @@ public final class TransferEngine: SessionFeature {
         // One sender, so messages leave in the order they were queued.
         let (stream, continuation) = AsyncStream.makeStream(of: Outgoing.self)
         outbox = continuation
+        let session = self.session
         Task {
-            for await o in stream { await send(o.type, o.message) }
+            for await o in stream where o.session == session.value { await send(o.type, o.message) }
         }
     }
 
@@ -87,7 +99,10 @@ public final class TransferEngine: SessionFeature {
     // MARK: SessionFeature
 
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
+        session.value += 1
         isConnected = true
+        self.phoneID = phoneID
+        filesShared = shared.contains("files.v1")
         // Before any token: changing the allowed phone revokes every outstanding one.
         bulk.allow(peerFingerprint: Self.bytes(hex: phoneID))
         if !shared.isDisjoint(with: Self.bulkCapabilities), let port = bulk.port {
@@ -100,7 +115,10 @@ public final class TransferEngine: SessionFeature {
 
     /// Every transfer that has not ended fails `INTERRUPTED`; nothing is sent.
     public func disconnected() {
+        session.value += 1
         isConnected = false
+        phoneID = nil
+        filesShared = false
         bulk.revokeAll()
         bulk.allow(peerFingerprint: nil)
         for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
@@ -124,29 +142,44 @@ public final class TransferEngine: SessionFeature {
         }
     }
 
-    /// Nothing is kept per phone.
-    public func forget(phoneID: String) async {}
+    /// Nothing is kept per phone. Forgetting the phone in session ends whatever it still has
+    /// queued or under way.
+    public func forget(phoneID: String) async {
+        guard phoneID == self.phoneID || self.phoneID == nil else { return }
+        for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
+    }
 
     // MARK: API
 
-    /// Queues `files` for the phone, into `target` (a browse root) when given, else its
-    /// Downloads. A folder or an unreadable file fails `IO` at once. Returns the transfer IDs.
+    /// Queues `files` for the phone in session, into `target` (a browse root) when given, else
+    /// its Downloads. With no phone connected, or one that does not share `files.v1`, each file
+    /// fails `INTERRUPTED` at once; a folder or an unreadable file fails `IO` at once. Returns
+    /// the transfer IDs.
     @discardableResult
     public func send(files: [URL], target: AMBrowseTarget? = nil) -> [String] {
         var ids: [String] = []
         for url in files {
-            let id = newID()
+            var id = newID()
+            // IDs stay unique among live transfers, so a phone message names one transfer only.
+            while jobs.contains(where: { $0.item.id == id }) { id = newID() }
             ids.append(id)
             var offer = AMTransferOffer()
             offer.transferID = id
             offer.name = FileNameSanitizer.sanitize(url.lastPathComponent)
             offer.kind = .file
             if let target { offer.target = target }
+            guard isConnected, filesShared else {
+                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
+                                        state: .failed(.interrupted))
+                Self.log.info("\(id, privacy: .public) not sent: no phone takes files")
+                record(item, offer: offer, url: nil, deferred: true)
+                continue
+            }
             guard let source = Self.source(url) else {
                 let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
                                         state: .failed(.io))
                 Self.log.info("\(id, privacy: .public) not sent: IO")
-                record(item, offer: offer, url: nil)
+                record(item, offer: offer, url: nil, deferred: true)
                 continue
             }
             offer.size = source.size
@@ -189,20 +222,23 @@ public final class TransferEngine: SessionFeature {
     /// A bulk connection whose token redeemed: `PHONE_RECEIVES` carries a Mac send,
     /// `PHONE_SENDS` a Mac receive. Anything that matches no waiting transfer is closed.
     public func link(_ pipe: any BulkPipe, grant: BulkGrant) {
-        guard let job = jobs.first(where: { $0.item.id == grant.context }), job.pipe == nil,
-              job.item.state == .waiting
-        else {
+        let direction: TransferItem.Direction
+        switch grant.role {
+        case .phoneReceives: direction = .send
+        case .phoneSends: direction = .receive
+        default:
             pipe.close()
             return
         }
-        switch (grant.role, job.item.direction) {
-        case (.phoneReceives, .send):
+        guard let job = live(grant.context, direction), job.pipe == nil, job.item.state == .waiting else {
+            pipe.close()
+            return
+        }
+        if direction == .send {
             job.pipe = pipe
             startSending(job)
-        case (.phoneSends, .receive):
+        } else {
             startReceiving(job, pipe)
-        default:
-            pipe.close()
         }
     }
 
@@ -294,8 +330,15 @@ public final class TransferEngine: SessionFeature {
     // MARK: Mac receives
 
     private func offered(_ o: AMTransferOffer) {
-        // A repeated offer for a transfer under way changes nothing.
-        guard !jobs.contains(where: { $0.item.id == o.transferID }) else { return }
+        // An ID already in use (a repeated offer, or one of the Mac's own) is refused; the live
+        // transfer is left alone and gets no second entry.
+        guard !jobs.contains(where: { $0.item.id == o.transferID }) else {
+            var r = AMTransferReject()
+            r.transferID = o.transferID
+            r.reason = .denied
+            post(.filesReject, r)
+            return
+        }
         let item = TransferItem(id: o.transferID, direction: .receive, name: FileNameSanitizer.sanitize(o.name),
                                 size: o.size, kind: o.kind, state: .queued)
         let job = Job(item: item, offer: o, source: nil)
@@ -459,11 +502,15 @@ public final class TransferEngine: SessionFeature {
         finish(job, .cancelled, notice: .none)
     }
 
+    // Live transfer IDs are unique across both directions (see `send(files:)` and `offered`),
+    // so a cancel or failure, which names no direction, matches at most one transfer.
+
     private func failedOnPhone(_ f: AMTransferFailed) {
+        let reason: AMTransferError = f.reason == .unspecified ? .io : f.reason
         if !f.transferID.isEmpty, let job = jobs.first(where: { $0.item.id == f.transferID }) {
-            finish(job, .failed(f.reason == .unspecified ? .io : f.reason), notice: .none)
+            finish(job, .failed(reason), notice: .none)
         } else if f.requestID != 0 {
-            failRequest(f.requestID, .transfer(f.reason))
+            failRequest(f.requestID, .transfer(reason))
         }
     }
 
@@ -544,11 +591,17 @@ public final class TransferEngine: SessionFeature {
 
     // MARK: helpers
 
-    private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?) {
+    /// Adds a finished item and calls `onFinished`, on the next main-actor turn when `deferred`
+    /// (inside `send(files:)`, whose caller must get the ID first).
+    private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?, deferred: Bool = false) {
         finished.insert(item, at: 0)
         if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
         publish()
-        onFinished?(item, offer, url)
+        if deferred {
+            Task { [weak self] in self?.onFinished?(item, offer, url) }
+        } else {
+            onFinished?(item, offer, url)
+        }
     }
 
     private func publish() {
@@ -562,7 +615,7 @@ public final class TransferEngine: SessionFeature {
     private func isLive(_ job: Job) -> Bool { jobs.contains { $0 === job } }
 
     private func post(_ type: MessageType, _ message: any SwiftProtobuf.Message & Sendable) {
-        outbox.yield(Outgoing(type: type, message: message))
+        outbox.yield(Outgoing(session: session.value, type: type, message: message))
     }
 
     /// `<id> <bytes> B in <ms> ms = <MB/s> MB/s`: no names, no content.
@@ -692,6 +745,7 @@ private enum Stop: Error {
 }
 
 private struct Outgoing: Sendable {
+    let session: UInt64
     let type: MessageType
     let message: any SwiftProtobuf.Message & Sendable
 }
@@ -699,6 +753,11 @@ private struct Outgoing: Sendable {
 private struct Expectation {
     let destination: IncomingDestination
     let completion: @MainActor (Result<URL, TransferFailure>) -> Void
+}
+
+@MainActor
+private final class SessionCounter {
+    var value: UInt64 = 0
 }
 
 /// When bytes last moved; written by the byte loops, read by the watchdog.

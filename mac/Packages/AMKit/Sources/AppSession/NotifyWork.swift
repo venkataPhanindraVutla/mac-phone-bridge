@@ -71,7 +71,9 @@ public final class NotifyWorkQueue {
 
     /// Adds a feature for the session: it is told about every connect, disconnect and forget
     /// from now on, and gets every message whose type starts with one of its prefixes.
+    /// Registering the same feature again changes nothing.
     public func register(_ feature: any SessionFeature) {
+        guard !features.contains(where: { $0 === feature }) else { return }
         features.append(feature)
     }
 

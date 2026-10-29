@@ -165,3 +165,14 @@ private final class Rig {
     await r.queue.drained()
     #expect(r.log.lines == ["files disconnected", "clip disconnected", "files forget P1", "clip forget P1"])
 }
+
+@MainActor @Test func registeringTwiceDeliversOnce() async {
+    let r = Rig(); defer { r.cleanUp() }
+    let files = RecordingFeature("files", prefixes: ["files."], log: r.log)
+    r.queue.register(files)
+    r.queue.register(files)
+    r.queue.handle(.connected(phone("P1"), shared: ["files.v1"]))
+    r.queue.handle(message: envelope(.filesOffer, .files, AMTransferOffer()))
+    await r.queue.drained()
+    #expect(r.log.lines == ["files connected P1 Phone P1 files.v1", "files files.offer"])
+}

@@ -223,6 +223,25 @@ extension TransferTiming {
                                      progressInterval: .zero, freeMargin: 64 << 20)
 }
 
+/// Holds the engine's sends until opened.
+@MainActor
+final class Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let w = waiters
+        waiters = []
+        for c in w { c.resume() }
+    }
+}
+
 /// An engine with fakes around it and a temporary folder for files.
 @MainActor
 final class Rig {
@@ -233,6 +252,8 @@ final class Rig {
     var destination: IncomingDestination
     var destinationCalls = 0
     var finished: [(item: TransferItem, offer: AMTransferOffer, url: URL?)] = []
+    /// While set, each send is recorded and then waits for the gate.
+    var gate: Gate?
     private(set) var engine: TransferEngine!
 
     init(timing: TransferTiming = .fast) {
@@ -242,7 +263,10 @@ final class Rig {
         var n = 0
         engine = TransferEngine(
             bulk: bulk,
-            send: { [weak self] type, message in self?.sent.all.append((type, message)) },
+            send: { [weak self] type, message in
+                self?.sent.all.append((type, message))
+                if let gate = self?.gate { await gate.wait() }
+            },
             destination: { [weak self] _ in
                 guard let self else { return .refuse(.io) }
                 self.destinationCalls += 1
@@ -716,6 +740,8 @@ final class Rig {
     #expect(r.files() == ["a.txt", "b.txt"])
     #expect(r.bulk.revokeAllCount >= 1)
     #expect(r.bulk.allowed.last == .some(nil))
+    // Tokens die before the door closes.
+    #expect(r.bulk.calls.suffix(2) == ["revokeAll", "allow"])
     // The phone's end sees the link close.
     #expect(try await phone.receive(maximum: 10) == nil)
     // Nothing is sent to a phone that is gone.
@@ -731,8 +757,9 @@ final class Rig {
     defer { r.cleanUp() }
     await r.connect()
     let phone = try await r.startReceive(r.offer("t1", size: 10_000))
-    try await phone.send(randomBytes(1000))
+    // Taken before the bytes move: the limit counts from the last byte, which comes later.
     let start = ContinuousClock.now
+    try await phone.send(randomBytes(1000))
     try await until("timed out") { r.item("t1")?.state == .failed(.timedOut) }
     #expect(ContinuousClock.now - start >= .milliseconds(250))
     try await until("files.failed") { r.sent.of(.filesFailed, AMTransferFailed.self).map(\.reason) == [.timedOut] }
@@ -787,4 +814,145 @@ extension Data {
         while let a = it.next(), let b = it.next() { out.append(UInt8(String([a, b]), radix: 16)!) }
         self = out
     }
+}
+
+// MARK: fix round 1
+
+@MainActor @Test func sendWhileDisconnectedFailsAndIsNotOfferedOnConnect() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")])
+    #expect(r.item(ids[0])?.state == .failed(.interrupted))
+    await r.connect()
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty)
+    #expect(r.bulk.issued.isEmpty)
+
+    // Nothing queued in one session survives into the next.
+    let queued = r.engine.send(files: [try r.write(randomBytes(10), as: "b.txt"), try r.write(randomBytes(10), as: "c.txt")])
+    r.engine.disconnected()
+    await r.connect()
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(queued.allSatisfy { r.item($0)?.state == .failed(.interrupted) })
+    // Only the first was ever offered (and that offer, still in the outbox, was dropped as stale).
+    #expect(r.bulk.issued.map(\.context) == [queued[0]])
+    #expect(!r.sent.of(.filesOffer, AMTransferOffer.self).contains { $0.transferID == queued[1] })
+}
+
+@MainActor @Test func noOfferWhenPhoneDoesNotShareFiles() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["photos.v1"])
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")])
+    #expect(r.item(ids[0])?.state == .failed(.interrupted))
+    try await until("endpoint") { !r.sent.all.isEmpty }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.sent.types == [.filesEndpoint])
+    #expect(r.bulk.issued.isEmpty)
+}
+
+@MainActor @Test func forgetFailsWhatIsStillQueued() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt"), try r.write(randomBytes(10), as: "b.txt")])
+    #expect(r.item(ids[1])?.state == .queued)
+    // Another phone: nothing changes.
+    await r.engine.forget(phoneID: "ffff")
+    #expect(r.item(ids[1])?.state == .queued)
+    await r.engine.forget(phoneID: phoneHex)
+    #expect(ids.allSatisfy { r.item($0)?.state == .failed(.interrupted) })
+}
+
+@MainActor @Test func staleMessagesDoNotReachTheNextSession() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    let gate = Gate()
+    r.gate = gate
+    await r.connect()
+    try await until("first endpoint") { r.sent.types == [.filesEndpoint] }
+    // Queued behind the held endpoint: an accept for this session.
+    await r.deliver(.filesOffer, r.offer("t1", size: 10))
+    r.engine.disconnected()
+    await r.connect()
+    gate.open()
+    try await until("second endpoint") { r.sent.types.filter { $0 == .filesEndpoint }.count == 2 }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.sent.types == [.filesEndpoint, .filesEndpoint])
+}
+
+@MainActor @Test func onFinishedComesAfterSendReturns() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let folder = r.dir.appendingPathComponent("Album", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    final class Box { var returned: [String] = []; var seen: [Bool] = [] }
+    let box = Box()
+    r.engine.onFinished = { item, _, _ in box.seen.append(box.returned.contains(item.id)) }
+    box.returned = r.engine.send(files: [folder])
+    try await until("callback") { box.seen.count == 1 }
+    #expect(box.seen == [true])
+}
+
+@MainActor @Test func offerWithLiveIDIsDenied() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let id = try #require(r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")]).first)
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    await r.deliver(.filesOffer, r.offer(id, size: 10))
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.denied] }
+    #expect(r.item(id)?.state == .waiting)
+    #expect(r.item(id)?.direction == .send)
+    #expect(r.engine.transfers.filter { $0.id == id }.count == 1)
+    // A link for the wrong direction does not touch the send either.
+    let (mac, _) = MemoryPipe.pair()
+    r.engine.link(mac, grant: BulkGrant(role: .phoneSends, context: id))
+    #expect(mac.isClosed)
+    #expect(r.item(id)?.state == .waiting)
+}
+
+@MainActor @Test func failedWithoutReasonMapsTheSameWay() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let id = try #require(r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")]).first)
+    var f = AMTransferFailed(); f.transferID = id
+    await r.deliver(.filesFailed, f)
+    #expect(r.item(id)?.state == .failed(.io))
+
+    let request = r.engine.nextRequestID()
+    var result: Result<URL, TransferFailure>?
+    r.engine.expect(requestID: request, destination: .folder(r.dir)) { result = $0 }
+    var g = AMTransferFailed(); g.requestID = request
+    await r.deliver(.filesFailed, g)
+    #expect(result == .failure(.transfer(.io)))
+}
+
+@MainActor @Test func zeroByteTransferBothDirections() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // An empty file still gets its bulk link (one per transfer, SPEC section 13), with no bytes on it.
+    let phone = try await r.startReceive(r.offer("t1", name: "empty.txt", size: 0))
+    await r.complete("t1", sha(Data()))
+    let saved = r.dir.appendingPathComponent("empty.txt")
+    try await until("received") { r.item("t1")?.state == .done(saved) }
+    #expect(try Data(contentsOf: saved).isEmpty)
+    phone.close()
+
+    let id = try #require(r.engine.send(files: [try r.write(Data(), as: "nothing.txt")]).first)
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).first?.size == 0)
+    #expect(try await r.phoneTakes(id, size: 0).isEmpty)
+    #expect(r.sent.of(.filesComplete, AMTransferComplete.self).first?.sha256 == sha(Data()))
+    try await until("done") { r.item(id)?.state == .done(nil) }
+}
+
+@MainActor @Test func collisionIgnoresCaseAndNormalization() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // On disk: decomposed and upper case. Offered: precomposed and lower case.
+    _ = try r.write(Data("old".utf8), as: "CAFE\u{301}.TXT")
+    let bytes = randomBytes(50)
+    let phone = try await r.startReceive(r.offer("t1", name: "caf\u{e9}.txt", size: 50))
+    try await phone.send(bytes)
+    await r.complete("t1", sha(bytes))
+    let expected = r.dir.appendingPathComponent("caf\u{e9} (1).txt")
+    try await until("done") { r.item("t1")?.state == .done(expected) }
+    #expect(try Data(contentsOf: expected) == bytes)
+    #expect(r.files().count == 2)
 }
