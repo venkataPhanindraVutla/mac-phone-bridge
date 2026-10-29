@@ -2,7 +2,9 @@ import Foundation
 
 /// Which text is a `share.link` (SPEC section 15): one `http` or `https` URL with a host, at
 /// most 8,192 bytes of UTF-8 once trimmed. Anything else goes, and is handled, as `share.text`.
-/// The same rule as the phone's `ShareClassifier.linkOrNull`.
+/// Close to the phone's `ShareClassifier.linkOrNull`, but stricter: the phone's `java.net.URI`
+/// accepts non-ASCII characters (`https://example.com/café`), this does not. Such a link from
+/// the phone is handled as text here: it lands on the pasteboard instead of opening.
 public enum LinkRules {
     public static let maxBytes = 8_192
 

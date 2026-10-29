@@ -31,3 +31,10 @@ import Testing
     #expect(LinkRules.link("  " + fits + "  ") != nil)
     #expect(LinkRules.link(fits + "a") == nil)
 }
+
+@Test func nonASCIILinkIsTextOnTheMac() {
+    // Stricter than the phone, whose java.net.URI accepts non-ASCII characters: the phone may
+    // send this as share.link, and the Mac handles it as text (pasteboard and notification).
+    #expect(LinkRules.link("https://example.com/café") == nil)
+    #expect(LinkRules.link("https://example.com/caf%C3%A9") != nil)
+}

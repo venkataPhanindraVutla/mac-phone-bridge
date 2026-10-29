@@ -32,12 +32,23 @@ private final class FakePasteboard: PasteboardAccess {
     }
 }
 
+private struct DeliverFailed: Error {}
+
 @MainActor
 private final class FakePresenter: NotificationPresenter {
     var delivered: [(id: String, content: UNNotificationContent)] = []
-    func authorize() async -> Bool { true }
+    var authorizeCalls = 0
+    /// Notifications not allowed: every delivery throws.
+    var failDeliver = false
+    func authorize() async -> Bool {
+        authorizeCalls += 1
+        return !failDeliver
+    }
     func setCategories(_ categories: Set<UNNotificationCategory>) {}
-    func deliver(id: String, content: UNNotificationContent) async throws { delivered.append((id, content)) }
+    func deliver(id: String, content: UNNotificationContent) async throws {
+        if failDeliver { throw DeliverFailed() }
+        delivered.append((id, content))
+    }
     func remove(ids: [String]) {}
     func deliveredIDs() async -> [String] { delivered.map(\.id) }
 }
@@ -165,7 +176,6 @@ private final class Rig {
     #expect(await r.share.sendClipboard() == .sent)
     #expect(r.sentTypes == [.shareText])
     #expect(r.sentTexts == ["secret"])
-    #expect(r.share.lastOutcome == .sent)
 }
 
 @MainActor @Test func sendClipboardEmptyIsEmpty() async {
@@ -176,7 +186,6 @@ private final class Rig {
     #expect(await r.share.sendClipboard() == .empty)
     #expect(await r.share.sendText("") == .empty)
     #expect(r.sent.isEmpty)
-    #expect(r.share.lastOutcome == .empty)
 }
 
 @MainActor @Test func oversizedTextIsTooLarge() async {
@@ -187,7 +196,6 @@ private final class Rig {
     r.board.copy(String(repeating: "é", count: ClipboardModel.maxBytes / 2 + 1))
     #expect(await r.share.sendClipboard() == .tooLarge)
     #expect(r.sent.isEmpty)
-    #expect(r.share.lastOutcome == .tooLarge)
     #expect(await r.share.sendText(fits) == .sent)
     #expect(r.sentTexts.map(\.utf8.count) == [ClipboardModel.maxBytes])
 }
@@ -230,10 +238,6 @@ private final class Rig {
     #expect(r.sentLinks == ["https://example.com/a"])
     #expect(r.sentTexts == ["mailto:a@example.com"])
 
-    // A link that went clears an earlier note.
-    #expect(await r.share.sendText("") == .empty)
-    await r.share.sendLink(URL(string: "https://example.com/b")!)
-    #expect(r.share.lastOutcome == .sent)
 }
 
 @MainActor @Test func sentShareTextCountsAsPhoneHas() async {
@@ -256,4 +260,36 @@ private final class Rig {
     r.board.copy("new")
     await r.clipboard.poll()
     #expect(r.sentTypes == [.shareText, .shareText, .clipboardText])
+}
+
+@MainActor
+private func until(_ condition: @MainActor () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !condition() {
+        if ContinuousClock.now >= deadline { Issue.record("timed out"); return }
+        try await Task.sleep(for: .milliseconds(2))
+    }
+}
+
+@MainActor @Test func firstShareAsksForNotificationsAndDeliverFailureStillCopies() async throws {
+    let r = Rig()
+    await r.connect()
+    // A phone without notify.v1: nothing has asked for notification permission yet.
+    #expect(r.presenter.authorizeCalls == 0)
+    r.presenter.failDeliver = true
+    await r.phoneText("one")
+    #expect(r.board.writes == ["one"])
+    try await until { r.presenter.authorizeCalls == 1 }
+    await r.phoneText("two")
+    await r.phoneLink("https://example.com")
+    #expect(r.board.writes == ["one", "two"])
+    #expect(r.opened.count == 1)
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(r.presenter.authorizeCalls == 1)
+
+    // Once per session; a link counts as a share too.
+    r.disconnect()
+    await r.connect()
+    await r.phoneLink("https://example.com/again")
+    try await until { r.presenter.authorizeCalls == 2 }
 }

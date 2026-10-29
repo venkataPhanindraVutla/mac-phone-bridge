@@ -255,15 +255,80 @@ final class AppModel {
     /// Sending links, text and the clipboard is offered only while the connected phone shares `share.v1`.
     var canShare: Bool { server.activePhone?.shared.contains("share.v1") ?? false }
 
-    /// "Send File to Phone…": any number of files, no folders.
+    /// Why the last thing the user sent (dropped, picked, or the clipboard) did not all go.
+    /// Shown in the menu and the Send tab until the next send, connect or disconnect.
+    private(set) var sendNotes: [SendNote] = []
+
+    /// "Send File to Phone…": any number of files. Packages can be picked like files; they and
+    /// folders are not sent.
     func chooseFilesToSend() {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, canSendFiles, !panel.urls.isEmpty else { return }
-        transfers.send(files: panel.urls)
+        panel.begin { [weak self] response in
+            MainActor.assumeIsolated {
+                guard response == .OK, let self else { return }
+                self.sendNotes = self.send(fileURLs: panel.urls)
+            }
+        }
+    }
+
+    /// "Send Clipboard to Phone".
+    func sendClipboard() async {
+        sendNotes = []
+        if let note = SendNote(await share.sendClipboard(), fromClipboard: true) { sendNotes = [note] }
+    }
+
+    /// A drop on the Send tab: files to the transfer engine, a web link as `share.link`,
+    /// anything else as `share.text`, each only when the phone shares that feature.
+    func drop(_ items: [DroppedItem]) -> Bool {
+        guard isConnected else { return false }
+        var fileURLs: [URL] = []
+        var shared: [DroppedItem] = []
+        for item in items {
+            if case let .url(url) = item, url.isFileURL { fileURLs.append(url) } else { shared.append(item) }
+        }
+        sendNotes = fileURLs.isEmpty ? [] : send(fileURLs: fileURLs)
+        guard canShare, !shared.isEmpty else { return !fileURLs.isEmpty }
+        let share = share
+        Task { [weak self] in
+            // In the order dropped.
+            for item in shared {
+                var note: SendNote?
+                switch item {
+                case let .url(url):
+                    await share.sendLink(url)
+                case let .text(text) where text.isEmpty:
+                    note = .nothingToSend
+                case let .text(text):
+                    if let link = LinkRules.link(text) {
+                        await share.sendLink(link)
+                    } else {
+                        note = SendNote(await share.sendText(text), fromClipboard: false)
+                    }
+                }
+                if let note, let self, !self.sendNotes.contains(note) { self.sendNotes.append(note) }
+            }
+        }
+        return true
+    }
+
+    /// Sends the files among `urls`; returns why some did not go.
+    private func send(fileURLs urls: [URL]) -> [SendNote] {
+        let split = SendableFiles.split(urls)
+        var notes: [SendNote] = split.skipped > 0 ? [.folders] : []
+        if !split.files.isEmpty {
+            if canSendFiles {
+                transfers.send(files: split.files)
+            } else if isConnected {
+                notes.append(.filesOff)
+            } else {
+                notes.append(.notConnected)
+            }
+        }
+        return notes
     }
 
     /// The "Send Mac clipboard to the phone" switch in Settings.
@@ -409,6 +474,7 @@ final class AppModel {
             pairingDeadline = nil
             refreshPhones()
         case let .connected(phone, shared):
+            sendNotes = []
             phoneStatus.reset() // never show the previous session's values
             ring.clearHint()
             notifyWork.handle(event)
@@ -417,6 +483,7 @@ final class AppModel {
             Self.debugLine("connected \(phone.name) shared=\(shared.sorted())")
             #endif
         case let .disconnected(phone):
+            sendNotes = []
             phoneStatus.reset()
             ring.reset()
             notifyWork.handle(event)
@@ -480,5 +547,39 @@ final class AppModel {
 
     private func refreshPhones() {
         pairedPhones = (try? phoneStore.all()) ?? []
+    }
+}
+
+/// Why something the user sent did not (all) go.
+enum SendNote: Equatable {
+    /// Folders and packages are not sent.
+    case folders
+    /// Files were dropped, but the phone does not take files.
+    case filesOff
+    case clipboardEmpty
+    /// Empty text was dropped.
+    case nothingToSend
+    case tooLarge
+    case notConnected
+
+    /// The note for a text send's outcome; nil when it went.
+    init?(_ outcome: ClipboardSendOutcome, fromClipboard: Bool) {
+        switch outcome {
+        case .sent: return nil
+        case .empty: self = fromClipboard ? .clipboardEmpty : .nothingToSend
+        case .tooLarge: self = .tooLarge
+        case .notConnected: self = .notConnected
+        }
+    }
+
+    var text: LocalizedStringResource {
+        switch self {
+        case .folders: "Folders can't be sent yet. Send the files inside instead."
+        case .filesOff: "Turn on file sharing in the phone app."
+        case .clipboardEmpty: "The clipboard is empty."
+        case .nothingToSend: "Nothing to send."
+        case .tooLarge: "The text is too long to send."
+        case .notConnected: "Your phone isn't connected. Nothing was sent."
+        }
     }
 }

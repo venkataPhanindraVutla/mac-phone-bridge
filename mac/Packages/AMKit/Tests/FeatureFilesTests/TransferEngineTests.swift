@@ -1022,7 +1022,7 @@ extension Data {
     await r.deliver(.filesOffer, r.offer("t2", size: 10, requestID: 77))
     try await until("rejects") { r.sent.of(.filesReject, AMTransferReject.self).count == 2 }
     #expect(r.engine.transfers.isEmpty)
-    #expect(r.engine.lastFailure == nil)
+    #expect(r.engine.lastFailure(.receive) == nil)
     // Still reported to whoever watches endings.
     #expect(r.finished.map(\.item.id) == ["t1", "t2"])
     #expect(r.finished.map(\.item.state) == [.failed(.disabled), .failed(.denied)])
@@ -1032,7 +1032,7 @@ extension Data {
     r.free = 0
     await r.deliver(.filesOffer, r.offer("t3", size: 10))
     try await until("no space") { r.item("t3")?.state == .failed(.noSpace) }
-    #expect(r.engine.lastFailure?.id == "t3")
+    #expect(r.engine.lastFailure(.receive)?.newest.id == "t3")
 }
 
 @MainActor @Test func lastFailureStaysUntilNextTransferStarts() async throws {
@@ -1044,27 +1044,103 @@ extension Data {
     try await until("first offer") { r.sent.of(.filesOffer, AMTransferOffer.self).count == 1 }
     var reject = AMTransferReject(); reject.transferID = "m1"; reject.reason = .noSpace
     await r.deliver(.filesReject, reject)
-    #expect(r.engine.lastFailure?.id == "m1")
-    #expect(r.engine.lastFailure?.state == .failed(.noSpace))
+    #expect(r.engine.lastFailure(.send)?.newest.id == "m1")
+    #expect(r.engine.lastFailure(.send)?.newest.state == .failed(.noSpace))
+    #expect(r.engine.lastFailure(.send)?.count == 1)
     // The rest of the same batch going on does not hide it.
     try await until("second offer") { r.item("m2")?.state == .waiting }
-    #expect(r.engine.lastFailure?.id == "m1")
+    #expect(r.engine.lastFailure(.send)?.newest.id == "m1")
 
     // The user cancelling is not a failure to report.
     r.engine.cancel("m2")
     #expect(r.item("m2")?.state == .cancelled)
-    #expect(r.engine.lastFailure?.id == "m1")
+    #expect(r.engine.lastFailure(.send)?.count == 1)
 
-    // The phone cancelling is.
+    // A phone offer (a screenshot, say) is the other direction: "Couldn't send" stays.
+    await r.deliver(.filesOffer, r.offer("t1", size: 10))
+    #expect(r.engine.lastFailure(.send)?.newest.id == "m1")
+
+    // A new send clears it; the phone cancelling that one is a failure again.
     _ = r.engine.send(files: [a])
-    #expect(r.engine.lastFailure == nil)
+    #expect(r.engine.lastFailure(.send) == nil)
     try await until("third offer") { r.item("m3")?.state == .waiting }
     var cancel = AMTransferCancel(); cancel.transferID = "m3"
     await r.deliver(.filesCancel, cancel)
-    #expect(r.engine.lastFailure?.id == "m3")
-    #expect(r.engine.lastFailure?.state == .cancelled)
+    #expect(r.engine.lastFailure(.send)?.newest.id == "m3")
+    #expect(r.engine.lastFailure(.send)?.newest.state == .cancelled)
+    #expect(r.engine.lastFailure(.receive) == nil)
+}
 
-    // A phone offer is a new transfer too.
-    await r.deliver(.filesOffer, r.offer("t1", size: 10))
-    #expect(r.engine.lastFailure == nil)
+@MainActor @Test func lastFailureCountsTheBatch() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let files = try (1...3).map { try r.write(randomBytes(10), as: "f\($0).txt") }
+    _ = r.engine.send(files: files)
+    try await until("first offer") { r.item("m1")?.state == .waiting }
+    var reject = AMTransferReject(); reject.transferID = "m1"; reject.reason = .noSpace
+    await r.deliver(.filesReject, reject)
+    try await until("second offer") { r.item("m2")?.state == .waiting }
+    reject.transferID = "m2"
+    await r.deliver(.filesReject, reject)
+    #expect(r.engine.lastFailure(.send)?.count == 2)
+    #expect(r.engine.lastFailure(.send)?.newest.id == "m2")
+    #expect(r.engine.lastFailure(.send)?.sameReason == true)
+    // The connection going takes the third: three failed, for two reasons.
+    r.engine.disconnected()
+    #expect(r.engine.lastFailure(.send)?.count == 3)
+    #expect(r.engine.lastFailure(.send)?.newest.state == .failed(.interrupted))
+    #expect(r.engine.lastFailure(.send)?.sameReason == false)
+}
+
+@MainActor @Test func targetedSendsAreMarked() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["files.v1", "browse.v1"])
+    let plain = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")])
+    var target = AMBrowseTarget()
+    target.rootID = "r1"
+    let write = r.engine.send(files: [try r.write(randomBytes(10), as: "b.txt")], target: target)
+    #expect(r.item(plain[0])?.targeted == false)
+    #expect(r.item(write[0])?.targeted == true)
+}
+
+private func item(_ id: String, _ direction: TransferItem.Direction, _ state: TransferItem.State) -> TransferItem {
+    TransferItem(id: id, direction: direction, name: id, size: 10, kind: .file, state: state)
+}
+
+@Test func menuShowsActivePerDirectionAndWaitingCount() {
+    // Nothing under way: no lines. Finished ones are never in the menu.
+    #expect(TransferMenu.lines([]).isEmpty)
+    #expect(TransferMenu.lines([item("d", .send, .done(nil)), item("f", .receive, .failed(.io))]).isEmpty)
+
+    // One per direction, sends first, with how many more wait behind it.
+    let lines = TransferMenu.lines([
+        item("r1", .receive, .active), item("s1", .send, .active), item("s2", .send, .queued),
+        item("r2", .receive, .queued), item("s3", .send, .queued), item("s0", .send, .done(nil)),
+    ])
+    #expect(lines.map(\.item.id) == ["s1", "r1"])
+    #expect(lines.map(\.waiting) == [2, 1])
+
+    // The one under way is shown even when it is not first in the list.
+    let waiting = TransferMenu.lines([item("s1", .send, .queued), item("s2", .send, .waiting)])
+    #expect(waiting.map(\.item.id) == ["s2"])
+    #expect(waiting.map(\.waiting) == [1])
+
+    // Only queued ones (between two transfers): the first of them.
+    let queued = TransferMenu.lines([item("r1", .receive, .queued), item("r2", .receive, .queued)])
+    #expect(queued.map(\.item.id) == ["r1"])
+    #expect(queued.map(\.waiting) == [1])
+}
+
+@Test func sendableFilesSkipFoldersAndPackages() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-sendable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let fm = FileManager.default
+    try fm.createDirectory(at: dir.appendingPathComponent("Folder"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: dir.appendingPathComponent("Notes.rtfd"), withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
+    try fm.createSymbolicLink(at: dir.appendingPathComponent("link"), withDestinationURL: dir.appendingPathComponent("Folder"))
+    let urls = ["a.txt", "Folder", "Notes.rtfd", "link"].map { dir.appendingPathComponent($0) }
+    let split = SendableFiles.split(urls)
+    #expect(split.files.map(\.lastPathComponent) == ["a.txt"])
+    #expect(split.skipped == 3)
 }

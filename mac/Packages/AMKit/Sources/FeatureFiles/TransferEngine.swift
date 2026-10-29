@@ -42,9 +42,11 @@ public final class TransferEngine: SessionFeature {
     /// Transfers the Mac refused on its own (a feature off, an answer to no request) are not
     /// listed: the user did not start them and cannot act on them.
     public private(set) var transfers: [TransferItem] = []
-    /// The newest listed transfer that failed, or that the phone cancelled, until the next
-    /// transfer is queued. The user's own cancels do not count.
-    public private(set) var lastFailure: TransferItem?
+    /// Listed sends that failed, or that the phone cancelled, since the last send was queued.
+    /// The user's own cancels do not count. See `lastFailure(_:)`.
+    public private(set) var lastSendFailure: TransferFailureSummary?
+    /// The same for receives; only a new receive clears it.
+    public private(set) var lastReceiveFailure: TransferFailureSummary?
 
     /// Called once for every transfer that ends (done, failed or cancelled), with where a
     /// received file was saved. Check `item.state`. `item.name` is the sanitized name; the
@@ -181,7 +183,7 @@ public final class TransferEngine: SessionFeature {
     @discardableResult
     public func send(files: [URL], target: AMBrowseTarget? = nil) -> [String] {
         var ids: [String] = []
-        if !files.isEmpty { lastFailure = nil }
+        if !files.isEmpty { lastSendFailure = nil }
         for url in files {
             var id = newID()
             // IDs stay unique among live transfers, so a phone message names one transfer only.
@@ -194,14 +196,14 @@ public final class TransferEngine: SessionFeature {
             if let target { offer.target = target }
             guard isConnected, shared.contains(target == nil ? "files.v1" : "browse.v1") else {
                 let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
-                                        state: .failed(.interrupted))
+                                        state: .failed(.interrupted), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: no phone takes files")
                 record(item, offer: offer, url: nil, deferred: true)
                 continue
             }
             guard let source = Self.source(url) else {
                 let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
-                                        state: .failed(.io))
+                                        state: .failed(.io), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: IO")
                 record(item, offer: offer, url: nil, deferred: true)
                 continue
@@ -210,12 +212,18 @@ public final class TransferEngine: SessionFeature {
             offer.mime = source.mime
             offer.modifiedMs = source.modifiedMs
             let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: .file,
-                                    state: .queued)
+                                    state: .queued, targeted: target != nil)
             jobs.append(Job(item: item, offer: offer, source: url))
         }
         publish()
         pump()
         return ids
+    }
+
+    /// What the menu's failure line shows for `direction`; nil when nothing failed since the
+    /// last transfer in that direction was queued.
+    public func lastFailure(_ direction: TransferItem.Direction) -> TransferFailureSummary? {
+        direction == .send ? lastSendFailure : lastReceiveFailure
     }
 
     /// A new ID for a Mac request (photos, browse), shared by every feature.
@@ -382,7 +390,7 @@ public final class TransferEngine: SessionFeature {
             finish(job, .failed(reason), notice: .reject(reason), listed: false)
             return
         }
-        lastFailure = nil
+        lastReceiveFailure = nil
         publish()
         pump()
     }
@@ -626,9 +634,15 @@ public final class TransferEngine: SessionFeature {
         if listed {
             finished.insert(item, at: 0)
             if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
+            let failed: Bool
             switch item.state {
-            case .failed, .cancelled: if !byUser { lastFailure = item }
-            case .queued, .waiting, .active, .done: break
+            case .failed, .cancelled: failed = !byUser
+            case .queued, .waiting, .active, .done: failed = false
+            }
+            if failed, item.direction == .send {
+                lastSendFailure = lastSendFailure?.adding(item) ?? TransferFailureSummary(newest: item)
+            } else if failed {
+                lastReceiveFailure = lastReceiveFailure?.adding(item) ?? TransferFailureSummary(newest: item)
             }
         }
         publish()

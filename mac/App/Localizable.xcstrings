@@ -1321,6 +1321,94 @@
           }
         }
       }
+    },
+    "%lld more waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld more waiting"
+          }
+        }
+      }
+    },
+    "Couldn't send %lld files.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't send %lld files."
+          }
+        }
+      }
+    },
+    "Couldn't receive %lld files.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't receive %lld files."
+          }
+        }
+      }
+    },
+    "Turn on file sharing in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on file sharing in the phone app."
+          }
+        }
+      }
+    },
+    "Turn on file browsing in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on file browsing in the phone app."
+          }
+        }
+      }
+    },
+    "Nothing to send.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing to send."
+          }
+        }
+      }
+    },
+    "Waiting to send %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting to send %@"
+          }
+        }
+      }
+    },
+    "Waiting to receive %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting to receive %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

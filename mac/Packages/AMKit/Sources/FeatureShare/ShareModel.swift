@@ -22,15 +22,15 @@ public final class ShareModel: SessionFeature {
     /// How much of shared text the notification shows, in characters.
     public static let bodyCharacters = 200
 
-    /// How the last explicit text send ended; nil before the first one of this connection.
-    public private(set) var lastOutcome: ClipboardSendOutcome?
-
     @ObservationIgnored private let clipboard: ClipboardModel
     @ObservationIgnored private let presenter: any NotificationPresenter
     @ObservationIgnored private let openURL: (URL) -> Void
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
     /// The phone in session, while it shares `share.v1`.
     @ObservationIgnored private var phone: (id: String, name: String)?
+    /// Whether this session already asked for notification permission. A phone without
+    /// `notify.v1` never gets the notifications model to ask.
+    @ObservationIgnored private var askedForNotifications = false
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "share")
 
     public init(clipboard: ClipboardModel, presenter: any NotificationPresenter, openURL: @escaping (URL) -> Void,
@@ -44,19 +44,19 @@ public final class ShareModel: SessionFeature {
     // MARK: SessionFeature
 
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
-        lastOutcome = nil
         phone = shared.contains("share.v1") ? (phoneID, phoneName) : nil
+        askedForNotifications = false
     }
 
     public func disconnected() {
         phone = nil
-        lastOutcome = nil
     }
 
     public func message(_ envelope: AMEnvelope) async {
         guard phone != nil else { return }
         switch MessageType(rawValue: envelope.type) {
         case .shareLink:
+            askForNotificationsOnce()
             guard let m = try? AMSharedLink(serializedBytes: envelope.payload) else { return }
             if let url = LinkRules.link(m.url) {
                 openURL(url)
@@ -64,6 +64,7 @@ public final class ShareModel: SessionFeature {
                 await received(text: m.url)
             }
         case .shareText:
+            askForNotificationsOnce()
             if let m = try? AMSharedText(serializedBytes: envelope.payload) { await received(text: m.text) }
         default:
             break
@@ -80,7 +81,6 @@ public final class ShareModel: SessionFeature {
         if let link = LinkRules.link(url.absoluteString) {
             var m = AMSharedLink()
             m.url = link.absoluteString
-            lastOutcome = .sent
             await send(.shareLink, m)
         } else {
             _ = await sendText(url.absoluteString)
@@ -90,36 +90,34 @@ public final class ShareModel: SessionFeature {
     /// Sends `text` as `share.text`; the phone puts it on its clipboard.
     @discardableResult
     public func sendText(_ text: String) async -> ClipboardSendOutcome {
-        let outcome: ClipboardSendOutcome
-        if phone == nil {
-            outcome = .notConnected
-        } else if text.isEmpty {
-            outcome = .empty
-        } else if text.utf8.count > ClipboardModel.maxBytes {
-            outcome = .tooLarge
-        } else {
-            // The phone will have it: copying it again on the Mac must not send it back.
-            clipboard.noteSentToPhone(text)
-            var m = AMSharedText()
-            m.text = text
-            await send(.shareText, m)
-            outcome = .sent
-        }
-        lastOutcome = outcome
-        return outcome
+        guard phone != nil else { return .notConnected }
+        guard !text.isEmpty else { return .empty }
+        guard text.utf8.count <= ClipboardModel.maxBytes else { return .tooLarge }
+        // The phone will have it: copying it again on the Mac must not send it back.
+        clipboard.noteSentToPhone(text)
+        var m = AMSharedText()
+        m.text = text
+        await send(.shareText, m)
+        return .sent
     }
 
     /// "Send Clipboard to Phone": the pasteboard's text, whatever its types (the user asked).
     @discardableResult
     public func sendClipboard() async -> ClipboardSendOutcome {
-        guard phone != nil else {
-            lastOutcome = .notConnected
-            return .notConnected
-        }
+        guard phone != nil else { return .notConnected }
         return await sendText(clipboard.currentText() ?? "")
     }
 
     // MARK: from the phone
+
+    /// Asks for notification permission the first time this session shares something, without
+    /// holding up the message (the first notification may be shown before the answer).
+    private func askForNotificationsOnce() {
+        guard !askedForNotifications else { return }
+        askedForNotifications = true
+        let presenter = presenter
+        Task { _ = await presenter.authorize() }
+    }
 
     private func received(text: String) async {
         guard let phone, !text.isEmpty else { return }

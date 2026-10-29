@@ -114,24 +114,30 @@ struct MenuContent: View {
                 .accessibilityLabel(Text("Send File to Phone"))
         }
         if model.canShare {
-            Button("Send Clipboard to Phone") { Task { await model.share.sendClipboard() } }
+            Button("Send Clipboard to Phone") { Task { await model.sendClipboard() } }
                 .accessibilityLabel(Text("Send Clipboard to Phone"))
-            if let note = TransferText.note(model.share.lastOutcome) {
-                Text(note)
-            }
         }
-        ForEach(model.transfers.transfers.filter { !$0.isFinal }) { item in
+        ForEach(model.sendNotes, id: \.self) { note in
+            Text(note.text)
+        }
+        // At most one line per direction (R11); the Send tab has the full list.
+        ForEach(TransferMenu.lines(model.transfers.transfers), id: \.item.id) { line in
             Menu {
-                Button("Cancel") { model.transfers.cancel(item.id) }
-                    .accessibilityLabel(Text(TransferText.cancelLabel(item)))
+                Button("Cancel") { model.transfers.cancel(line.item.id) }
+                    .accessibilityLabel(Text(TransferText.cancelLabel(line.item)))
             } label: {
-                Text(TransferText.title(item))
+                Text(TransferText.title(line.item))
+            }
+            if line.waiting > 0 {
+                Text("\(line.waiting) more waiting")
             }
         }
-        if let failure = model.transfers.lastFailure {
-            Text(TransferText.title(failure))
-            if let reason = TransferText.reason(failure) {
-                Text(reason)
+        ForEach([TransferItem.Direction.send, .receive], id: \.self) { direction in
+            if let failure = model.transfers.lastFailure(direction) {
+                Text(TransferText.failureTitle(failure))
+                if let reason = TransferText.failureReason(failure) {
+                    Text(reason)
+                }
             }
         }
     }

@@ -1,5 +1,4 @@
 import AMProtocol
-import FeatureClipboard
 import FeatureFiles
 import FeatureShare
 import SwiftUI
@@ -9,25 +8,20 @@ import UniformTypeIdentifiers
 struct SendTab: View {
     let model: AppModel
     @State private var targeted = false
-    @State private var folderDropped = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.isConnected, let phone = model.currentPhone, model.canSendFiles || model.canShare {
                 dropZone(phone: phone.name)
-                if folderDropped {
-                    Text("Folders can't be sent yet. Send the files inside instead.")
-                        .foregroundStyle(.secondary)
-                }
-                if let note = TransferText.note(model.share.lastOutcome) {
-                    Text(note).foregroundStyle(.secondary)
+                ForEach(model.sendNotes, id: \.self) { note in
+                    Text(note.text).foregroundStyle(.secondary)
                 }
                 HStack {
                     if model.canSendFiles {
                         Button("Send File to Phone…") { model.chooseFilesToSend() }
                     }
                     if model.canShare {
-                        Button("Send Clipboard to Phone") { Task { await model.share.sendClipboard() } }
+                        Button("Send Clipboard to Phone") { Task { await model.sendClipboard() } }
                     }
                 }
             } else {
@@ -37,7 +31,6 @@ struct SendTab: View {
             transferList
         }
         .padding(.top, 8)
-        .onChange(of: model.isConnected) { folderDropped = false }
     }
 
     private func dropZone(phone: String) -> some View {
@@ -54,7 +47,7 @@ struct SendTab: View {
             .frame(minHeight: 140)
             .accessibilityElement(children: .combine)
             .dropDestination(for: DroppedItem.self) { items, _ in
-                drop(items)
+                model.drop(items)
             } isTargeted: { targeted = $0 }
     }
 
@@ -68,49 +61,6 @@ struct SendTab: View {
         } else {
             Spacer(minLength: 0)
         }
-    }
-
-    /// Files go to the transfer engine, a web link as `share.link`, anything else as `share.text`.
-    /// Folders are not sent, nor anything the phone does not share a feature for.
-    private func drop(_ items: [DroppedItem]) -> Bool {
-        guard model.isConnected else { return false }
-        var files: [URL] = []
-        var shared: [DroppedItem] = []
-        var folder = false
-        for item in items {
-            switch item {
-            case let .url(url) where url.isFileURL:
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-                    folder = true
-                } else {
-                    files.append(url)
-                }
-            case .url, .text:
-                shared.append(item)
-            }
-        }
-        folderDropped = folder
-        var taken = folder
-        if model.canSendFiles, !files.isEmpty {
-            model.transfers.send(files: files)
-            taken = true
-        }
-        if model.canShare, !shared.isEmpty {
-            let share = model.share
-            Task {
-                // In the order dropped.
-                for item in shared {
-                    switch item {
-                    case let .url(url):
-                        await share.sendLink(url)
-                    case let .text(text):
-                        if let link = LinkRules.link(text) { await share.sendLink(link) } else { await share.sendText(text) }
-                    }
-                }
-            }
-            taken = true
-        }
-        return taken
     }
 }
 
@@ -136,7 +86,7 @@ struct TransferRow: View {
                 Text(TransferText.title(item))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if !item.isFinal {
+                if !item.isFinal, item.state != .queued {
                     ProgressView(value: TransferText.fraction(item))
                         .accessibilityHidden(true)
                 } else if let reason = TransferText.reason(item) {
@@ -169,9 +119,13 @@ enum TransferText {
     static func title(_ item: TransferItem) -> LocalizedStringResource {
         let name = item.name
         switch (item.state, item.direction) {
-        case (.queued, .send), (.waiting, .send), (.active, .send):
+        case (.queued, .send):
+            return "Waiting to send \(name)"
+        case (.queued, .receive):
+            return "Waiting to receive \(name)"
+        case (.waiting, .send), (.active, .send):
             return "Sending \(name) · \(percent(item))%"
-        case (.queued, .receive), (.waiting, .receive), (.active, .receive):
+        case (.waiting, .receive), (.active, .receive):
             return "Receiving \(name) · \(percent(item))%"
         case (.done, .send):
             return "Sent \(name)"
@@ -182,6 +136,18 @@ enum TransferText {
         case (.failed, .receive), (.cancelled, .receive):
             return "Couldn't receive \(name)."
         }
+    }
+
+    /// The menu's failure line: one file by name, several by count.
+    static func failureTitle(_ failure: TransferFailureSummary) -> LocalizedStringResource {
+        guard failure.count > 1 else { return title(failure.newest) }
+        return failure.newest.direction == .send
+            ? "Couldn't send \(failure.count) files." : "Couldn't receive \(failure.count) files."
+    }
+
+    /// The reason under the failure line; nil when the files failed for different reasons.
+    static func failureReason(_ failure: TransferFailureSummary) -> LocalizedStringResource? {
+        failure.sameReason ? reason(failure.newest) : nil
     }
 
     /// Why a transfer did not finish; nil while under way or once done.
@@ -199,6 +165,9 @@ enum TransferText {
             case .timedOut: return "The phone didn't answer."
             case .io: return "The file couldn't be read or saved."
             case .notFound: return "The file is no longer there."
+            case .disabled where sending:
+                // The phone's switch for this is off.
+                return item.targeted ? "Turn on file browsing in the phone app." : "Turn on file sharing in the phone app."
             case .unspecified, .denied, .disabled, .badTarget, .UNRECOGNIZED:
                 return sending ? "The phone didn't take the file." : "This Mac can't take this file."
             }
@@ -207,14 +176,5 @@ enum TransferText {
 
     static func cancelLabel(_ item: TransferItem) -> LocalizedStringResource {
         item.direction == .send ? "Cancel sending \(item.name)" : "Cancel receiving \(item.name)"
-    }
-
-    /// Why an explicit send of text did not go; nil when it went (or none was tried).
-    static func note(_ outcome: ClipboardSendOutcome?) -> LocalizedStringResource? {
-        switch outcome {
-        case .empty: "The clipboard is empty."
-        case .tooLarge: "The text is too long to send."
-        case .sent, .notConnected, nil: nil
-        }
     }
 }
