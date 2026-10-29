@@ -4,6 +4,7 @@ import AppSession
 import ConnectionCore
 import CryptoKit
 import FeatureCalls
+import FeatureClipboard
 import FeatureContacts
 import FeatureFind
 import FeatureNotify
@@ -17,7 +18,7 @@ import os
 @MainActor
 @Observable
 final class AppModel {
-    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1"]
+    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1"]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
 
@@ -26,6 +27,7 @@ final class AppModel {
     let ring = RingModel()
     let notifications: NotificationsModel
     let calls: CallModel
+    let clipboard: ClipboardModel
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
     private(set) var showPhoneCalls: Bool = AppModel.savedShowPhoneCalls
     /// Whether phone contacts name callers and notification titles (default on). Turning it off wipes the stores.
@@ -53,8 +55,12 @@ final class AppModel {
     @ObservationIgnored private static let portKey = "listenPort"
     @ObservationIgnored private static let contactsKey = "contactsForNames"
     @ObservationIgnored private static let callsKey = "showPhoneCalls"
+    @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
+    }
+    private static var savedSendMacClipboard: Bool {
+        UserDefaults.standard.object(forKey: clipboardKey) as? Bool ?? true
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
@@ -130,6 +136,16 @@ final class AppModel {
         )
         self.calls = calls
         notifyWork = NotifyWorkQueue(notifications: model, calls: calls, contacts: contacts)
+        let clipboard = ClipboardModel(
+            pasteboard: SystemPasteboard(), sendEnabled: Self.savedSendMacClipboard,
+            send: { type, message in
+                // Only a phone that shares clipboard.v1 gets clipboard messages.
+                guard server.activePhone?.shared.contains("clipboard.v1") == true else { return }
+                try? await server.send(type, message, channel: .clipboard)
+            }
+        )
+        self.clipboard = clipboard
+        notifyWork.register(clipboard)
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
@@ -185,6 +201,18 @@ final class AppModel {
 
     /// Phone calls are offered only while the connected phone shares `calls.v1`.
     var canCall: Bool { server.activePhone?.shared.contains("calls.v1") ?? false }
+
+    /// Clipboard sync runs only while the connected phone shares `clipboard.v1`.
+    var canClipboard: Bool { server.activePhone?.shared.contains("clipboard.v1") ?? false }
+
+    /// The "Send Mac clipboard to the phone" switch in Settings.
+    var sendMacClipboard: Bool { clipboard.sendEnabled }
+
+    func setSendMacClipboard(_ on: Bool) {
+        guard on != clipboard.sendEnabled else { return }
+        clipboard.sendEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.clipboardKey)
+    }
 
     /// The "Show phone calls" switch in Settings.
     func setShowPhoneCalls(_ on: Bool) {

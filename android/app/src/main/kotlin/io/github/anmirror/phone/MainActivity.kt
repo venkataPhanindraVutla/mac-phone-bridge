@@ -86,6 +86,7 @@ private fun AppRoot(graph: AppGraph) {
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
     val callsPermissions by graph.callsPermissions.collectAsStateWithLifecycle()
+    val clipboardOn by graph.clipboardOn.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -122,6 +123,8 @@ private fun AppRoot(graph: AppGraph) {
                         callsGranted = callsPermissions.phoneState,
                         onCallsToggle = graph::setCallsOn,
                         onCallsPermissionResult = graph::refreshCallsPermissions,
+                        clipboardOn = clipboardOn,
+                        onClipboardToggle = graph::setClipboardOn,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

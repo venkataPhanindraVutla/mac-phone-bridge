@@ -64,6 +64,7 @@ dependencies {
     implementation(project(":feature:notify"))
     implementation(project(":feature:contacts"))
     implementation(project(":feature:calls"))
+    implementation(project(":feature:clipboard"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 

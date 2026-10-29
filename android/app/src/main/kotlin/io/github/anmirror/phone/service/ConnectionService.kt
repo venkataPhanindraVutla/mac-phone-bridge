@@ -29,11 +29,13 @@ import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
 import io.github.anmirror.phone.answerInvoke
+import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
+import io.github.anmirror.phone.share.ClipboardSendActivity
 import io.github.anmirror.connection.PhoneConnectionState.Connected
 import io.github.anmirror.feature.calls.AndroidCallStateSource
 import io.github.anmirror.feature.calls.AndroidMicMute
@@ -54,6 +56,7 @@ import io.github.anmirror.protocol.v1.CallCommand
 import io.github.anmirror.protocol.v1.CallCommandOutcome
 import io.github.anmirror.protocol.v1.CallCommandResult
 import io.github.anmirror.protocol.v1.Channel
+import io.github.anmirror.protocol.v1.ClipboardText
 import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.IconRequest
@@ -82,6 +85,8 @@ class ConnectionService : LifecycleService() {
     private var lastText: String? = null
     private lateinit var ring: RingController
     private var lastNotifyEnabled: Boolean? = null
+    /** Whether the persistent notification carries "Send clipboard": connected, shared and on. */
+    private var clipboardAction = false
 
     override fun onCreate() {
         super.onCreate()
@@ -102,6 +107,7 @@ class ConnectionService : LifecycleService() {
         setUpNotifications()
         setUpContacts()
         setUpCalls()
+        setUpClipboard()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -343,6 +349,38 @@ class ConnectionService : LifecycleService() {
         send = { type, payload -> graph.sendCalls(type, payload) },
     )
 
+    /**
+     * Clipboard: the Mac's `clipboard.text` is written only while [AppGraph.clipboardOpen]; the
+     * phone sends only on an explicit trigger (tile, notification action, share target), each of
+     * which opens [ClipboardSendActivity]. `clipboard.availability` is sent regardless, while the
+     * Mac shares clipboard.v1. No permission is involved.
+     */
+    private fun setUpClipboard() {
+        graph.manager.on(MessageType.CLIPBOARD_TEXT) { env ->
+            val text = ClipboardText.parseFrom(env.payload)
+            if (graph.clipboardOpen()) graph.clipboard.onMacText(text)
+        }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "clipboard.v1" in it.shared }.distinctUntilChanged(),
+                graph.clipboardOn,
+            ) { shared, on -> shared to on }
+                .distinctUntilChanged()
+                .collect { (shared, on) ->
+                    if (shared) {
+                        graph.manager.send(Channel.CHANNEL_CLIPBOARD, MessageType.CLIPBOARD_AVAILABILITY, featureAvailability(granted = true, userOn = on))
+                    }
+                    // Mac text is dropped meanwhile, so what the bridge knows of the Mac's clipboard goes stale.
+                    if (!clipboardTracksMac(shared, on)) graph.clipboard.onDisconnected()
+                    val ready = shared && on
+                    if (ready != clipboardAction) {
+                        clipboardAction = ready
+                        lastText?.let(::update)
+                    }
+                }
+        }
+    }
+
     private var contactsObserver: ContentObserver? = null
     private var contactsDebounce: Job? = null
 
@@ -422,7 +460,7 @@ class ConnectionService : LifecycleService() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(text)
             .setContentIntent(open)
@@ -433,7 +471,16 @@ class ConnectionService : LifecycleService() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .build()
+        if (clipboardAction) {
+            val send = PendingIntent.getActivity(
+                this,
+                2,
+                ClipboardSendActivity.intent(this),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.addAction(0, getString(R.string.notification_send_clipboard), send)
+        }
+        return builder.build()
     }
 
     private fun goForeground(text: String) {

@@ -77,6 +77,10 @@ struct MenuContent: View {
                 Text("Turn on notification access in the phone app.")
             }
         }
+        if model.isConnected, model.canClipboard, let availability = model.clipboard.phoneAvailability,
+           !availability.enabled, availability.reason == .offByUser {
+            Text("Turn on clipboard sharing in the phone app.")
+        }
         if model.isConnected, model.canCall, let call = model.calls.active {
             Text("On a call with \(model.calls.displayName(call)) · \(model.calls.elapsedText ?? "00:00")")
             if call.muteSupported {
