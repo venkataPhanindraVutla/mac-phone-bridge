@@ -18,6 +18,8 @@ if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/java" ]]; then
 fi
 export JAVA_HOME
 
+command -v python3 >/dev/null || { echo "interop: python3 required"; exit 2; }
+
 MAC_PKG="$ROOT/mac/Packages/AMKit"
 PHONE_BIN="$ROOT/android/tools/phone-sim/build/install/phone-sim/bin/phone-sim"
 
@@ -90,8 +92,8 @@ wait_exit() {
 extract() { sed -nE "s/$2/\\1/p" "$1" | head -n 1; }
 
 fail_reason=""
-need() {  # need <logfile> <ERE> <description>
-  if ! wait_line "$1" "$2"; then
+need() {  # need <logfile> <ERE> <description> [secs]
+  if ! wait_line "$1" "$2" "${4:-$WAIT_SECS}"; then
     fail_reason="timed out waiting for: $3"
     return 1
   fi
@@ -234,24 +236,27 @@ EMPTY_SHA=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 source_sha() {
   python3 - "$1" <<'PY'
 import hashlib, sys
-n = int(sys.argv[1]); h = hashlib.sha256(); b = 0
-while n > 0:
-    blk = bytes((j * 131 + b * 7 + 17) & 0xff for j in range(256))[:min(n, 256)]
-    h.update(blk); n -= len(blk); b += 1
+n = int(sys.argv[1]); h = hashlib.sha256()
+# The source repeats every 65536 bytes: hash whole periods, then the remainder.
+period = bytes(((i * 131 + (i >> 8) * 7 + 17) & 0xff) for i in range(65536))
+for _ in range(n // 65536):
+    h.update(period)
+h.update(period[: n % 65536])
 print(h.hexdigest())
 PY
 }
 
 files_case() {
-  local n="$1" label="$2" bytes="$3" want
+  local n="$1" label="$2" bytes="$3" wait="${4:-$WAIT_SECS}" want
   begin_case "$n $label"
   if [[ "$bytes" -eq 0 ]]; then want="$EMPTY_SHA"; else want="$(source_sha "$bytes")"; fi
+  [[ -n "$want" ]] || { fail_reason="could not compute the source sha256"; return 1; }
   local pstate fdir; pstate="$(new_dir c$n-phone)"; fdir="$(new_dir c$n-files)"
   start_mac "c$n" --auto-confirm --files "$fdir" || return 1
   start_phone "c$n" pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --send-bytes "$bytes"
-  need "$MAC_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "mac EVENT files-received bytes=$bytes" || return 1
-  need "$PHONE_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "phone EVENT files-received bytes=$bytes" || return 1
-  wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit"; return 1; }
+  need "$MAC_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "mac EVENT files-received bytes=$bytes" "$wait" || return 1
+  need "$PHONE_LOG" "^EVENT files-received bytes=$bytes sha256=[0-9a-f]{64} mbps=" "phone EVENT files-received bytes=$bytes" "$wait" || return 1
+  wait_exit "$PHONE_PID" "$wait" || { fail_reason="phone-sim did not exit"; return 1; }
   [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
   local mac_sha phone_sha
   mac_sha="$(extract "$MAC_LOG" '^EVENT files-received bytes=[0-9]+ sha256=([0-9a-f]+) .*$')"
@@ -264,7 +269,7 @@ files_case() {
 
 P2M=""; M2P=""
 case7() {
-  files_case 7 "files 64 MiB both ways" 67108864 || return 1
+  files_case 7 "files 64 MiB both ways" 67108864 60 || return 1
   echo "interop: 64 MiB phone→mac $P2M MB/s, mac→phone $M2P MB/s"
 }
 

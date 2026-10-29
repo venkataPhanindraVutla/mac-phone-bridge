@@ -28,7 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -37,6 +37,7 @@ import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Deterministic test bytes: byte i = (i*131 + (i shr 8)*7 + 17) and 0xff. scripts/interop-test.sh recomputes it. */
 internal class SeededInput(private val size: Long) : InputStream() {
@@ -92,6 +93,7 @@ internal class SimTransfers(
     private val port = CompletableDeferred<Int>()
     private val received = ConcurrentHashMap<String, File>()
     private val startedAt = ConcurrentHashMap<String, Long>()
+    private val done = AtomicBoolean(false) // the one result: exit 0 or exit 1, never both
     private val finished = ConcurrentHashMap.newKeySet<String>()
 
     private val engine = TransferEngine(
@@ -110,7 +112,7 @@ internal class SimTransfers(
     )
 
     private suspend fun dial(hello: BulkHello): BulkStream {
-        val p = withTimeout(10_000) { port.await() }
+        val p = withTimeoutOrNull(10_000) { port.await() } ?: throw IOException("no endpoint")
         return BulkConnector(connector).open(channel.host, p, macFingerprintHex, hello)
     }
 
@@ -153,6 +155,12 @@ internal class SimTransfers(
     }
 
     fun onDisconnected() {
+        // The session ended with a transfer unfinished: say so here instead of racing the collector
+        // against scope.cancel(), so phone-sim never exits 0 after a mid-transfer disconnect.
+        if (done.compareAndSet(false, true)) {
+            emit("EVENT files-failed session ended before the transfers completed")
+            onResult(false)
+        }
         engine.onDisconnected()
         scope.cancel()
     }
@@ -163,8 +171,10 @@ internal class SimTransfers(
             if (t.state != TransferState.DONE && t.state != TransferState.FAILED && t.state != TransferState.CANCELLED) continue
             if (!finished.add(t.id)) continue
             if (t.state != TransferState.DONE) {
-                emit("EVENT files-failed ${t.id} ${t.error ?: t.state}")
-                onResult(false)
+                if (done.compareAndSet(false, true)) {
+                    emit("EVENT files-failed ${t.id} ${t.error ?: t.state}")
+                    onResult(false)
+                }
                 return
             }
             if (t.direction == Direction.RECEIVE) {
@@ -176,7 +186,7 @@ internal class SimTransfers(
             } else {
                 emit("EVENT files-sent bytes=${t.size}")
             }
-            if (finished.size == 2) onResult(true)
+            if (finished.size == 2 && done.compareAndSet(false, true)) onResult(true)
         }
     }
 }
