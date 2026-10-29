@@ -19,6 +19,7 @@ rootProject.name = "android-mirroring"
 include(":app")
 include(":core:protocol")
 include(":core:connection")
+include(":core:transfer")
 include(":feature:status")
 include(":feature:find")
 include(":feature:notify")
