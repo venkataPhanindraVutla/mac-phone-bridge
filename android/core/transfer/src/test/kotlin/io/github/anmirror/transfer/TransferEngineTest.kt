@@ -100,10 +100,11 @@ private class ClockedInput(val chunks: Int, val chunk: Int, val clock: AtomicLon
 }
 
 /** Endless zeros, [total] bytes. */
-private class ZeroInput(var left: Long) : InputStream() {
+private class ZeroInput(var left: Long, val clock: AtomicLong? = null, val step: Long = 0) : InputStream() {
     override fun read(): Int = if (left-- > 0) 0 else -1
     override fun read(buf: ByteArray, off: Int, len: Int): Int {
         if (left <= 0) return -1
+        clock?.addAndGet(step)
         val n = minOf(len.toLong(), left).toInt()
         java.util.Arrays.fill(buf, off, off + n, 0)
         left -= n
@@ -133,11 +134,15 @@ private class StreamSource(override val name: String, override val size: Long, v
     override fun open(): InputStream = make()
 }
 
-private class MemSink(val savedName: String = "saved.bin", val out: OutputStream = ByteArrayOutputStream()) : IncomingFile {
+private class MemSink(
+    val savedName: String = "saved.bin",
+    val out: OutputStream = ByteArrayOutputStream(),
+    val commitFails: Boolean = false,
+) : IncomingFile {
     val committed = AtomicBoolean(false)
     val aborted = AtomicBoolean(false)
     override val output: OutputStream get() = out
-    override fun commit(): String { committed.set(true); return savedName }
+    override fun commit(): String { if (commitFails) throw IOException("disk"); committed.set(true); return savedName }
     override fun abort() { aborted.set(true) }
 }
 
@@ -148,6 +153,7 @@ private class Harness(
     val sinkFor: (TransferOffer) -> SinkResult = { SinkResult.Ready(MemSink()) },
     val onSend: (String, MessageLite) -> Unit = { _, _ -> },
     val makeStream: (BulkHello) -> BulkStream = { FakeStream() },
+    val dial: suspend (BulkHello) -> Unit = {},
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val sent = CopyOnWriteArrayList<Pair<String, MessageLite>>()
@@ -163,6 +169,7 @@ private class Harness(
         send = { type, payload -> sent += type to payload; onSend(type, payload); true },
         bulk = { hello ->
             hellos += hello
+            dial(hello)
             val s = makeStream(hello) as FakeStream
             streams += s
             val now = openNow.incrementAndGet()
@@ -544,11 +551,13 @@ class TransferEngineTest {
     fun sizeAbove4GiBIsKept() {
         val big = 5_000_000_000L
         val counted = CountingOutput()
+        val clock = AtomicLong(1_000)
         lateinit var h: Harness
         h = harness(Harness(
+            clock = clock,
             makeStream = { hello ->
                 if (hello.role == BulkRole.BULK_ROLE_PHONE_SENDS) FakeStream(output = counted)
-                else FakeStream(input = ZeroInput(big))
+                else FakeStream(input = ZeroInput(big, clock, 300))
             },
             sinkFor = { SinkResult.Ready(MemSink(out = CountingOutput())) },
             onSend = { type, p ->
@@ -580,6 +589,9 @@ class TransferEngineTest {
         h.awaitState("m1", TransferState.DONE, 120_000)
         assertEquals(big, h.status("m1").size)
         assertEquals(big, h.status("m1").done)
+        val maxProgress = h.sent.filter { it.first == MessageType.FILES_PROGRESS }
+            .maxOf { (it.second as io.github.anmirror.protocol.v1.TransferProgress).bytesDone }
+        assertTrue(maxProgress > (1L shl 32), "progress above 2^32 expected, got $maxProgress")
     }
 
     private fun Harness.offersSent() = sent.filter { it.first == MessageType.FILES_OFFER }.map { it.second as TransferOffer }
@@ -612,5 +624,68 @@ class TransferEngineTest {
         assertTrue(h.deliver(MessageType.FILES_CANCEL, TransferCancel.newBuilder().setTransferId("nope").build()))
         assertTrue(h.engine.transfers.value.isEmpty())
         assertNull(h.engine.transfers.value.firstOrNull())
+    }
+
+    @Test
+    fun commitThrowsAbortsSink() {
+        val data = Random(6).nextBytes(1_000)
+        val sink = MemSink(commitFails = true)
+        val h = harness(Harness(sinkFor = { SinkResult.Ready(sink) }, makeStream = { FakeStream(input = ByteArrayInputStream(data)) }))
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", data.size.toLong()))
+        h.deliver(MessageType.FILES_COMPLETE, h.complete("m1", sha(data)))
+        h.awaitState("m1", TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_IO, h.status("m1").error)
+        assertTrue(sink.aborted.get())
+        assertEquals(TransferError.TRANSFER_ERROR_IO, h.last<TransferFailed>(MessageType.FILES_FAILED).reason)
+        assertFalse(MessageType.FILES_RECEIVED in h.types())
+    }
+
+    @Test
+    fun cancelDuringDialFailsImmediately() {
+        val h = harness(Harness(dial = { kotlinx.coroutines.awaitCancellation() }))
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000))
+        h.awaitSent(MessageType.FILES_ACCEPT)
+        awaitUntil(5_000, "dialling") { h.hellos.size == 1 }
+        h.engine.cancel("m1")
+        h.awaitState("m1", TransferState.CANCELLED, 3_000) // the stall timeout is 30 s
+        h.awaitSent(MessageType.FILES_CANCEL)
+    }
+
+    @Test
+    fun dialThatThrowsFailsInterrupted() {
+        val sink = MemSink()
+        val h = harness(Harness(sinkFor = { SinkResult.Ready(sink) }, dial = { throw IOException("refused") }))
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000))
+        h.awaitState("m1", TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.status("m1").error)
+        assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.last<TransferFailed>(MessageType.FILES_FAILED).reason)
+        assertTrue(sink.aborted.get())
+    }
+
+    @Test
+    fun slowDialTimesOutAndLateStreamIsClosed() {
+        val h = harness(Harness(
+            timing = TransferTiming(stallTimeoutMs = 100),
+            dial = { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { kotlinx.coroutines.delay(400) } },
+        ))
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000))
+        h.awaitState("m1", TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_TIMED_OUT, h.status("m1").error)
+        awaitUntil(5_000, "late stream closed") { h.streams.size == 1 && h.streams.single().closed.get() }
+    }
+
+    @Test
+    fun throwingSinkOrFreeBytesRejectsWithIo() {
+        val h = harness(Harness(sinkFor = { throw IOException("no storage") }))
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", 10))
+        h.awaitState("m1", TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_IO, h.last<TransferReject>(MessageType.FILES_REJECT).reason)
+        assertFalse(MessageType.FILES_FAILED in h.types())
+
+        val h2 = harness(Harness(free = { throw IllegalStateException("stat") }))
+        h2.deliver(MessageType.FILES_OFFER, h2.offer("m2", 10))
+        h2.awaitState("m2", TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_IO, h2.last<TransferReject>(MessageType.FILES_REJECT).reason)
+        assertFalse(MessageType.FILES_FAILED in h2.types())
     }
 }

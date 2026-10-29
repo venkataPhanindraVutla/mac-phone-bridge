@@ -16,7 +16,10 @@ interface OutgoingFile {
     fun open(): InputStream
 }
 
-/** Where received bytes go. Exactly one of [commit] or [abort] is called. */
+/**
+ * Where received bytes go. Either [commit] or [abort] is called; [abort] is also called after a
+ * [commit] that throws, so a failed commit never leaves a partial file.
+ */
 interface IncomingFile {
     val output: OutputStream
 

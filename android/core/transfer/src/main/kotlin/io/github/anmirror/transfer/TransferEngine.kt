@@ -29,7 +29,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
@@ -88,6 +91,8 @@ class TransferEngine(
         @Volatile var stream: BulkStream? = null
         @Volatile var sink: IncomingFile? = null
         @Volatile var lastTick = 0L
+        @Volatile var lateDial = false
+        val pendingDial = AtomicReference<BulkStream?>(null)
         val concluded = AtomicBoolean(false)
         val sinkClaimed = AtomicBoolean(false)
         val abort = AtomicReference<Abort?>(null)
@@ -95,6 +100,7 @@ class TransferEngine(
         val startedAt = System.nanoTime()
         val reply = CompletableDeferred<Reply>()           // SEND: accept or reject, then received
         val received = CompletableDeferred<Reply>()
+        val interrupted = CompletableDeferred<Unit>()      // completes on interrupt, wakes a dial
         val complete = CompletableDeferred<ByteArray?>()   // RECEIVE: the sender's hash; null when aborted
     }
 
@@ -106,10 +112,10 @@ class TransferEngine(
     /** Active and queued transfers first, then the last 20 finished. */
     val transfers: StateFlow<List<TransferStatus>> = state.asStateFlow()
 
-    private class Job(val x: Xfer, val run: suspend () -> Unit)
+    private class QueuedWork(val x: Xfer, val run: suspend () -> Unit)
 
-    private val sendJobs = Channel<Job>(Channel.UNLIMITED)
-    private val receiveJobs = Channel<Job>(Channel.UNLIMITED)
+    private val sendJobs = Channel<QueuedWork>(Channel.UNLIMITED)
+    private val receiveJobs = Channel<QueuedWork>(Channel.UNLIMITED)
 
     init {
         for (queue in listOf(sendJobs, receiveJobs)) {
@@ -139,7 +145,7 @@ class TransferEngine(
             requestId,
         )
         register(x)
-        sendJobs.trySend(Job(x) { runSend(x, f, kind) })
+        sendJobs.trySend(QueuedWork(x) { runSend(x, f, kind) })
         id
     }
 
@@ -224,7 +230,9 @@ class TransferEngine(
     /** First reason wins: closes the stream and wakes every waiter. */
     private fun interrupt(x: Xfer, reason: TransferError, notify: Notify) {
         if (!x.abort.compareAndSet(null, Abort(reason, notify))) return
-        x.stream?.let { runCatching { it.close() } }
+        // Closing a socket may block: never on the caller's thread (cancel() comes from the UI).
+        x.stream?.let { s -> scope.launch(io) { runCatching { s.close() } } }
+        x.interrupted.complete(Unit)
         x.reply.complete(Reply.Aborted)
         x.received.complete(Reply.Aborted)
         x.complete.complete(null)
@@ -323,17 +331,49 @@ class TransferEngine(
         }
     }
 
-    private suspend fun openBulk(x: Xfer, hello: BulkHello): BulkStream? {
-        val s = try {
-            withTimeoutOrNull(timing.stallTimeoutMs) { bulk.open(hello) }
+    /** The stream, or the failure to report. The dial is cut short by an interrupt or the stall timeout. */
+    private suspend fun openBulk(x: Xfer, hello: BulkHello): Pair<BulkStream?, Outcome.Fail?> {
+        val dial = scope.async {
+            val s = bulk.open(hello)
+            x.pendingDial.set(s)
+            if (x.lateDial) closePendingDial(x) // we gave up while it was dialling
+            s
+        }
+        val won = try {
+            withTimeoutOrNull(timing.stallTimeoutMs) {
+                select<Boolean> {
+                    dial.onAwait { true }
+                    x.interrupted.onAwait { false }
+                }
+            }
         } catch (e: CancellationException) {
+            giveUp(x, dial)
             throw e
         } catch (e: Exception) {
-            return null
-        } ?: return null
+            return null to fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.FAILED)
+        }
+        if (won != true) {
+            giveUp(x, dial)
+            return null to fail(x, TransferError.TRANSFER_ERROR_TIMED_OUT, Notify.FAILED)
+        }
+        val s = x.pendingDial.getAndSet(null)!!
         x.stream = s
-        if (x.abort.get() != null) runCatching { s.close() } // interrupted while dialling
-        return s
+        if (x.abort.get() != null) {
+            runCatching { s.close() }
+            return null to fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.NONE)
+        }
+        return s to null
+    }
+
+    private fun giveUp(x: Xfer, dial: Deferred<BulkStream>) {
+        x.lateDial = true
+        dial.cancel()
+        closePendingDial(x) // whichever of this and the dial body runs second sees the stream
+    }
+
+    private fun closePendingDial(x: Xfer) {
+        val late = x.pendingDial.getAndSet(null) ?: return
+        scope.launch(io) { runCatching { late.close() } }
     }
 
     private fun tick(x: Xfer, done: Long, progress: ((Long) -> Unit)?) {
@@ -369,8 +409,8 @@ class TransferEngine(
         update(x) { it.copy(state = TransferState.ACTIVE) }
 
         val hello = BulkHello.newBuilder().setToken(token).setRole(BulkRole.BULK_ROLE_PHONE_SENDS).build()
-        val stream = openBulk(x, hello)
-            ?: return@run fail(x, TransferError.TRANSFER_ERROR_TIMED_OUT, Notify.FAILED)
+        val (stream, dialFail) = openBulk(x, hello)
+        if (stream == null) return@run dialFail!!
         checkAbortOutcome(x)?.let { return@run it }
 
         val dog = watchdog(x)
@@ -440,7 +480,7 @@ class TransferEngine(
             publish()
         }
         val clean = offer.toBuilder().setName(name).build()
-        receiveJobs.trySend(Job(x) { runReceive(x, clean) })
+        receiveJobs.trySend(QueuedWork(x) { runReceive(x, clean) })
     }
 
     private suspend fun runReceive(x: Xfer, offer: TransferOffer) = run(x) {
@@ -450,12 +490,25 @@ class TransferEngine(
             send(MessageType.FILES_REJECT, TransferReject.newBuilder().setTransferId(x.id).setReason(reason).build())
         }
 
-        val free = withContext(io) { freeBytes(offer) }
+        val free = try {
+            withContext(io) { freeBytes(offer) }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            sendReject(TransferError.TRANSFER_ERROR_IO)
+            return@run reject(TransferError.TRANSFER_ERROR_IO)
+        }
         if (size < 0 || (free != null && size > free - timing.freeMarginBytes)) {
             sendReject(TransferError.TRANSFER_ERROR_NO_SPACE)
             return@run reject(TransferError.TRANSFER_ERROR_NO_SPACE)
         }
-        val sink = when (val r = withContext(io) { sinks.open(offer) }) {
+        val opened = try {
+            withContext(io) { sinks.open(offer) }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            sendReject(TransferError.TRANSFER_ERROR_IO)
+            return@run reject(TransferError.TRANSFER_ERROR_IO)
+        }
+        val sink = when (val r = opened) {
             is SinkResult.Refused -> {
                 sendReject(r.reason)
                 return@run reject(r.reason)
@@ -470,8 +523,8 @@ class TransferEngine(
         update(x) { it.copy(state = TransferState.ACTIVE) }
 
         val hello = BulkHello.newBuilder().setToken(offer.token).setRole(BulkRole.BULK_ROLE_PHONE_RECEIVES).build()
-        val stream = openBulk(x, hello)
-            ?: return@run fail(x, TransferError.TRANSFER_ERROR_TIMED_OUT, Notify.FAILED)
+        val (stream, dialFail) = openBulk(x, hello)
+        if (stream == null) return@run dialFail!!
         checkAbortOutcome(x)?.let { return@run it }
 
         val progress = Channel<Long>(Channel.UNLIMITED)
@@ -481,8 +534,9 @@ class TransferEngine(
             }
         }
         val dog = watchdog(x)
+        var copied = false
         val sha = try {
-            withContext(io) { copyIn(x, stream, sink.output, size) { progress.trySend(it) } }
+            withContext(io) { copyIn(x, stream, sink.output, size) { progress.trySend(it) } }.also { copied = true }
         } catch (e: EarlyEnd) {
             return@run fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.FAILED)
         } catch (e: IOException) {
@@ -494,7 +548,7 @@ class TransferEngine(
         } finally {
             dog.cancel()
             progress.close()
-            if (x.abort.get() != null) reporter.cancel()
+            if (!copied) reporter.cancel() // nothing may follow files.failed
         }
         reporter.join()
         if (hasExtraBytes(stream)) return@run fail(x, TransferError.TRANSFER_ERROR_HASH_MISMATCH, Notify.FAILED)
@@ -510,12 +564,18 @@ class TransferEngine(
             withContext(io) { sink.commit() }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
+            // commit() claimed the sink, so conclude() will not abort it: remove the partial here.
+            withContext(NonCancellable + io) { runCatching { sink.abort() } }
             return@run fail(x, TransferError.TRANSFER_ERROR_IO, Notify.FAILED)
         }
         send(MessageType.FILES_RECEIVED, TransferReceived.newBuilder().setTransferId(x.id).build())
         Outcome.Done(savedAs)
     }
 
+    /**
+     * Best effort: on TLS, `available()` only sees decrypted bytes already buffered, so trailing
+     * bytes still in flight are missed. The SHA-256 comparison is the real integrity check.
+     */
     private fun hasExtraBytes(stream: BulkStream): Boolean =
         try { stream.input.available() > 0 } catch (e: IOException) { false }
 
