@@ -6,12 +6,12 @@
 
 ### What's in 0.3
 
-- **Shared clipboard** for text, both ways. Passwords copied from a password manager are never sent. On the phone: a Quick Settings tile, a notification action and the Share sheet.
-- **Send files and links both ways:** drop files on the Phone window, use "Send File to Phone…" in the menu, or share from the phone to "Send to Mac". Transfers queue, show progress, can be cancelled, and a failed one leaves no partial file. Mac files land in Downloads; phone files land in `Download/Android Mirroring`.
+- **Shared clipboard** for text, both ways. Text that a password manager marks as secret is not sent. On the phone: a Quick Settings tile, a notification action and the Share sheet.
+- **Send files and links both ways:** drop files on the Phone window, use "Send File to Phone…" in the menu, or share from the phone to "Send to Mac". Transfers queue, show progress, can be cancelled, and a failed one is meant to leave no partial file (to be confirmed on devices). Files sent to the Mac land in Downloads; files sent to the phone land in `Download/Android Mirroring`. Links and text arrive as notifications.
 - **Screenshots:** a screenshot taken on the phone arrives on the Mac in your Desktop, Downloads or clipboard, with a notification.
 - **Recent photos:** the newest photos and videos as thumbnails on the Mac; drag them out to Finder or Mail.
 - **Files tab:** browse the phone's files from the Mac's Phone window, download, upload, rename and delete. With All files access (open-source build, Android 11+) or with only the folders you pick.
-- **Full build only:** the phone in Finder's sidebar and "Send to Phone" in the Share menu (see "Full build" below). The Contributor build has the Files tab instead.
+- **Full build only:** the phone in Finder's sidebar (unverified, owner check h3) and "Send to Phone" in the Share menu (see "Full build" below). The Contributor build has the Files tab instead.
 - Still no SMS or MMS access, no account and no cloud. Nothing from the Mac is kept on the phone except files you chose to receive.
 - Known limits, such as no resume and no folder transfers: see [0.3 results](docs/milestones/0.3-results.md#known-limitations-in-03).
 
@@ -116,7 +116,7 @@ To avoid them, sign with a free Personal Team. Copy `mac/Config/Local.xcconfig.e
 
 The build above is the **Contributor build**. It has no extensions and needs no Apple account. The **Full build** adds two extensions:
 
-- **File Provider:** shows the phone in Finder's sidebar once it has connected with file browsing on. The entry stays while the phone is disconnected: Finder then says "Your phone isn't connected." Forgetting the phone removes it.
+- **File Provider:** shows the phone in Finder's sidebar once it has connected with file browsing on. The entry stays while the phone is disconnected: Finder then says "Your phone isn't connected." Forgetting the phone removes it. (Unverified, owner check h3.)
 - **Share:** adds "Send to Phone" to the Share menu.
 
 Both extensions share an App Group with the app, and App Groups need a team. Set `DEVELOPMENT_TEAM` in `mac/Config/Local.xcconfig` as above. A paid team should work, but this is unverified (owner check h1). A free Personal Team may not be able to sign the App Group or the File Provider. If it can't, use the Contributor build: its Files tab in the Phone window does the same browsing.
