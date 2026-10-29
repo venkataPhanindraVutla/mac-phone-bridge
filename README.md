@@ -2,7 +2,18 @@
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
-> **Status: milestone 0.2 is code-complete and being verified on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the Mac menu bar, find my phone), it adds notifications on the Mac with actions and inline reply, one-time-code copy, contacts for caller names, and calls (see, answer, decline, mute and hang up). The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md).
+> **Status: milestone 0.3 is code-complete and being verified on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone) and 0.2 (notifications, one-time codes, contacts, calls), it adds sharing and files: a shared clipboard, files and links both ways, screenshots and recent photos on your Mac, and browsing your phone's files from the Mac. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md).
+
+### What's in 0.3
+
+- **Shared clipboard** for text, both ways. Passwords copied from a password manager are never sent. On the phone: a Quick Settings tile, a notification action and the Share sheet.
+- **Send files and links both ways:** drop files on the Phone window, use "Send File to Phone…" in the menu, or share from the phone to "Send to Mac". Transfers queue, show progress, can be cancelled, and a failed one leaves no partial file. Mac files land in Downloads; phone files land in `Download/Android Mirroring`.
+- **Screenshots:** a screenshot taken on the phone arrives on the Mac in your Desktop, Downloads or clipboard, with a notification.
+- **Recent photos:** the newest photos and videos as thumbnails on the Mac; drag them out to Finder or Mail.
+- **Files tab:** browse the phone's files from the Mac's Phone window, download, upload, rename and delete. With All files access (open-source build, Android 11+) or with only the folders you pick.
+- **Full build only:** the phone in Finder's sidebar and "Send to Phone" in the Share menu (see "Full build" below). The Contributor build has the Files tab instead.
+- Still no SMS or MMS access, no account and no cloud. Nothing from the Mac is kept on the phone except files you chose to receive.
+- Known limits, such as no resume and no folder transfers: see [0.3 results](docs/milestones/0.3-results.md#known-limitations-in-03).
 
 ### What's in 0.2
 
@@ -15,19 +26,19 @@
 ## What it will do (version 1)
 
 - 🔔 **Notifications on your Mac,** with actions and inline reply (in 0.2)
-- 📁 **Files both ways:** drag, Share menu, and your phone in Finder's sidebar
-- 📋 **Shared clipboard** for text
+- 📁 **Files both ways:** drag, Share menu, and your phone in Finder's sidebar (in 0.3)
+- 📋 **Shared clipboard** for text (in 0.3)
 - 📞 **Calls:** see, answer and decline from your Mac (in 0.2)
 - 🎵 **Music controller,** including your Mac's media keys
 - 🖥️ **Screen mirroring with full control:** use WhatsApp and any app with your Mac's keyboard and mouse
 - Also:
   - phone status in the menu bar
   - find my phone
-  - one-time-code copy
-  - Send to Mac / Send to phone
+  - one-time-code copy (in 0.2)
+  - Send to Mac / Send to phone (in 0.3)
   - Do Not Disturb sync
-  - instant screenshots
-  - recent photos
+  - instant screenshots (in 0.3)
+  - recent photos (in 0.3)
   - caller ID
   - auto-lock your Mac when you walk away
   - phone as trackpad / presentation remote
