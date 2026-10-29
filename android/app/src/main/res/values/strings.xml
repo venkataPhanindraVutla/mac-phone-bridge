@@ -84,6 +84,10 @@
 
     <!-- Home: share the clipboard with the Mac -->
     <string name="home_clipboard_title">Share clipboard with your Mac</string>
+    <string name="home_screenshots_title">Send screenshots to your Mac</string>
+    <string name="home_screenshots_partial">With access to only some photos, new screenshots can\'t be found. Allow all photos to send screenshots.</string>
+    <string name="home_screenshots_needs_permission">Android Mirroring needs access to your photos to do this. Allow it in Settings.</string>
+    <string name="home_screenshots_allow">Allow access to all photos</string>
 
     <!-- Clipboard: entry points and outcomes -->
     <string name="tile_send_clipboard">Send clipboard to Mac</string>

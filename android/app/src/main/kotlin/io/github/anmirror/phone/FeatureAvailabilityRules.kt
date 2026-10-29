@@ -17,3 +17,26 @@ fun featureAvailability(granted: Boolean, userOn: Boolean): FeatureAvailability 
     }
     return builder.build()
 }
+
+/** How much of the phone's photos and videos this app may read. */
+enum class MediaAccess {
+    /** All of them: READ_MEDIA_IMAGES (API 33+) or READ_EXTERNAL_STORAGE (up to 32). */
+    FULL,
+
+    /** Only the ones the user picked: READ_MEDIA_VISUAL_USER_SELECTED alone (API 34+). */
+    PARTIAL,
+    NONE,
+}
+
+/**
+ * [featureAvailability] for a feature that reads photos. With [MediaAccess.PARTIAL], a feature
+ * for which the picked photos still work ([partialWorks], photos) is enabled and says so
+ * (`PARTIAL_ACCESS`); one that needs them all (screenshots: new ones can't be found) is not.
+ */
+fun mediaFeatureAvailability(access: MediaAccess, userOn: Boolean, partialWorks: Boolean): FeatureAvailability {
+    if (!userOn || access != MediaAccess.PARTIAL) return featureAvailability(granted = access == MediaAccess.FULL, userOn = userOn)
+    return FeatureAvailability.newBuilder()
+        .setEnabled(partialWorks)
+        .setReason(AvailabilityReason.AVAILABILITY_REASON_PARTIAL_ACCESS)
+        .build()
+}

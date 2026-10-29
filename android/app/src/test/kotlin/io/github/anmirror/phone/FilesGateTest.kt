@@ -29,6 +29,13 @@ class FilesGateTest {
         assertFalse(bulkShared(setOf("clipboard.v1", "share.v1")))
     }
 
+    @Test fun screenshotOfferNeedsScreenshotsOpen() {
+        // files.v1 (or any bulk feature) shared is not enough for a screenshot.
+        assertFalse(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = false))
+        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_SCREENSHOT, screenshotsOpen = true))
+        assertTrue(phoneOfferAllowed(TransferKind.TRANSFER_KIND_FILE, screenshotsOpen = false))
+    }
+
     @Test fun onlyFinishedOrDroppedSharesAreReleased() {
         fun st(id: String, state: TransferState) =
             TransferStatus(id, Direction.SEND, "n", 1, 0, TransferKind.TRANSFER_KIND_FILE, state)

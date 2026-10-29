@@ -82,6 +82,10 @@ struct MenuContent: View {
            !availability.enabled, availability.reason == .offByUser {
             Text("Turn on clipboard sharing in the phone app.")
         }
+        if model.isConnected, model.canScreenshots, let availability = model.screenshots.phoneAvailability,
+           !availability.enabled, availability.reason == .needsPermission || availability.reason == .partialAccess {
+            Text("Turn on screenshots in the phone app.")
+        }
         if model.isConnected {
             sendSection
         }

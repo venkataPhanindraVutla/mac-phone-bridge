@@ -19,7 +19,8 @@ private fun t(
     size: Long = 100,
     error: TransferError? = null,
     savedAs: String? = null,
-) = TransferStatus(id, direction, "$id.bin", size, done, TransferKind.TRANSFER_KIND_FILE, state, error, savedAs)
+    kind: TransferKind = TransferKind.TRANSFER_KIND_FILE,
+) = TransferStatus(id, direction, "$id.bin", size, done, kind, state, error, savedAs)
 
 class TransferNotificationModelTest {
     private val model = TransferNotificationModel()
@@ -126,5 +127,27 @@ class TransferNotificationModelTest {
         val send = views.results.getValue(Direction.SEND)
         assertEquals(1, send.failed)
         assertEquals(TransferError.TRANSFER_ERROR_CANCELLED, send.error)
+    }
+
+    /** R12: background auto-sends (screenshots, photos) never reach the phone's shade. */
+    @Test fun screenshotTransfersAreNotShown() {
+        val background = listOf(TransferKind.TRANSFER_KIND_SCREENSHOT, TransferKind.TRANSFER_KIND_PHOTO)
+        var views = model.update(
+            background.mapIndexed { i, k -> t("s$i", Direction.SEND, TransferState.ACTIVE, done = 10, kind = k) },
+            emptySet(),
+        )
+        assertTrue(views.ongoing.isEmpty())
+        assertTrue(views.results.isEmpty())
+        views = model.update(
+            background.mapIndexed { i, k ->
+                t("s$i", Direction.SEND, TransferState.FAILED, error = TransferError.TRANSFER_ERROR_INTERRUPTED, kind = k)
+            } + t("f", Direction.SEND, TransferState.ACTIVE),
+            emptySet(),
+        )
+        assertTrue(views.results.isEmpty())
+        assertTrue(views.changed.isEmpty())
+        // A file the user shared alongside is shown as before, with no screenshot counted as waiting.
+        assertEquals("f", views.ongoing.getValue(Direction.SEND).id)
+        assertEquals(0, views.ongoing.getValue(Direction.SEND).waiting)
     }
 }

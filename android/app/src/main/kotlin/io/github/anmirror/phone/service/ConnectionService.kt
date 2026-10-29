@@ -11,6 +11,7 @@ import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
@@ -25,6 +26,7 @@ import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.BuildConfig
 import io.github.anmirror.phone.MainActivity
+import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
@@ -33,6 +35,7 @@ import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.macOrNull
+import io.github.anmirror.phone.mediaFeatureAvailability
 import io.github.anmirror.phone.messageRes
 import io.github.anmirror.phone.platform.NetworkWatcher
 import io.github.anmirror.phone.share.ClipboardSendActivity
@@ -114,6 +117,7 @@ class ConnectionService : LifecycleService() {
         setUpClipboard()
         setUpShare()
         setUpTransfers()
+        setUpScreenshots()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -138,6 +142,7 @@ class ConnectionService : LifecycleService() {
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
+        stopScreenshotObserver()
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
         network.stop()
@@ -426,6 +431,67 @@ class ConnectionService : LifecycleService() {
         }
     }
 
+    /**
+     * Screenshots (F-12): while the feature is open (the Mac shares screenshots.v1, the switch is
+     * on, all photos are readable) a MediaStore observer, debounced by 500 ms, sends each new
+     * screenshot as `TRANSFER_KIND_SCREENSHOT`. `screenshots.availability` is sent regardless,
+     * while the Mac shares screenshots.v1; with only some photos allowed it says PARTIAL_ACCESS.
+     */
+    private fun setUpScreenshots() {
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state.map { it is Connected && "screenshots.v1" in it.shared }.distinctUntilChanged(),
+                graph.screenshotsOn,
+                graph.mediaAccess,
+            ) { shared, on, access -> Triple(shared, on, access) }
+                .distinctUntilChanged()
+                .collect { (shared, on, access) ->
+                    if (shared) {
+                        val availability = mediaFeatureAvailability(access, on, partialWorks = false)
+                        graph.manager.send(Channel.CHANNEL_SCREENSHOTS, MessageType.SCREENSHOTS_AVAILABILITY, availability)
+                    }
+                    if (shared && on && access == MediaAccess.FULL) startScreenshotObserver() else stopScreenshotObserver()
+                }
+        }
+    }
+
+    private var screenshotObserver: ContentObserver? = null
+    private var screenshotDebounce: Job? = null
+
+    private fun startScreenshotObserver() {
+        if (screenshotObserver != null) return
+        // Screenshots taken while the feature was closed are not sent now.
+        graph.screenshotDetector.reset()
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                screenshotDebounce?.cancel()
+                screenshotDebounce = lifecycleScope.launch {
+                    delay(SCREENSHOT_DEBOUNCE_MS)
+                    // On the graph's scope: a later change must not cancel a look already under way.
+                    graph.scope.launch(Dispatchers.IO) {
+                        try {
+                            graph.sendNewScreenshots()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // The class only: a message could carry a path.
+                            Log.e(TAG, "screenshots: look failed (${e.javaClass.simpleName})")
+                        }
+                    }
+                }
+            }
+        }
+        contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, observer)
+        screenshotObserver = observer
+    }
+
+    private fun stopScreenshotObserver() {
+        screenshotObserver?.let { contentResolver.unregisterContentObserver(it) }
+        screenshotObserver = null
+        screenshotDebounce?.cancel()
+        screenshotDebounce = null
+    }
+
     private var contactsObserver: ContentObserver? = null
     private var contactsDebounce: Job? = null
 
@@ -546,6 +612,7 @@ class ConnectionService : LifecycleService() {
             MessageType.FILES_FAILED,
         )
         private const val CONTACTS_DEBOUNCE_MS = 5_000L
+        private const val SCREENSHOT_DEBOUNCE_MS = 500L
         const val ACTION_STOP_RING = "io.github.anmirror.phone.STOP_RING"
 
         private val _ringing = MutableStateFlow(false)

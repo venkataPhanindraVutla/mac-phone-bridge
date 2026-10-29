@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import io.github.anmirror.phone.BuildConfig
+import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.service.PhoneNotificationListener
 
@@ -40,6 +41,27 @@ fun callsPermissions(): List<String> = buildList {
     add(Manifest.permission.READ_PHONE_STATE)
     if (BuildConfig.FEATURE_CALL_LOG) add(Manifest.permission.READ_CALL_LOG)
     if (BuildConfig.FEATURE_ANSWER_CALLS) add(Manifest.permission.ANSWER_PHONE_CALLS)
+}
+
+/**
+ * "Send screenshots to your Mac": new screenshots can only be found with access to all photos,
+ * READ_MEDIA_IMAGES (API 33+), or READ_EXTERNAL_STORAGE (up to 32). On API 34+ the system dialog
+ * also offers "Select photos", which grants only READ_MEDIA_VISUAL_USER_SELECTED.
+ */
+fun screenshotPermissions(): List<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        listOf(Manifest.permission.READ_MEDIA_IMAGES)
+    } else {
+        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+/** How much of the phone's photos this app may read right now. */
+fun Context.mediaAccess(): MediaAccess = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isGranted(Manifest.permission.READ_MEDIA_IMAGES) -> MediaAccess.FULL
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && isGranted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccess.FULL
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+        isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> MediaAccess.PARTIAL
+    else -> MediaAccess.NONE
 }
 
 fun Context.isGranted(permission: String): Boolean =

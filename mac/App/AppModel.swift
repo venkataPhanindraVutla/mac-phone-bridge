@@ -9,6 +9,7 @@ import FeatureContacts
 import FeatureFiles
 import FeatureFind
 import FeatureNotify
+import FeatureScreenshots
 import FeatureShare
 import FeatureStatus
 import Foundation
@@ -22,6 +23,7 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
+        "screenshots.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -36,6 +38,10 @@ final class AppModel {
     let transfers: TransferEngine
     /// Links and text shared both ways.
     let share: ShareModel
+    /// Phone screenshots, saved where Settings says and announced with a thumbnail.
+    let screenshots: ScreenshotInbox
+    /// "Save phone screenshots to" in Settings (default Desktop).
+    private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
     private(set) var showPhoneCalls: Bool = AppModel.savedShowPhoneCalls
     /// Whether phone contacts name callers and notification titles (default on). Turning it off wipes the stores.
@@ -156,6 +162,18 @@ final class AppModel {
             }
         )
         self.clipboard = clipboard
+        let screenshots = ScreenshotInbox(
+            presenter: presenter,
+            destination: { .saved(in: .standard) },
+            folders: Self.screenshotFolders(),
+            writeImage: { url in
+                guard let image = NSImage(contentsOf: url) else { return false }
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.writeObjects([image])
+            },
+            reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+        )
+        self.screenshots = screenshots
         let bulk = BulkServer(identity: KeychainIdentityProvider())
         self.bulk = bulk
         let transfers = TransferEngine(
@@ -166,9 +184,14 @@ final class AppModel {
                       !shared.isDisjoint(with: TransferEngine.bulkCapabilities) else { return }
                 try? await server.send(type, message, channel: .files)
             },
-            destination: { Self.destination(for: $0) }
+            destination: { Self.destination(for: $0, screenshots: screenshots) }
         )
         self.transfers = transfers
+        transfers.onFinished = { item, _, url in
+            // Every ending comes here; the inbox looks at the state (only a done one is saved and shown).
+            guard item.kind == .screenshot else { return }
+            Task { await screenshots.finished(item, at: url) }
+        }
         bulk.onLink = { [weak transfers] pipe, grant in
             if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
         }
@@ -187,11 +210,13 @@ final class AppModel {
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
+        notifyWork.register(screenshots)
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
         server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
         presenter.onResponse = { actionID, userInfo, reply in
+            if screenshots.handleResponse(userInfo: userInfo) { return }
             await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
         }
         // The user may allow notifications in System Settings and come back.
@@ -254,6 +279,9 @@ final class AppModel {
 
     /// Sending links, text and the clipboard is offered only while the connected phone shares `share.v1`.
     var canShare: Bool { server.activePhone?.shared.contains("share.v1") ?? false }
+
+    /// Phone screenshots arrive only while the connected phone shares `screenshots.v1`.
+    var canScreenshots: Bool { server.activePhone?.shared.contains("screenshots.v1") ?? false }
 
     /// Why the last thing the user sent (dropped, picked, or the clipboard) did not all go.
     /// Shown in the menu and the Send tab until the next send, connect or disconnect.
@@ -338,6 +366,13 @@ final class AppModel {
         guard on != clipboard.sendEnabled else { return }
         clipboard.sendEnabled = on
         UserDefaults.standard.set(on, forKey: Self.clipboardKey)
+    }
+
+    /// "Save phone screenshots to" in Settings. Applies from the next screenshot offered.
+    func setScreenshotDestination(_ destination: ScreenshotDestination) {
+        guard destination != screenshotDestination else { return }
+        screenshotDestination = destination
+        UserDefaults.standard.set(destination.rawValue, forKey: ScreenshotDestination.defaultsKey)
     }
 
     /// The "Show phone calls" switch in Settings.
@@ -441,13 +476,31 @@ final class AppModel {
         }
     }
 
-    /// Phone files go to Downloads. Other kinds belong to features this Mac does not have yet,
+    /// Phone files go to Downloads; screenshots where the inbox says (it refuses them unless the
+    /// phone shares `screenshots.v1`). Other kinds belong to features this Mac does not have yet,
     /// and are refused.
-    private static func destination(for offer: AMTransferOffer) -> IncomingDestination {
-        guard offer.kind == .file,
-              let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        else { return .refuse(.disabled) }
-        return .folder(downloads)
+    private static func destination(for offer: AMTransferOffer, screenshots: ScreenshotInbox) -> IncomingDestination {
+        switch offer.kind {
+        case .file:
+            guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            else { return .refuse(.disabled) }
+            return .folder(downloads)
+        case .screenshot:
+            return screenshots.incomingDestination(for: offer)
+        default:
+            return .refuse(.disabled)
+        }
+    }
+
+    /// Desktop and Downloads, and a temp folder for Clipboard mode and notification thumbnails.
+    private static func screenshotFolders() -> (desktop: URL, downloads: URL, temp: URL) {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        return (
+            desktop: fm.urls(for: .desktopDirectory, in: .userDomainMask).first ?? home.appendingPathComponent("Desktop"),
+            downloads: fm.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? home.appendingPathComponent("Downloads"),
+            temp: fm.temporaryDirectory.appendingPathComponent("io.github.anmirror.mac/screenshots", isDirectory: true)
+        )
     }
 
     private func handle(_ event: MacServerEvent) {

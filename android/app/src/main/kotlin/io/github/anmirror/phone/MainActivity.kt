@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
         graph.refreshNotifyAccess()
         graph.refreshContactsGranted()
         graph.refreshCallsPermissions()
+        graph.refreshMediaAccess()
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
@@ -87,6 +88,8 @@ private fun AppRoot(graph: AppGraph) {
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
     val callsPermissions by graph.callsPermissions.collectAsStateWithLifecycle()
     val clipboardOn by graph.clipboardOn.collectAsStateWithLifecycle()
+    val screenshotsOn by graph.screenshotsOn.collectAsStateWithLifecycle()
+    val mediaAccess by graph.mediaAccess.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -125,6 +128,10 @@ private fun AppRoot(graph: AppGraph) {
                         onCallsPermissionResult = graph::refreshCallsPermissions,
                         clipboardOn = clipboardOn,
                         onClipboardToggle = graph::setClipboardOn,
+                        screenshotsOn = screenshotsOn,
+                        mediaAccess = mediaAccess,
+                        onScreenshotsToggle = graph::setScreenshotsOn,
+                        onMediaPermissionResult = graph::refreshMediaAccess,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

@@ -44,6 +44,8 @@ targets:
       - package: AMKit
         product: FeatureShare
       - package: AMKit
+        product: FeatureScreenshots
+      - package: AMKit
         product: AppSession
     settings:
       base:

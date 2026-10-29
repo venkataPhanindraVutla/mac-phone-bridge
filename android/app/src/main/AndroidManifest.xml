@@ -19,6 +19,12 @@
     <!-- Calls on the Mac: the phone's call state, asked only when "Calls on your Mac" is turned on; the mic mute for Mute. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Screenshots (and later photos) for the Mac: asked only when "Send screenshots to your Mac" is turned on.
+         All photos are needed to find new screenshots; "Select photos" (API 34+) grants only the user-selected ones. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

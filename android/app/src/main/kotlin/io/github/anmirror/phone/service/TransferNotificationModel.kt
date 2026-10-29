@@ -2,6 +2,7 @@ package io.github.anmirror.phone.service
 
 import io.github.anmirror.phone.isOngoing
 import io.github.anmirror.protocol.v1.TransferError
+import io.github.anmirror.protocol.v1.TransferKind
 import io.github.anmirror.transfer.Direction
 import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
@@ -34,8 +35,9 @@ data class TransferViews(
 /**
  * R9: folds the engine's transfer list into at most one ongoing and one results notification
  * per direction, however many transfers there are (Android caps an app's notifications and
- * drops fast updates). A transfer the user cancelled on the phone adds no result. Pure and
- * single-threaded: call [update] from one collector.
+ * drops fast updates). A transfer the user cancelled on the phone adds no result. Background
+ * auto-sends (screenshots, photos) are not shown at all (R12): the user did not start them on
+ * the phone. Pure and single-threaded: call [update] from one collector.
  */
 class TransferNotificationModel {
     private val handled = HashSet<String>()
@@ -44,7 +46,8 @@ class TransferNotificationModel {
     /** A direction's batch is closed once it has gone idle; its next result starts a new one. */
     private val closed = HashMap<Direction, Boolean>()
 
-    fun update(list: List<TransferStatus>, cancelledHere: Set<String>): TransferViews {
+    fun update(all: List<TransferStatus>, cancelledHere: Set<String>): TransferViews {
+        val list = all.filter { it.kind !in BACKGROUND_KINDS }
         val ongoing = HashMap<Direction, OngoingView>()
         val changed = HashSet<Direction>()
         for (direction in Direction.entries) {
@@ -79,4 +82,8 @@ class TransferNotificationModel {
 
     private fun percent(t: TransferStatus): Int =
         if (t.size > 0) (t.done.coerceIn(0, t.size) * 100 / t.size).toInt() else 0
+
+    private companion object {
+        val BACKGROUND_KINDS = setOf(TransferKind.TRANSFER_KIND_SCREENSHOT, TransferKind.TRANSFER_KIND_PHOTO)
+    }
 }

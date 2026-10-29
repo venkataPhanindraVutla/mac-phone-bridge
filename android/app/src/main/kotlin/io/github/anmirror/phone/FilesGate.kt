@@ -1,6 +1,7 @@
 package io.github.anmirror.phone
 
 import io.github.anmirror.protocol.v1.TransferError
+import io.github.anmirror.protocol.v1.TransferKind
 import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
 
@@ -19,6 +20,14 @@ fun offerRefusal(hasTarget: Boolean, shared: Set<String>): TransferError? {
     val needed = if (hasTarget) "browse.v1" else "files.v1"
     return if (needed in shared) null else TransferError.TRANSFER_ERROR_DISABLED
 }
+
+/**
+ * R5 for the phone's own offers, on top of [bulkShared]: a screenshot goes only while its
+ * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable);
+ * any other bulk capability is not enough.
+ */
+fun phoneOfferAllowed(kind: TransferKind, screenshotsOpen: Boolean): Boolean =
+    kind != TransferKind.TRANSFER_KIND_SCREENSHOT || screenshotsOpen
 
 /**
  * Which tracked shared files can be closed: those whose transfer ended, or dropped off the

@@ -1,6 +1,7 @@
 import AppKit
 import ConnectionCore
 import FeatureNotify
+import FeatureScreenshots
 import ServiceManagement
 import SwiftUI
 
@@ -36,6 +37,17 @@ struct SettingsView: View {
                         set: { model.setSendMacClipboard($0) }
                     ))
                     .accessibilityLabel(Text("Send Mac clipboard to the phone"))
+                }
+                Section("Screenshots") {
+                    Picker("Save phone screenshots to", selection: Binding(
+                        get: { model.screenshotDestination },
+                        set: { model.setScreenshotDestination($0) }
+                    )) {
+                        Text("Desktop").tag(ScreenshotDestination.desktop)
+                        Text("Downloads").tag(ScreenshotDestination.downloads)
+                        Text("Clipboard").tag(ScreenshotDestination.clipboard)
+                    }
+                    .accessibilityLabel(Text("Save phone screenshots to"))
                 }
                 Section("Calls") {
                     Toggle("Show phone calls", isOn: Binding(

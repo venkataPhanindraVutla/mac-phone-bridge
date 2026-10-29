@@ -30,6 +30,8 @@ import io.github.anmirror.feature.contacts.ContactsSync
 import io.github.anmirror.feature.notify.ActionInvoker
 import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
+import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
+import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
@@ -38,6 +40,7 @@ import io.github.anmirror.phone.platform.MediaStoreDownloads
 import io.github.anmirror.phone.platform.SharedFile
 import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.ui.isGranted
+import io.github.anmirror.phone.ui.mediaAccess
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.service.SharedNotifications
 import io.github.anmirror.phone.service.TransferNotifier
@@ -46,9 +49,11 @@ import io.github.anmirror.protocol.v1.ActionOutcome
 import io.github.anmirror.protocol.v1.BulkEndpoint
 import io.github.anmirror.protocol.v1.BulkHello
 import io.github.anmirror.protocol.v1.Envelope
+import io.github.anmirror.protocol.v1.TransferKind
 import io.github.anmirror.protocol.v1.TransferOffer
 import io.github.anmirror.protocol.v1.TransferReject
 import io.github.anmirror.transfer.BulkOpener
+import io.github.anmirror.transfer.OutgoingFile
 import io.github.anmirror.transfer.TransferEngine
 import io.github.anmirror.protocol.v1.Channel as ProtoChannel
 import io.github.anmirror.protocol.v1.Hello
@@ -71,6 +76,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import com.google.protobuf.InvalidProtocolBufferException
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -326,9 +332,15 @@ class AppGraph private constructor(context: Context) {
         return s is PhoneConnectionState.Connected && bulkShared(s.shared)
     }
 
-    /** Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. */
-    suspend fun sendTransfer(type: String, payload: MessageLite): Boolean =
-        transferShared() && manager.send(ProtoChannel.CHANNEL_FILES, type, payload)
+    /**
+     * Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. A
+     * screenshot offer also needs [screenshotsOpen] (R5): the transfer fails before the Mac hears of it.
+     */
+    suspend fun sendTransfer(type: String, payload: MessageLite): Boolean {
+        if (!transferShared()) return false
+        if (payload is TransferOffer && !phoneOfferAllowed(payload.kind, screenshotsOpen())) return false
+        return manager.send(ProtoChannel.CHANNEL_FILES, type, payload)
+    }
 
     /** The Mac's bulk port, valid only for the session that announced it. */
     private class Endpoint(val session: PhoneConnectionState.Connected, val port: Int)
@@ -355,15 +367,68 @@ class AppGraph private constructor(context: Context) {
         freeBytes = { downloads.freeBytes() },
     )
 
-    /** Shared files whose descriptors stay open until their transfer ends. */
-    private val openShares = ConcurrentHashMap<String, SharedFile>()
+    /** Shared files and screenshots whose descriptors stay open until their transfer ends. */
+    private val openShares = ConcurrentHashMap<String, Closeable>()
 
     /** Queues [files] for sending (the caller checked [filesShared]); each descriptor is closed when its transfer ends. */
-    fun sendFiles(files: List<SharedFile>): List<String> {
-        val ids = transfers.send(files)
-        ids.zip(files).forEach { (id, file) -> openShares[id] = file }
+    fun sendFiles(files: List<SharedFile>): List<String> = track(transfers.send(files), files)
+
+    /** Remembers the descriptors of the transfers [ids] (in [files]' order), to close when each ends. */
+    private fun track(ids: List<String>, files: List<OutgoingFile>): List<String> {
+        ids.zip(files).forEach { (id, file) -> (file as? Closeable)?.let { openShares[id] = it } }
         releaseFinished() // one may have ended before it was tracked
         return ids
+    }
+
+    private val screenshotsPrefs = app.getSharedPreferences("screenshots", Context.MODE_PRIVATE)
+    private val _screenshotsOn = MutableStateFlow(screenshotsPrefs.getBoolean(KEY_SCREENSHOTS_ON, false))
+
+    /** The user's "Send screenshots to your Mac" switch. Off until they turn it on. */
+    val screenshotsOn: StateFlow<Boolean> = _screenshotsOn.asStateFlow()
+
+    private val _mediaAccess = MutableStateFlow(app.mediaAccess())
+
+    /** How much of the photos this app may read (re-read on resume and after the permission prompt). */
+    val mediaAccess: StateFlow<MediaAccess> = _mediaAccess.asStateFlow()
+
+    fun setScreenshotsOn(on: Boolean) {
+        screenshotsPrefs.edit { putBoolean(KEY_SCREENSHOTS_ON, on) }
+        _screenshotsOn.value = on
+    }
+
+    fun refreshMediaAccess() {
+        _mediaAccess.value = app.mediaAccess()
+    }
+
+    /** The connected Mac shares screenshots.v1. */
+    fun screenshotsShared(): Boolean = shares("screenshots.v1")
+
+    /**
+     * The phone sends no screenshot unless the Mac shares screenshots.v1, the switch is on and all
+     * photos are readable (with only some, new screenshots can't be found).
+     */
+    fun screenshotsOpen(): Boolean = screenshotsShared() && _screenshotsOn.value && app.mediaAccess() == MediaAccess.FULL
+
+    private val images = MediaStoreImageQuery(app.contentResolver)
+
+    /** Fed by the service's MediaStore observer while [screenshotsOpen]; reset each time it opens. */
+    val screenshotDetector = ScreenshotDetector(images, System::currentTimeMillis)
+
+    /**
+     * Sends the screenshots added since the last look, as `TRANSFER_KIND_SCREENSHOT`, when
+     * [screenshotsOpen]. Blocks on MediaStore: call off the main thread. Each image's descriptor
+     * is closed when its transfer ends.
+     */
+    fun sendNewScreenshots() {
+        if (!screenshotsOpen()) return
+        val files = screenshotDetector.onChange().mapNotNull { images.open(it.id) }
+        if (files.isEmpty()) return
+        if (!screenshotsOpen()) {
+            files.forEach { (it as? Closeable)?.close() }
+            return
+        }
+        val ids = track(transfers.send(files, TransferKind.TRANSFER_KIND_SCREENSHOT), files)
+        Log.i(TAG, "screenshots: queued ${ids.joinToString(",")}")
     }
 
     /**
@@ -511,11 +576,12 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
         private const val KEY_CLIPBOARD_ON = "share_with_mac"
+        private const val KEY_SCREENSHOTS_ON = "send_to_mac"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
         private const val ENDPOINT_WAIT_MS = 10_000L

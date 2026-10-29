@@ -42,6 +42,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
+import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.forgetBodyRes
@@ -68,6 +69,10 @@ fun HomeScreen(
     onCallsPermissionResult: () -> Unit,
     clipboardOn: Boolean,
     onClipboardToggle: (Boolean) -> Unit,
+    screenshotsOn: Boolean,
+    mediaAccess: MediaAccess,
+    onScreenshotsToggle: (Boolean) -> Unit,
+    onMediaPermissionResult: () -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
 ) {
@@ -113,6 +118,10 @@ fun HomeScreen(
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         ClipboardRow(on = clipboardOn, onToggle = onClipboardToggle)
+        ScreenshotsRow(
+            on = screenshotsOn, access = mediaAccess, onToggle = onScreenshotsToggle,
+            onPermissionResult = onMediaPermissionResult,
+        )
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -283,6 +292,51 @@ private fun ClipboardRow(on: Boolean, onToggle: (Boolean) -> Unit) {
             onCheckedChange = onToggle,
             modifier = Modifier.semantics { contentDescription = title },
         )
+    }
+}
+
+/**
+ * "Send screenshots to your Mac": access to all photos is asked for only when the switch is turned
+ * on. With only some photos allowed, new screenshots can't be found, and the row says so. Either
+ * way back is the app's page in Settings.
+ */
+@Composable
+private fun ScreenshotsRow(on: Boolean, access: MediaAccess, onToggle: (Boolean) -> Unit, onPermissionResult: () -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_screenshots_title)
+    val (chain, _) = rememberPermissionChain(screenshotPermissions(), onDone = onPermissionResult)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked) chain.start()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && access != MediaAccess.FULL) {
+            val note = if (access == MediaAccess.PARTIAL) R.string.home_screenshots_partial else R.string.home_screenshots_needs_permission
+            Text(stringResource(note), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_screenshots_allow)) }
+        }
     }
 }
 
