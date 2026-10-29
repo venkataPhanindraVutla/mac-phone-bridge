@@ -82,6 +82,18 @@
     <string name="home_contacts_allow">Allow contacts access</string>
     <string name="home_find_allow">Allow Do Not Disturb access</string>
 
+    <!-- Home: share the clipboard with the Mac -->
+    <string name="home_clipboard_title">Share clipboard with your Mac</string>
+
+    <!-- Clipboard: entry points and outcomes -->
+    <string name="tile_send_clipboard">Send clipboard to Mac</string>
+    <string name="notification_send_clipboard">Send clipboard</string>
+    <string name="clipboard_sent">Sent to %1$s</string>
+    <string name="clipboard_empty">Clipboard is empty</string>
+    <string name="clipboard_not_connected">Not connected to your Mac</string>
+    <string name="clipboard_too_long">Text is too long to send</string>
+    <string name="clipboard_already_on_mac">Your Mac already has this text</string>
+
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>
     <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>

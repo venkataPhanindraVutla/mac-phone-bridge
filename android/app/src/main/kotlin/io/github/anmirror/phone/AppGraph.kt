@@ -20,6 +20,8 @@ import io.github.anmirror.connection.PairedMacStore
 import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.connection.TlsConnector
 import io.github.anmirror.connection.TlsIdentity
+import io.github.anmirror.feature.clipboard.AndroidClipboard
+import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
 import io.github.anmirror.feature.contacts.ContactsSync
 import io.github.anmirror.feature.notify.ActionInvoker
@@ -41,9 +43,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -239,6 +245,42 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendCalls(type: String, payload: MessageLite): Boolean =
         callsOpen() && manager.send(ProtoChannel.CHANNEL_CALLS, type, payload)
 
+    private val clipboardPrefs = app.getSharedPreferences("clipboard", Context.MODE_PRIVATE)
+    private val _clipboardOn = MutableStateFlow(clipboardPrefs.getBoolean(KEY_CLIPBOARD_ON, false))
+
+    /** The user's "Share clipboard with your Mac" switch. Off until they turn it on. No permission is needed. */
+    val clipboardOn: StateFlow<Boolean> = _clipboardOn.asStateFlow()
+
+    fun setClipboardOn(on: Boolean) {
+        clipboardPrefs.edit().putBoolean(KEY_CLIPBOARD_ON, on).apply()
+        _clipboardOn.value = on
+    }
+
+    /** The connected Mac shares clipboard.v1. */
+    fun clipboardShared(): Boolean {
+        val s = manager.state.value
+        return s is PhoneConnectionState.Connected && "clipboard.v1" in s.shared
+    }
+
+    /** The phone sends and takes no clipboard text unless the Mac shares clipboard.v1 and the switch is on. */
+    fun clipboardOpen(): Boolean = clipboardShared() && _clipboardOn.value
+
+    /** [clipboardOpen] as it changes, for the Quick Settings tile. */
+    val clipboardReady: Flow<Boolean> = combine(
+        manager.state.map { it is PhoneConnectionState.Connected && "clipboard.v1" in it.shared },
+        clipboardOn,
+    ) { shared, on -> shared && on }.distinctUntilChanged()
+
+    /** Sends a `clipboard.*` message when [clipboardOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendClipboard(type: String, payload: MessageLite): Boolean =
+        clipboardOpen() && manager.send(ProtoChannel.CHANNEL_CLIPBOARD, type, payload)
+
+    /** Writes the Mac's text; sends the phone's on an explicit trigger ([io.github.anmirror.phone.share.ClipboardSendActivity]). */
+    val clipboard = ClipboardBridge(AndroidClipboard(app), ::sendClipboard)
+
+    /** The connected Mac's name, for "Sent to %1$s"; null when not connected. */
+    fun connectedMacName(): String? = (manager.state.value as? PhoneConnectionState.Connected)?.mac?.name
+
     /** Points at the notification listener while it is bound; the active call notification comes from it. */
     val callNotifications = DelegatingCallNotifications(app)
 
@@ -284,10 +326,11 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
+        private const val KEY_CLIPBOARD_ON = "share_with_mac"
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")

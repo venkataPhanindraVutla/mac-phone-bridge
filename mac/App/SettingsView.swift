@@ -30,6 +30,13 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section("Clipboard") {
+                    Toggle("Send Mac clipboard to the phone", isOn: Binding(
+                        get: { model.sendMacClipboard },
+                        set: { model.setSendMacClipboard($0) }
+                    ))
+                    .accessibilityLabel(Text("Send Mac clipboard to the phone"))
+                }
                 Section("Calls") {
                     Toggle("Show phone calls", isOn: Binding(
                         get: { model.showPhoneCalls },

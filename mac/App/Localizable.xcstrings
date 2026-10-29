@@ -980,6 +980,39 @@
           }
         }
       }
+    },
+    "Clipboard": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipboard"
+          }
+        }
+      }
+    },
+    "Send Mac clipboard to the phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Mac clipboard to the phone"
+          }
+        }
+      }
+    },
+    "Turn on clipboard sharing in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on clipboard sharing in the phone app."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
