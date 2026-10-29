@@ -105,10 +105,10 @@ To avoid them, sign with a free Personal Team. Copy `mac/Config/Local.xcconfig.e
 
 The build above is the **Contributor build**. It has no extensions and needs no Apple account. The **Full build** adds two extensions:
 
-- **File Provider:** shows the phone in Finder's sidebar while it is connected and shares file browsing.
+- **File Provider:** shows the phone in Finder's sidebar once it has connected with file browsing on. The entry stays while the phone is disconnected: Finder then says "Your phone isn't connected." Forgetting the phone removes it.
 - **Share:** adds "Send to Phone" to the Share menu.
 
-Both extensions share an App Group with the app, and App Groups need a team. Set `DEVELOPMENT_TEAM` in `mac/Config/Local.xcconfig` as above. A paid team works. A free Personal Team may not be able to sign the App Group or the File Provider. If it can't, use the Contributor build: its Files tab in the Phone window does the same browsing.
+Both extensions share an App Group with the app, and App Groups need a team. Set `DEVELOPMENT_TEAM` in `mac/Config/Local.xcconfig` as above. A paid team should work, but this is unverified (owner check h1). A free Personal Team may not be able to sign the App Group or the File Provider. If it can't, use the Contributor build: its Files tab in the Phone window does the same browsing.
 
 ```sh
 xcodegen --spec mac/project-full.yml                  # generates mac/AndroidMirroringFull.xcodeproj

@@ -750,3 +750,37 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     #expect(await r.model.upload(file: folder, into: BrowseLocation(rootID: "r1")) == .failure(.browse(.badPath)))
     #expect(r.sent.of(.filesOffer, AMTransferOffer.self).count == 2)
 }
+
+@MainActor @Test func quietReadLeavesTheTabNoticeAlone() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("docs", [entry("a.txt")])
+    let task = Task {
+        await r.model.download(entry("gone.txt"), in: BrowseLocation(rootID: "r1", path: "pics"),
+                               to: r.dir.appendingPathComponent("x"), quiet: true)
+    }
+    try await until("browse.read") { !r.reads.isEmpty }
+    await r.answer(try #require(r.reads.last).requestID, .notFound)
+    #expect(await task.value == .failure(.browse(.notFound)))
+    #expect(r.model.notice == nil, "Finder's read is not the Files tab's")
+}
+
+@MainActor @Test func cancelledUploadStopsItsTransfer() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("docs", [])
+    let file = try r.write(Data(repeating: 1, count: 100), as: "c.txt")
+    let task = Task { await r.model.upload(file: file, into: BrowseLocation(rootID: "r1", path: "docs")) }
+    try await until("files.offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    let id = try #require(r.sent.of(.filesOffer, AMTransferOffer.self).last).transferID
+    task.cancel()
+    #expect(await task.value == .failure(.transfer(.cancelled)))
+    try await until("files.cancel") { r.sent.of(.filesCancel, AMTransferCancel.self).contains { $0.transferID == id } }
+
+    // Cancelled before it starts: nothing is offered.
+    let early = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return await r.model.upload(file: file, into: BrowseLocation(rootID: "r1", path: "docs"))
+    }
+    #expect(await early.value == .failure(.transfer(.cancelled)))
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).count == 1)
+}

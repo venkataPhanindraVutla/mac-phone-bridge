@@ -10,10 +10,16 @@ import Foundation
     /// JSON `ListingDTO`: one page of the folder `path` of `rootID`, from `offset`.
     func list(rootID: String, path: String, offset: Int, reply: @escaping @Sendable (Data?, Error?) -> Void)
     /// The file, in the App Group container's `Downloads/`. The caller moves it away.
-    func download(rootID: String, path: String, reply: @escaping @Sendable (URL?, Error?) -> Void)
-    /// Sends the file at `url` (named as it should be named on the phone) into the folder
-    /// `dirPath` of `rootID`, never over an existing file. JSON `EntryDTO`.
-    func upload(rootID: String, dirPath: String, from url: URL, reply: @escaping @Sendable (Data?, Error?) -> Void)
+    /// `token` (the caller's) names the call for `cancel(token:)`.
+    func download(rootID: String, path: String, token: String, reply: @escaping @Sendable (URL?, Error?) -> Void)
+    /// Sends the file at `url` (staged in the App Group's `Uploads/<folder>/`, named as it should be
+    /// named on the phone) into the folder `dirPath` of `rootID`, never over an existing file.
+    /// JSON `EntryDTO`. `token` names the call for `cancel(token:)`.
+    func upload(rootID: String, dirPath: String, from url: URL, token: String,
+                reply: @escaping @Sendable (Data?, Error?) -> Void)
+    /// Finder gave up on the download or upload `token` names: it stops (ruling R20), and its
+    /// reply says `cancelled`. A token not seen yet cancels that call as it arrives.
+    func cancel(token: String)
 }
 
 /// Vended by the File Provider extension (`NSFileProviderServiceSource`): the app hands over
@@ -71,6 +77,7 @@ public enum PhoneFilesError: Int, Error, Sendable {
     case denied = 3
     case noSpace = 4
     case failed = 5
+    case cancelled = 6
 
     public static let domain = "io.github.anmirror.phonefiles"
 
@@ -90,6 +97,11 @@ public enum FullBuild {
     /// Posted by the File Provider extension when it needs the app's endpoint and has none
     /// (it was relaunched): the app registers again for the connected phone.
     public static let darwinEndpointNote = "io.github.anmirror.mac.fileprovider.endpoint"
+
+    /// The endpoint note for one domain (one phone): the app answers only its connected phone's.
+    public static func endpointNote(for phoneID: String) -> String {
+        darwinEndpointNote + "." + phoneID
+    }
 
     /// Folders in the App Group container.
     public static let outboxFolder = "Outbox"
@@ -125,15 +137,18 @@ public enum FullBuild {
         interface.setClasses(string, for: list, argumentIndex: 0, ofReply: false)
         interface.setClasses(string, for: list, argumentIndex: 1, ofReply: false)
         interface.setClasses(data, for: list, argumentIndex: 0, ofReply: true)
-        let download = #selector(PhoneFilesXPC.download(rootID:path:reply:))
+        let download = #selector(PhoneFilesXPC.download(rootID:path:token:reply:))
         interface.setClasses(string, for: download, argumentIndex: 0, ofReply: false)
         interface.setClasses(string, for: download, argumentIndex: 1, ofReply: false)
+        interface.setClasses(string, for: download, argumentIndex: 2, ofReply: false)
         interface.setClasses(url, for: download, argumentIndex: 0, ofReply: true)
-        let upload = #selector(PhoneFilesXPC.upload(rootID:dirPath:from:reply:))
+        let upload = #selector(PhoneFilesXPC.upload(rootID:dirPath:from:token:reply:))
         interface.setClasses(string, for: upload, argumentIndex: 0, ofReply: false)
         interface.setClasses(string, for: upload, argumentIndex: 1, ofReply: false)
         interface.setClasses(url, for: upload, argumentIndex: 2, ofReply: false)
+        interface.setClasses(string, for: upload, argumentIndex: 3, ofReply: false)
         interface.setClasses(data, for: upload, argumentIndex: 0, ofReply: true)
+        interface.setClasses(string, for: #selector(PhoneFilesXPC.cancel(token:)), argumentIndex: 0, ofReply: false)
         return interface
     }
 

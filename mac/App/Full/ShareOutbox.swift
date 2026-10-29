@@ -8,12 +8,13 @@ import Foundation
 import os
 
 /// What "Send to Phone" (the Share extension, Full build) left in the App Group's `Outbox/`,
-/// sent by the app (ruling R18). Each share goes only to the phone its sheet named, when that
-/// phone is connected: at launch, on connect, and on the extension's Darwin notification. It is
-/// dropped once that phone is forgotten, or 24 hours after it was shared. Files go with the
-/// transfer engine (only with `files.v1`, and only regular files still there and readable);
-/// links and text with the share model (only with `share.v1`). The outbox file goes before
-/// anything is sent, so nothing is sent twice.
+/// sent by the app (rulings R18, R21). Each share goes only to the phone its sheet named, when
+/// that phone is connected: at launch, on connect, and on the extension's Darwin notification.
+/// It is dropped once that phone is forgotten, 24 hours after it was shared, or when dated more
+/// than 5 minutes ahead. Files go with the transfer engine (only with `files.v1`, and only
+/// regular files still there and readable); links and text with the share model (only with
+/// `share.v1`). Items whose capability is not shared now wait in a rewritten envelope.
+/// At most once: a share is sent only after its outbox file was removed.
 /// Also tells the extension, through the App Group defaults, which phone to name.
 /// Only counts are logged, never paths, links or text.
 @MainActor
@@ -30,6 +31,8 @@ final class ShareOutbox: SessionFeature {
     private var draining = false
     private var drainAgain = false
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "outbox")
+    /// A rewritten envelope before it takes its place (`pending()` reads `.json` only).
+    private static let pendingExtension = "pending"
 
     init(container: URL, defaults: UserDefaults?, transfers: TransferEngine, share: ShareModel,
          pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
@@ -38,6 +41,11 @@ final class ShareOutbox: SessionFeature {
         self.transfers = transfers
         self.share = share
         self.pairedPhoneIDs = pairedPhoneIDs
+        // Rewrites a crash left half done (their original is gone or still there: at most once).
+        for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            where url.pathExtension == Self.pendingExtension {
+            try? FileManager.default.removeItem(at: url)
+        }
         observeShares()
         // Shares for forgotten phones, and old ones, go now; the rest wait for their phone.
         drainSoon()
@@ -122,13 +130,31 @@ final class ShareOutbox: SessionFeature {
                 try? FileManager.default.removeItem(at: url)
                 Self.log.info("dropped a share of \(envelope.items.count, privacy: .public) items unsent")
             case let .deliver(delivery):
-                try? FileManager.default.removeItem(at: url)
-                await deliver(delivery)
+                // What waits is written first, under a name the drain does not read.
+                var rewrite: URL?
+                if !delivery.kept.isEmpty {
+                    let pending = folder.appendingPathComponent(UUID().uuidString + ".json." + Self.pendingExtension)
+                    guard (try? envelope.keeping(delivery.kept).encoded().write(to: pending, options: .atomic)) != nil else {
+                        continue
+                    }
+                    rewrite = pending
+                }
+                // Sent only once its file is gone: at most once.
+                guard (try? FileManager.default.removeItem(at: url)) != nil else {
+                    if let rewrite { try? FileManager.default.removeItem(at: rewrite) }
+                    continue
+                }
+                if let rewrite {
+                    try? FileManager.default.moveItem(at: rewrite, to: rewrite.deletingPathExtension())
+                    Self.log.info("\(delivery.kept.count, privacy: .public) items wait for the phone to take them")
+                }
+                await deliver(delivery, to: envelope.phoneID)
             }
         }
     }
 
-    private func deliver(_ delivery: OutboxDelivery) async {
+    /// Files are queued at once; links and text one by one, while `phoneID` is still connected.
+    private func deliver(_ delivery: OutboxDelivery, to phoneID: String) async {
         Self.log.info("""
             sending a share: \(delivery.files.count, privacy: .public) files, \
             \(delivery.shares.count, privacy: .public) links or texts, \(delivery.skipped, privacy: .public) skipped
@@ -136,7 +162,11 @@ final class ShareOutbox: SessionFeature {
         if !delivery.files.isEmpty {
             transfers.send(files: delivery.files.map { URL(fileURLWithPath: $0) })
         }
-        for item in delivery.shares {
+        for (i, item) in delivery.shares.enumerated() {
+            guard session?.phoneID == phoneID else {
+                Self.log.info("phone gone: \(delivery.shares.count - i, privacy: .public) links or texts not sent")
+                return
+            }
             switch item.kind {
             case .link:
                 if let s = item.url, let url = URL(string: s) {

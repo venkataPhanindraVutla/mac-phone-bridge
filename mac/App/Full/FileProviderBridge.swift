@@ -10,12 +10,14 @@ import Observation
 import os
 
 /// The Finder sidebar's side of the app (F-04, Full build). While the connected phone shares
-/// `browse.v1`, its File Provider domain is there (named after the phone) and the extension is
-/// handed this app's `PhoneFilesXPC` endpoint for it; the domain goes when the phone connects
-/// without `browse.v1` or is forgotten. Listings, downloads and uploads go through the
-/// `BrowseModel` request paths (its read limit and deadlines included) without moving the Files
-/// tab's folder. Downloads land in the App Group's `Downloads/`; the extension moves each one
-/// out, and whatever is left goes at the next launch.
+/// `browse.v1`, its File Provider domain is there (named after the phone) and connected, and the
+/// extension is handed this app's `PhoneFilesXPC` endpoint for it. On disconnect the domain is
+/// disconnected ("Your phone isn't connected."); it goes when the phone connects without
+/// `browse.v1` or is forgotten. Domain work runs in order in its own task, never holding up the
+/// session's work queue. Listings, downloads and uploads go through the `BrowseModel` request
+/// paths (its read limit and deadlines included) without touching the Files tab. Downloads land
+/// in the App Group's `Downloads/`; the extension moves each one out, and whatever is left goes
+/// at the next launch.
 /// Only phone IDs, root IDs and counts are logged, never names or paths.
 @MainActor
 final class FileProviderBridge: SessionFeature {
@@ -23,25 +25,35 @@ final class FileProviderBridge: SessionFeature {
 
     private let browse: BrowseModel
     private let downloads: URL
+    /// Where the extension stages uploads (read only through `StagedUpload`).
     private let uploads: URL
+    /// The app's own copies of staged uploads, sent from here.
+    private let sending: URL
     /// The connected phone, while it shares `browse.v1`.
     private var phone: (id: String, name: String)?
     /// One anonymous listener per phone domain registered this run.
     private var services: [String: PhoneFilesService] = [:]
-    private var registering = false
+    private var registering: Set<String> = []
+    /// Domain work (add, connect, disconnect, remove, register), one after another.
+    private var domainWork: Task<Void, Never>?
+    /// The connected phone's endpoint note, while observed.
+    private var observedNote: String?
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "fileprovider")
+    /// The longest a register handshake with the extension may take.
+    private static let registerTimeout: Duration = .seconds(10)
 
     init(browse: BrowseModel, container: URL, pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
         self.browse = browse
         downloads = container.appendingPathComponent(FullBuild.downloadsFolder, isDirectory: true)
         uploads = container.appendingPathComponent(FullBuild.uploadsFolder, isDirectory: true)
-        // What an earlier run left: downloads the extension never took, uploads it never cleared.
-        try? FileManager.default.removeItem(at: downloads)
-        try? FileManager.default.removeItem(at: uploads)
-        observeEndpointRequests()
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        sending = caches.appendingPathComponent("io.github.anmirror.mac/finder-uploads", isDirectory: true)
+        // What an earlier run left: downloads the extension never took, uploads never cleared.
+        for folder in [downloads, uploads, sending] { try? FileManager.default.removeItem(at: folder) }
         watchRoots()
         // Domains of phones forgotten while the app was not running.
-        Task {
+        enqueue {
             let paired = pairedPhoneIDs()
             for domain in (try? await NSFileProviderManager.domains()) ?? [] where !paired.contains(domain.identifier.rawValue) {
                 try? await NSFileProviderManager.remove(domain)
@@ -52,87 +64,151 @@ final class FileProviderBridge: SessionFeature {
     // MARK: SessionFeature
 
     func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
-        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(rawValue: phoneID), displayName: phoneName)
+        let domain = Self.domain(phoneID, name: phoneName)
         guard shared.contains("browse.v1") else {
             phone = nil
-            try? await NSFileProviderManager.remove(domain)
+            observeEndpointNote(for: nil)
+            services.removeValue(forKey: phoneID)?.invalidate()
+            enqueue { try? await NSFileProviderManager.remove(domain) }
             return
         }
         phone = (phoneID, phoneName)
-        do {
-            try await NSFileProviderManager.add(domain)
-        } catch {
-            Self.log.error("domain \(phoneID, privacy: .public) not added: \((error as NSError).code, privacy: .public)")
-            return
+        observeEndpointNote(for: phoneID)
+        enqueue { [weak self] in
+            do {
+                try await NSFileProviderManager.add(domain)
+            } catch {
+                Self.log.error("domain \(phoneID, privacy: .public) not added: \((error as NSError).code, privacy: .public)")
+                return
+            }
+            guard let self, self.phone?.id == phoneID, let manager = NSFileProviderManager(for: domain) else { return }
+            try? await manager.reconnect()
+            await self.register(phoneID)
+            // The roots are checked again; folders list afresh when Finder opens them.
+            try? await manager.signalEnumerator(for: .workingSet)
         }
-        await register(phoneID)
-        // What Finder listed in an earlier session may be stale: it lists again when shown.
-        try? await NSFileProviderManager(for: domain)?.reimportItems(below: .rootContainer)
     }
 
-    /// The domain stays; its calls answer "unreachable" until the phone is back.
+    /// The domain stays, disconnected: Finder says why and the extension is not called.
     func disconnected() {
-        phone = nil
+        guard let phone else { return }
+        self.phone = nil
+        observeEndpointNote(for: nil)
+        let domain = Self.domain(phone.id, name: phone.name)
+        let reason = String(localized: "Your phone isn't connected.")
+        enqueue { try? await NSFileProviderManager(for: domain)?.disconnect(reason: reason, options: []) }
     }
 
     func message(_ envelope: AMEnvelope) async {}
 
     func forget(phoneID: String) async {
-        if phone?.id == phoneID { phone = nil }
+        if phone?.id == phoneID {
+            phone = nil
+            observeEndpointNote(for: nil)
+        }
         services.removeValue(forKey: phoneID)?.invalidate()
-        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(rawValue: phoneID), displayName: "")
-        try? await NSFileProviderManager.remove(domain)
-        Self.log.info("domain \(phoneID, privacy: .public) removed")
+        let domain = Self.domain(phoneID, name: "")
+        enqueue {
+            try? await NSFileProviderManager.remove(domain)
+            Self.log.info("domain \(phoneID, privacy: .public) removed")
+        }
     }
 
-    // MARK: endpoint
+    // MARK: domain work
+
+    private func enqueue(_ work: @escaping @MainActor () async -> Void) {
+        let previous = domainWork
+        domainWork = Task {
+            await previous?.value
+            await work()
+        }
+    }
+
+    private static func domain(_ phoneID: String, name: String) -> NSFileProviderDomain {
+        NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(rawValue: phoneID), displayName: name)
+    }
 
     /// Hands the extension for `phoneID`'s domain this app's endpoint for that phone, through the
-    /// extension's restricted control service.
+    /// extension's restricted control service, within `registerTimeout`.
     private func register(_ phoneID: String) async {
+        guard !registering.contains(phoneID) else { return }
+        registering.insert(phoneID)
+        defer { registering.remove(phoneID) }
         let service = services[phoneID] ?? PhoneFilesService(phoneID: phoneID, bridge: self)
         services[phoneID] = service
-        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(rawValue: phoneID), displayName: "")
+        let registered = await Self.withTimeout(Self.registerTimeout) {
+            await Self.handOver(service, phoneID: phoneID)
+        }
+        Self.log.info("endpoint for \(phoneID, privacy: .public): \(registered ? "registered" : "not registered", privacy: .public)")
+    }
+
+    private static func handOver(_ service: PhoneFilesService, phoneID: String) async -> Bool {
         do {
-            guard let manager = NSFileProviderManager(for: domain),
+            guard let manager = NSFileProviderManager(for: domain(phoneID, name: "")),
                   let control = try await manager.service(named: NSFileProviderServiceName(FullBuild.serviceName), for: .rootContainer)
-            else { throw NSFileProviderError(.providerNotFound) }
+            else { return false }
             let connection = try await control.fileProviderConnection()
+            // Pinned to our extension when the app is signed with a team; an ad hoc build has none.
+            if let requirement = CodeRequirement.peer(identifier: CodeRequirement.fileProviderID, team: SigningTeam.current) {
+                connection.setCodeSigningRequirement(requirement)
+            }
             connection.remoteObjectInterface = FullBuild.controlInterface()
             connection.resume()
-            let registered: Bool = await withCheckedContinuation { continuation in
+            defer { connection.invalidate() }
+            return await withCheckedContinuation { continuation in
                 let once = OnceResult(continuation)
                 let proxy = connection.remoteObjectProxyWithErrorHandler { _ in once.resume(false) }
                 guard let extensionSide = proxy as? FileProviderControlXPC else { return once.resume(false) }
                 extensionSide.register(appEndpoint: service.endpoint) { once.resume(true) }
             }
-            connection.invalidate()
-            Self.log.info("endpoint for \(phoneID, privacy: .public): \(registered ? "registered" : "refused", privacy: .public)")
         } catch {
-            Self.log.error("endpoint for \(phoneID, privacy: .public) not registered: \((error as NSError).code, privacy: .public)")
+            log.error("endpoint for \(phoneID, privacy: .public): \((error as NSError).code, privacy: .public)")
+            return false
         }
     }
 
-    /// The extension was relaunched and has no endpoint: it posts the Darwin note, and the
-    /// connected phone's domain gets one again.
-    private func observeEndpointRequests() {
+    /// `work`'s answer, or false once `limit` has passed (the work is cancelled then).
+    private static func withTimeout(_ limit: Duration, _ work: @escaping @MainActor () async -> Bool) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let once = OnceResult(continuation)
+            let worker = Task { @MainActor in once.resume(await work()) }
+            Task {
+                try? await Task.sleep(for: limit)
+                worker.cancel()
+                once.resume(false)
+            }
+        }
+    }
+
+    /// Observes the endpoint note of `phoneID`'s domain only (none for nil): an extension that
+    /// was relaunched asks for the endpoint again.
+    private func observeEndpointNote(for phoneID: String?) {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
+        if let old = observedNote {
+            CFNotificationCenterRemoveObserver(center, observer, CFNotificationName(old as CFString), nil)
+        }
+        observedNote = phoneID.map(FullBuild.endpointNote(for:))
+        guard let name = observedNote else { return }
         CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(), observer,
-            { _, observer, _, _, _ in
-                guard let observer else { return }
+            center, observer,
+            { _, observer, name, _, _ in
+                guard let observer, let name else { return }
+                let note = name.rawValue as String
                 let bridge = Unmanaged<FileProviderBridge>.fromOpaque(observer).takeUnretainedValue()
-                Task { @MainActor in await bridge.endpointWanted() }
+                Task { @MainActor in bridge.endpointWanted(note) }
             },
-            FullBuild.darwinEndpointNote as CFString, nil, .deliverImmediately
+            name as CFString, nil, .deliverImmediately
         )
     }
 
-    private func endpointWanted() async {
-        guard let phone, !registering else { return }
-        registering = true
-        await register(phone.id)
-        registering = false
+    private func endpointWanted(_ note: String) {
+        // Only the connected phone's domain gets an endpoint.
+        guard let phone, note == FullBuild.endpointNote(for: phone.id) else { return }
+        // The extension holds a live connection already: nothing to hand over.
+        if services[phone.id]?.hasLiveConnection == true { return }
+        let id = phone.id
+        enqueue { [weak self] in await self?.register(id) }
     }
 
     /// The working set (the roots) is signalled whenever the phone's roots change.
@@ -149,8 +225,7 @@ final class FileProviderBridge: SessionFeature {
 
     private func rootsChanged() {
         guard let phone else { return }
-        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(rawValue: phone.id), displayName: phone.name)
-        NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
+        NSFileProviderManager(for: Self.domain(phone.id, name: phone.name))?.signalEnumerator(for: .workingSet) { _ in }
     }
 
     // MARK: PhoneFilesXPC, for `phoneID`'s domain
@@ -180,6 +255,7 @@ final class FileProviderBridge: SessionFeature {
         }
     }
 
+    /// Cancelling the calling task (the extension's `cancel`) cancels the read (R20).
     func download(for phoneID: String, rootID: String, path: String) async -> Result<URL, PhoneFilesError> {
         guard phone?.id == phoneID else { return .failure(.unreachable) }
         let slash = path.lastIndex(of: "/")
@@ -194,7 +270,8 @@ final class FileProviderBridge: SessionFeature {
         }
         var entry = AMBrowseEntry()
         entry.name = name
-        switch await browse.download(entry, in: BrowseLocation(rootID: rootID, path: folder), to: file) {
+        // Quiet: a Finder read never puts a notice in the Files tab.
+        switch await browse.download(entry, in: BrowseLocation(rootID: rootID, path: folder), to: file, quiet: true) {
         case let .success(url):
             return .success(url)
         case let .failure(failure):
@@ -203,19 +280,24 @@ final class FileProviderBridge: SessionFeature {
         }
     }
 
+    /// Takes the staged file through `StagedUpload` (no link followed, a regular file only) into
+    /// the app's own folder, and sends that copy. Cancelling the calling task cancels the send.
     func upload(for phoneID: String, rootID: String, dirPath: String, from url: URL) async -> Result<Data, PhoneFilesError> {
         guard phone?.id == phoneID else { return .failure(.unreachable) }
-        // Only a file the extension staged in the App Group's `Uploads/`: this unsandboxed app
-        // must not send any other Mac file on the extension's say-so.
-        let file = url.standardizedFileURL.resolvingSymlinksInPath()
-        let staging = uploads.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        guard url.isFileURL, file.pathComponents.count > staging.count,
-              Array(file.pathComponents.prefix(staging.count)) == staging
-        else {
+        let folder = sending.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let copy = folder.appendingPathComponent(url.lastPathComponent)
+        let uploads = uploads
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try await Task.detached(priority: .userInitiated) {
+                try StagedUpload.copy(url, stagedIn: uploads, to: copy)
+            }.value
+        } catch {
             Self.log.error("upload refused: not a staged file")
             return .failure(.denied)
         }
-        switch await browse.upload(file: file, into: BrowseLocation(rootID: rootID, path: dirPath)) {
+        switch await browse.upload(file: copy, into: BrowseLocation(rootID: rootID, path: dirPath)) {
         case let .success(item):
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             return encode(EntryDTO(name: item.name, isDir: false, size: item.size, modifiedMs: now, mime: ""))
@@ -237,6 +319,7 @@ final class FileProviderBridge: SessionFeature {
         case .browse(.denied), .browse(.revoked): .denied
         case .browse: .failed
         case .transfer(.noSpace): .noSpace
+        case .transfer(.cancelled): .cancelled
         case .transfer(.interrupted), .transfer(.disabled), .transfer(.timedOut): .unreachable
         case .transfer: .failed
         }
@@ -244,11 +327,13 @@ final class FileProviderBridge: SessionFeature {
 }
 
 /// The `PhoneFilesXPC` listener for one phone's domain. Its endpoint goes to that domain's
-/// extension only, through `NSFileProviderManager.getService`.
+/// extension only, through `NSFileProviderManager.getService`. Downloads and uploads run as one
+/// task per extension token, cancelled by `cancel(token:)` (ruling R20).
 final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @unchecked Sendable {
     let phoneID: String
     private let bridge: FileProviderBridge
     private let listener = NSXPCListener.anonymous()
+    private let tokens = CancelTokens()
     private let lock = NSLock()
     private var connections: [NSXPCConnection] = []
 
@@ -263,6 +348,9 @@ final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @
 
     var endpoint: NSXPCListenerEndpoint { listener.endpoint }
 
+    /// The extension holds a connection the system has not invalidated.
+    var hasLiveConnection: Bool { lock.withLock { !connections.isEmpty } }
+
     func invalidate() {
         listener.invalidate()
         for c in lock.withLock({ defer { connections = [] }; return connections }) { c.invalidate() }
@@ -273,6 +361,11 @@ final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @
         // handed to nobody but this phone's File Provider extension (through the extension's
         // restricted service), so that is every connection it gets, by construction.
         guard listener === self.listener else { return false }
+        // Pinned to our extension when the app is signed with a team. An ad hoc or unsigned
+        // build has no team to pin, and a requirement would refuse every peer.
+        if let requirement = CodeRequirement.peer(identifier: CodeRequirement.fileProviderID, team: SigningTeam.current) {
+            newConnection.setCodeSigningRequirement(requirement)
+        }
         newConnection.exportedInterface = FullBuild.phoneFilesInterface()
         newConnection.exportedObject = self
         newConnection.invalidationHandler = { [weak self, weak newConnection] in
@@ -294,16 +387,33 @@ final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @
         Task { @MainActor in Self.answer(await bridge.list(for: phoneID, rootID: rootID, path: path, offset: offset), reply) }
     }
 
-    func download(rootID: String, path: String, reply: @escaping @Sendable (URL?, Error?) -> Void) {
+    func download(rootID: String, path: String, token: String, reply: @escaping @Sendable (URL?, Error?) -> Void) {
         let (bridge, phoneID) = (bridge, phoneID)
-        Task { @MainActor in Self.answer(await bridge.download(for: phoneID, rootID: rootID, path: path), reply) }
+        run(token, reply) { await bridge.download(for: phoneID, rootID: rootID, path: path) }
     }
 
-    func upload(rootID: String, dirPath: String, from url: URL, reply: @escaping @Sendable (Data?, Error?) -> Void) {
+    func upload(rootID: String, dirPath: String, from url: URL, token: String,
+                reply: @escaping @Sendable (Data?, Error?) -> Void) {
         let (bridge, phoneID) = (bridge, phoneID)
-        Task { @MainActor in
-            Self.answer(await bridge.upload(for: phoneID, rootID: rootID, dirPath: dirPath, from: url), reply)
+        run(token, reply) { await bridge.upload(for: phoneID, rootID: rootID, dirPath: dirPath, from: url) }
+    }
+
+    func cancel(token: String) {
+        tokens.cancel(token)
+    }
+
+    /// Runs `work` as the task `token` names, so `cancel(token:)` reaches it.
+    private func run<T: Sendable>(_ token: String, _ reply: @escaping @Sendable (T?, Error?) -> Void,
+                                  _ work: @escaping @MainActor @Sendable () async -> Result<T, PhoneFilesError>) {
+        let box = CancelBox()
+        let tokens = tokens
+        tokens.begin(token) { box.cancel() }
+        let task = Task { @MainActor in
+            let result = await work()
+            tokens.end(token)
+            Self.answer(result, reply)
         }
+        box.set { task.cancel() }
     }
 
     private static func answer<T>(_ result: Result<T, PhoneFilesError>, _ reply: (T?, Error?) -> Void) {
@@ -314,7 +424,7 @@ final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @
     }
 }
 
-/// Resumes a continuation once, whichever of the reply and the error handler comes first.
+/// Resumes a continuation once, whichever answer comes first.
 private final class OnceResult: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?

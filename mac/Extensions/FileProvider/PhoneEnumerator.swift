@@ -3,9 +3,13 @@ import FileProviderShared
 import Foundation
 
 /// The phone's browse roots: the domain's root container, and the working set. The app signals
-/// the working set when the roots change; its sync anchor is the list of root IDs, so a change
-/// reports the roots now there and deletes the ones gone. Folder contents are not tracked.
+/// the working set on connect and when the roots change; its sync anchor is a short hash of the
+/// roots (`WorkingSetAnchor`). A change reports the roots now there and deletes the ones gone
+/// when this process saw the older anchor; otherwise the anchor has expired and the system lists
+/// the working set again. Folder contents are not tracked.
 final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sendable {
+    /// Root IDs by the anchors this process handed out, so a change can name deletions.
+    private static let seen = AnchorMemory()
     private let app: AppLink
     /// The working set (reports changes); else the root container (always enumerated afresh).
     private let changes: Bool
@@ -25,7 +29,7 @@ final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Send
                 out.value.didEnumerate(roots.map(PhoneItem.root))
                 out.value.finishEnumerating(upTo: nil)
             } catch {
-                out.value.finishEnumeratingWithError(error)
+                out.value.finishEnumeratingWithError(FileProviderExtension.nsError(error, .read))
             }
         }
     }
@@ -41,9 +45,10 @@ final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Send
                 let roots = try await app.roots(fresh: true)
                 let anchor = Self.anchor(roots)
                 if anchor != syncAnchor {
-                    let before = Set(Self.rootIDs(syncAnchor))
-                    let now = Set(roots.map(\.id))
-                    let gone = before.subtracting(now).map {
+                    guard let before = Self.seen.rootIDs(for: syncAnchor.rawValue) else {
+                        throw NSFileProviderError(.syncAnchorExpired)
+                    }
+                    let gone = before.subtracting(roots.map(\.id)).map {
                         NSFileProviderItemIdentifier(PhoneItemID.encode(rootID: $0, path: ""))
                     }
                     if !gone.isEmpty { out.value.didDeleteItems(withIdentifiers: gone) }
@@ -51,7 +56,7 @@ final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Send
                 }
                 out.value.finishEnumeratingChanges(upTo: anchor, moreComing: false)
             } catch {
-                out.value.finishEnumeratingWithError(error)
+                out.value.finishEnumeratingWithError(FileProviderExtension.nsError(error, .read))
             }
         }
     }
@@ -68,13 +73,11 @@ final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Send
         }
     }
 
-    /// The root IDs and names, as JSON: a renamed root is a change too.
+    /// A hash of the roots: a renamed root is a change too.
     private static func anchor(_ roots: [RootDTO]) -> NSFileProviderSyncAnchor {
-        NSFileProviderSyncAnchor((try? JSONEncoder().encode(roots)) ?? Data())
-    }
-
-    private static func rootIDs(_ anchor: NSFileProviderSyncAnchor) -> [String] {
-        ((try? JSONDecoder().decode([RootDTO].self, from: anchor.rawValue)) ?? []).map(\.id)
+        let data = WorkingSetAnchor.make(roots)
+        seen.remember(data, rootIDs: Set(roots.map(\.id)))
+        return NSFileProviderSyncAnchor(data)
     }
 
     static func timeAnchor() -> NSFileProviderSyncAnchor {
@@ -86,11 +89,13 @@ final class RootsEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Send
 /// tracked: asked for changes, it says the anchor expired and the system lists it again.
 final class FolderEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sendable {
     private let app: AppLink
+    private let cache: EntryCache
     private let rootID: String
     private let path: String
 
-    init(app: AppLink, rootID: String, path: String) {
+    init(app: AppLink, cache: EntryCache, rootID: String, path: String) {
         self.app = app
+        self.cache = cache
         self.rootID = rootID
         self.path = path
     }
@@ -105,6 +110,7 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sen
                 let roots = try await app.roots()
                 guard let root = roots.first(where: { $0.id == rootID }) else { throw NSFileProviderError(.noSuchItem) }
                 let listing = try await app.list(rootID: rootID, path: path, offset: offset)
+                cache.store(listing.entries, rootID: rootID, folderPath: path)
                 out.value.didEnumerate(listing.entries.map {
                     PhoneItem.entry($0, rootID: rootID, folderPath: path, writable: root.writable)
                 })
@@ -112,7 +118,7 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sen
                     ? NSFileProviderPage(Data(String(listing.nextOffset).utf8)) : nil
                 out.value.finishEnumerating(upTo: next)
             } catch {
-                out.value.finishEnumeratingWithError(error)
+                out.value.finishEnumeratingWithError(FileProviderExtension.nsError(error, .read))
             }
         }
     }
@@ -135,4 +141,22 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sen
 struct Unchecked<T>: @unchecked Sendable {
     let value: T
     init(_ value: T) { self.value = value }
+}
+
+/// The last few working-set anchors and their root IDs.
+final class AnchorMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var anchors: [(Data, Set<String>)] = []
+
+    func remember(_ anchor: Data, rootIDs: Set<String>) {
+        lock.withLock {
+            anchors.removeAll { $0.0 == anchor }
+            anchors.append((anchor, rootIDs))
+            if anchors.count > 16 { anchors.removeFirst(anchors.count - 16) }
+        }
+    }
+
+    func rootIDs(for anchor: Data) -> Set<String>? {
+        lock.withLock { anchors.first { $0.0 == anchor }?.1 }
+    }
 }

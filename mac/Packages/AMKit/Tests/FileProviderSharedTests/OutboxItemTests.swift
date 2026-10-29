@@ -41,7 +41,7 @@ private let everything: Set<String> = ["files.v1", "share.v1"]
     #expect(e.decision(connectedPhoneID: "bb22", shared: everything, pairedPhoneIDs: paired, nowMs: now) == .keep)
     // Its phone: delivered.
     #expect(e.decision(connectedPhoneID: phone, shared: everything, pairedPhoneIDs: paired, nowMs: now)
-        == .deliver(OutboxDelivery(files: [], shares: [.text("hi")], skipped: 0)))
+        == .deliver(OutboxDelivery(files: [], shares: [.text("hi")], skipped: 0, kept: [])))
 }
 
 @Test func outboxDropsForgottenPhoneAndOldItems() {
@@ -62,18 +62,18 @@ private let everything: Set<String> = ["files.v1", "share.v1"]
 @Test func outboxFollowsTheSharedCapabilities() {
     let e = envelope([.file("/f"), .link("https://example.com"), .text("t")])
     let sendable: (String) -> Bool = { _ in true }
-    // Files need files.v1; links and text need share.v1.
+    // Files need files.v1; links and text need share.v1. What is blocked waits (R21).
     #expect(e.decision(connectedPhoneID: phone, shared: ["files.v1"], pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
-        == .deliver(OutboxDelivery(files: ["/f"], shares: [], skipped: 2)))
+        == .deliver(OutboxDelivery(files: ["/f"], shares: [], skipped: 0, kept: [.link("https://example.com"), .text("t")])))
     #expect(e.decision(connectedPhoneID: phone, shared: ["share.v1"], pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
-        == .deliver(OutboxDelivery(files: [], shares: [.link("https://example.com"), .text("t")], skipped: 1)))
-    // A phone with neither gets nothing.
+        == .deliver(OutboxDelivery(files: [], shares: [.link("https://example.com"), .text("t")], skipped: 0, kept: [.file("/f")])))
+    // A phone with neither gets nothing now.
     #expect(e.decision(connectedPhoneID: phone, shared: ["browse.v1"], pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
-        == .deliver(OutboxDelivery(files: [], shares: [], skipped: 3)))
+        == .keep)
     // Items missing their field are skipped.
     let broken = envelope([OutboxItem(kind: .file), OutboxItem(kind: .link), OutboxItem(kind: .text, text: "")])
     #expect(broken.decision(connectedPhoneID: phone, shared: everything, pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
-        == .deliver(OutboxDelivery(files: [], shares: [], skipped: 3)))
+        == .deliver(OutboxDelivery(files: [], shares: [], skipped: 3, kept: [])))
 }
 
 @Test func outboxSendsOnlyRegularReadableFiles() throws {
@@ -107,5 +107,52 @@ private let everything: Set<String> = ["files.v1", "share.v1"]
 
     let e = envelope([.file(file.path), .file(folder.path), .file(package.path), .file(locked.path), .file(missing.path)])
     #expect(e.decision(connectedPhoneID: phone, shared: everything, pairedPhoneIDs: [phone], nowMs: now)
-        == .deliver(OutboxDelivery(files: [file.path], shares: [], skipped: 4)))
+        == .deliver(OutboxDelivery(files: [file.path], shares: [], skipped: 4, kept: [])))
+}
+
+// MARK: fix round 1 (R21, future shares, sheet checks)
+
+@Test func blockedItemsWaitInARewrittenEnvelope() {
+    let e = envelope([.file("/f"), .link("https://example.com"), .text("t")])
+    let sendable: (String) -> Bool = { _ in true }
+    // Files go now; links and text wait for share.v1 (kept, same phone and time).
+    #expect(e.decision(connectedPhoneID: phone, shared: ["files.v1"], pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
+        == .deliver(OutboxDelivery(files: ["/f"], shares: [], skipped: 0,
+                                   kept: [.link("https://example.com"), .text("t")])))
+    // Nothing can go and nothing is dropped: left as it is.
+    #expect(e.decision(connectedPhoneID: phone, shared: ["browse.v1"], pairedPhoneIDs: [phone], nowMs: now, isSendable: sendable)
+        == .keep)
+    // While files are blocked, a file is kept unchecked: it may be back by then.
+    let gone = envelope([.file("/gone"), .text("t")])
+    #expect(gone.decision(connectedPhoneID: phone, shared: ["share.v1"], pairedPhoneIDs: [phone], nowMs: now,
+                          isSendable: { _ in false })
+        == .deliver(OutboxDelivery(files: [], shares: [.text("t")], skipped: 0, kept: [.file("/gone")])))
+    // With files.v1, a vanished file is dropped.
+    #expect(gone.decision(connectedPhoneID: phone, shared: ["files.v1"], pairedPhoneIDs: [phone], nowMs: now,
+                          isSendable: { _ in false })
+        == .deliver(OutboxDelivery(files: [], shares: [], skipped: 1, kept: [.text("t")])))
+    // The kept items' envelope is the same share.
+    let kept = e.keeping([.text("t")])
+    #expect(kept.phoneID == e.phoneID)
+    #expect(kept.createdMs == e.createdMs)
+    #expect(kept.items == [.text("t")])
+}
+
+@Test func futureSharesAreDropped() {
+    let e = envelope([.text("hi")], createdMs: now + OutboxEnvelope.maxFutureMs + 1)
+    #expect(e.decision(connectedPhoneID: phone, shared: everything, pairedPhoneIDs: [phone], nowMs: now) == .drop)
+    let soon = envelope([.text("hi")], createdMs: now + OutboxEnvelope.maxFutureMs)
+    #expect(soon.decision(connectedPhoneID: phone, shared: everything, pairedPhoneIDs: [phone], nowMs: now)
+        == .deliver(OutboxDelivery(files: [], shares: [.text("hi")], skipped: 0, kept: [])))
+}
+
+@Test func theSheetRefusesTooLongTextAndNothing() {
+    #expect(OutboxEnvelope.check([.text("hi"), .file("/a")]) == .ok)
+    #expect(OutboxEnvelope.check([]) == .nothingToSend)
+    #expect(OutboxEnvelope.check([.text("")]) == .nothingToSend)
+    let max = String(repeating: "a", count: OutboxEnvelope.maxTextBytes)
+    #expect(OutboxEnvelope.check([.text(max)]) == .ok)
+    // Bytes, not characters: é is two.
+    let over = String(repeating: "é", count: OutboxEnvelope.maxTextBytes / 2 + 1)
+    #expect(OutboxEnvelope.check([.file("/a"), .text(over)]) == .textTooLong)
 }

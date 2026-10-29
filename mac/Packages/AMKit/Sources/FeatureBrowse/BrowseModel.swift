@@ -254,12 +254,14 @@ public final class BrowseModel: SessionFeature {
 
     /// Fetches `entry` of `folder` to exactly `file`. Waits its turn behind `maxReads` reads.
     /// Cancelling the calling task drops a read still waiting (it is never sent), or cancels its
-    /// request or transfer.
-    public func download(_ entry: AMBrowseEntry, in folder: BrowseLocation, to file: URL) async -> Result<URL, TransferFailure> {
+    /// request or transfer. A `quiet` read (Finder's) never sets the Files tab's `notice`.
+    public func download(_ entry: AMBrowseEntry, in folder: BrowseLocation, to file: URL,
+                         quiet: Bool = false) async -> Result<URL, TransferFailure> {
         guard isConnected else { return .failure(.transfer(.interrupted)) }
         guard sharesBrowse else { return .failure(.transfer(.disabled)) }
         guard !entry.isDir else { return .failure(.browse(.badPath)) }
-        let read = Read(requestID: engine.nextRequestID(), rootID: folder.rootID, path: folder.path(of: entry.name), file: file)
+        let read = Read(requestID: engine.nextRequestID(), rootID: folder.rootID, path: folder.path(of: entry.name), file: file,
+                        quiet: quiet)
         let requestID = read.requestID
         let cancelled = read.cancelled
         let result = await withTaskCancellationHandler {
@@ -331,10 +333,12 @@ public final class BrowseModel: SessionFeature {
     /// Sends `file` into `folder`, never over an existing file (the phone adds a counter), and
     /// returns once its transfer has ended: the item when the phone has it, else why not. A
     /// folder or a package is not sent (`BAD_PATH`). The folder reloads if it is the one shown.
+    /// Cancelling the calling task cancels the transfer (the phone is told once it was offered).
     public func upload(file: URL, into folder: BrowseLocation) async -> Result<TransferItem, TransferFailure> {
         guard isConnected else { return .failure(.transfer(.interrupted)) }
         guard sharesBrowse else { return .failure(.transfer(.disabled)) }
         guard SendableFiles.split([file]).files.count == 1 else { return .failure(.browse(.badPath)) }
+        guard !Task.isCancelled else { return .failure(.transfer(.cancelled)) }
         var target = AMBrowseTarget()
         target.rootID = folder.rootID
         target.dirPath = folder.path
@@ -344,7 +348,12 @@ public final class BrowseModel: SessionFeature {
         let answer = Answer<Result<TransferItem, TransferFailure>>()
         uploadWaiters[id] = answer
         Self.log.info("upload \(id, privacy: .public) into root \(folder.rootID, privacy: .public)")
-        return await answer.wait() ?? .failure(.transfer(.interrupted))
+        let engine = engine
+        return await withTaskCancellationHandler {
+            await answer.wait() ?? .failure(.transfer(.interrupted))
+        } onCancel: {
+            Task { @MainActor in engine.cancel(id) }
+        }
     }
 
     /// The engine finished a transfer (`TransferEngine.onFinished`): an upload that the phone
@@ -621,7 +630,7 @@ public final class BrowseModel: SessionFeature {
     /// `browse.result` instead of an offer: the download ends with that outcome.
     private func readRefused(_ r: AMBrowseResult) {
         guard r.outcome != .ok else { return }
-        notice = Self.notice(for: r.outcome, naming: false)
+        if sentReads[r.requestID]?.quiet != true { notice = Self.notice(for: r.outcome, naming: false) }
         engine.failRequest(r.requestID, .browse(r.outcome))
     }
 
@@ -679,15 +688,18 @@ private final class Read {
     let rootID: String
     let path: String
     let file: URL
+    /// Finder's: no notice in the Files tab.
+    let quiet: Bool
     let answer = Answer<Result<URL, TransferFailure>>()
     /// Set by the calling task's cancellation handler, on whatever thread it runs.
     nonisolated let cancelled = CancelFlag()
 
-    init(requestID: UInt64, rootID: String, path: String, file: URL) {
+    init(requestID: UInt64, rootID: String, path: String, file: URL, quiet: Bool) {
         self.requestID = requestID
         self.rootID = rootID
         self.path = path
         self.file = file
+        self.quiet = quiet
     }
 }
 

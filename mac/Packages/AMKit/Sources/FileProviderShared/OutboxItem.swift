@@ -24,13 +24,18 @@ public struct OutboxItem: Codable, Equatable, Sendable {
 
 /// One share, as the Share extension writes it to the App Group's `Outbox/`: the items, the
 /// phone the sheet named ("Send to <phone>") and when (ruling R18). The app sends it to that
-/// phone only, and drops it once that phone is forgotten or after 24 hours.
+/// phone only, and drops it once that phone is forgotten or after 24 hours. Items the phone
+/// cannot take now (its capability is not shared) wait in a rewritten envelope (ruling R21).
 public struct OutboxEnvelope: Codable, Equatable, Sendable {
     /// Items older than this are dropped unsent.
     public static let maxAgeMs: Int64 = 24 * 60 * 60 * 1000
+    /// A share dated further ahead than this is not one this Mac made: dropped.
+    public static let maxFutureMs: Int64 = 5 * 60 * 1000
     /// The most items one share carries (the extension's activation rule allows 50).
     public static let maxItems = 50
-    /// A larger file is not read: 50 texts at the 256 KiB cap, and some.
+    /// The most text one item carries, in UTF-8 bytes (the `share.text` cap).
+    public static let maxTextBytes = 262_144
+    /// A larger file is not read: 50 texts at the cap, and some.
     public static let maxBytes = 16 * 1024 * 1024
 
     public var phoneID: String
@@ -53,47 +58,84 @@ public struct OutboxEnvelope: Codable, Equatable, Sendable {
         return try JSONDecoder().decode(OutboxEnvelope.self, from: data)
     }
 
-    /// What to do with this share now. It waits (`keep`) until its own phone is connected; it is
-    /// dropped once that phone is no longer paired or the share is older than 24 hours. For its
-    /// phone, files go only with `files.v1` and only while each is still a readable regular file;
-    /// links and text only with `share.v1`. Everything else is skipped and counted.
+    /// The same share (phone and time) with only `items`: what waits after a partial delivery.
+    public func keeping(_ items: [OutboxItem]) -> OutboxEnvelope {
+        OutboxEnvelope(phoneID: phoneID, createdMs: createdMs, items: items)
+    }
+
+    public enum SheetCheck: Equatable, Sendable {
+        case ok
+        /// "Nothing to send."
+        case nothingToSend
+        /// "The text is too long to send."
+        case textTooLong
+    }
+
+    /// What the Share sheet says before writing a share: nothing usable, or text over the cap.
+    public static func check(_ items: [OutboxItem]) -> SheetCheck {
+        if items.contains(where: { $0.kind == .text && ($0.text?.utf8.count ?? 0) > maxTextBytes }) { return .textTooLong }
+        let usable = items.contains {
+            switch $0.kind {
+            case .file: !($0.path ?? "").isEmpty
+            case .link: !($0.url ?? "").isEmpty
+            case .text: !($0.text ?? "").isEmpty
+            }
+        }
+        return usable ? .ok : .nothingToSend
+    }
+
+    /// What to do with this share now. It is dropped once its phone is no longer paired, when it
+    /// is older than 24 hours, or dated more than 5 minutes ahead. It waits (`keep`) until its
+    /// own phone is connected. For its phone: files go with `files.v1` while each is a readable
+    /// regular file (else dropped); links and text with `share.v1`. Items whose capability is
+    /// not shared now are `kept` for a rewritten envelope (R21). Nothing to send and nothing
+    /// dropped leaves it as it is (`keep`).
     public func decision(connectedPhoneID: String?, shared: Set<String>, pairedPhoneIDs: Set<String>, nowMs: Int64,
                          isSendable: (String) -> Bool = OutboxFiles.isSendable) -> OutboxDecision {
-        guard pairedPhoneIDs.contains(phoneID), nowMs - createdMs <= Self.maxAgeMs else { return .drop }
+        guard pairedPhoneIDs.contains(phoneID), nowMs - createdMs <= Self.maxAgeMs,
+              createdMs - nowMs <= Self.maxFutureMs else { return .drop }
         guard connectedPhoneID == phoneID else { return .keep }
-        var delivery = OutboxDelivery(files: [], shares: [], skipped: max(0, items.count - Self.maxItems))
+        var delivery = OutboxDelivery(files: [], shares: [], skipped: max(0, items.count - Self.maxItems), kept: [])
         for item in items.prefix(Self.maxItems) {
             switch item.kind {
             case .file:
-                if shared.contains("files.v1"), let path = item.path, isSendable(path) {
+                if !shared.contains("files.v1") {
+                    delivery.kept.append(item)
+                } else if let path = item.path, isSendable(path) {
                     delivery.files.append(path)
                 } else {
                     delivery.skipped += 1
                 }
             case .link:
-                if shared.contains("share.v1"), let url = item.url, !url.isEmpty {
+                if !shared.contains("share.v1") {
+                    delivery.kept.append(item)
+                } else if let url = item.url, !url.isEmpty {
                     delivery.shares.append(item)
                 } else {
                     delivery.skipped += 1
                 }
             case .text:
-                if shared.contains("share.v1"), let text = item.text, !text.isEmpty {
+                if !shared.contains("share.v1") {
+                    delivery.kept.append(item)
+                } else if let text = item.text, !text.isEmpty, text.utf8.count <= Self.maxTextBytes {
                     delivery.shares.append(item)
                 } else {
                     delivery.skipped += 1
                 }
             }
         }
+        if delivery.files.isEmpty, delivery.shares.isEmpty, delivery.skipped == 0 { return .keep }
         return .deliver(delivery)
     }
 }
 
 public enum OutboxDecision: Equatable, Sendable {
-    /// Its phone is not the one connected (or none is): leave it in the outbox.
+    /// Leave it in the outbox as it is: its phone is not the one connected (or none is), or
+    /// nothing in it can go yet.
     case keep
-    /// Its phone was forgotten, or it is older than 24 hours: delete it unsent.
+    /// Its phone was forgotten, or it is too old (or dated ahead): delete it unsent.
     case drop
-    /// Send these to the connected phone, then delete it.
+    /// Send these to the connected phone; the share is replaced by `kept`, if any are left.
     case deliver(OutboxDelivery)
 }
 
@@ -102,14 +144,17 @@ public struct OutboxDelivery: Equatable, Sendable {
     public var files: [String]
     /// Links and text, in the order shared.
     public var shares: [OutboxItem]
-    /// Items not sent: the phone does not take their kind, or a file is gone, unreadable, a
-    /// folder or a package.
+    /// Items dropped: a file gone, unreadable, a folder or a package; an empty field; text over
+    /// the cap; items past the 50th.
     public var skipped: Int
+    /// Items waiting for a capability the phone does not share now (R21).
+    public var kept: [OutboxItem]
 
-    public init(files: [String], shares: [OutboxItem], skipped: Int) {
+    public init(files: [String], shares: [OutboxItem], skipped: Int, kept: [OutboxItem]) {
         self.files = files
         self.shares = shares
         self.skipped = skipped
+        self.kept = kept
     }
 }
 

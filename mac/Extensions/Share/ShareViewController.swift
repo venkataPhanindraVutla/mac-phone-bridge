@@ -66,8 +66,22 @@ final class ShareViewController: NSViewController {
             for provider in input.value.prefix(OutboxEnvelope.maxItems) {
                 if let item = await Self.item(from: provider) { items.append(item) }
             }
-            self.finish(Self.write(items, for: phone.id))
+            switch OutboxEnvelope.check(items) {
+            case .ok:
+                self.finish(Self.write(items, for: phone.id))
+            case .nothingToSend:
+                self.refuse(String(localized: "Nothing to send."))
+            case .textTooLong:
+                self.refuse(String(localized: "The text is too long to send."))
+            }
         }
+    }
+
+    /// Says why nothing was written; the sheet stays until Cancel.
+    private func refuse(_ reason: String) {
+        detailLabel.stringValue = reason
+        detailLabel.isHidden = false
+        Self.log.info("share refused")
     }
 
     private func finish(_ written: Bool) {
@@ -140,7 +154,6 @@ final class ShareViewController: NSViewController {
 
     /// Writes the share for `phoneID` into `Outbox/` and tells the app; false if it could not.
     private static func write(_ items: [OutboxItem], for phoneID: String) -> Bool {
-        guard !items.isEmpty else { return true }
         guard let group = FullBuild.appGroupID(in: .main),
               let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
         else { return false }
