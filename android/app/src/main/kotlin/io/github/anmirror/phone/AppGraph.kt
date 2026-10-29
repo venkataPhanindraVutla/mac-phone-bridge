@@ -50,8 +50,6 @@ import io.github.anmirror.protocol.v1.TransferOffer
 import io.github.anmirror.protocol.v1.TransferReject
 import io.github.anmirror.transfer.BulkOpener
 import io.github.anmirror.transfer.TransferEngine
-import io.github.anmirror.transfer.TransferState
-import io.github.anmirror.transfer.TransferStatus
 import io.github.anmirror.protocol.v1.Channel as ProtoChannel
 import io.github.anmirror.protocol.v1.Hello
 import io.github.anmirror.protocol.v1.SetupLevel
@@ -348,7 +346,8 @@ class AppGraph private constructor(context: Context) {
     val transfers = TransferEngine(
         scope = CoroutineScope(
             SupervisorJob() + Dispatchers.Default +
-                CoroutineExceptionHandler { _, e -> Log.e(TAG, "uncaught in transfers", e) },
+                // The class only: a message could carry a path, and so a file name.
+                CoroutineExceptionHandler { _, e -> Log.e(TAG, "uncaught in transfers: ${e.javaClass.simpleName}") },
         ),
         send = ::sendTransfer,
         bulk = BulkOpener(::openBulk),
@@ -363,19 +362,31 @@ class AppGraph private constructor(context: Context) {
     fun sendFiles(files: List<SharedFile>): List<String> {
         val ids = transfers.send(files)
         ids.zip(files).forEach { (id, file) -> openShares[id] = file }
-        releaseFinished(transfers.transfers.value) // one may have ended before it was tracked
+        releaseFinished() // one may have ended before it was tracked
         return ids
     }
 
-    private fun releaseFinished(list: List<TransferStatus>) {
-        val byId = list.associateBy { it.id }
-        for (id in openShares.keys) {
-            val state = byId[id]?.state
-            // Unlisted means finished and dropped from the engine's recent list.
-            if (state == null || state == TransferState.DONE || state == TransferState.FAILED || state == TransferState.CANCELLED) {
-                openShares.remove(id)?.close()
-            }
+    /**
+     * Closes the descriptors of shares whose transfer ended. The tracked IDs are taken before the
+     * engine's list is read, so a share queued meanwhile is either not looked at or seen as live.
+     */
+    private fun releaseFinished() {
+        val tracked = openShares.keys.toList()
+        for (id in sharesToRelease(tracked, transfers.transfers.value)) openShares.remove(id)?.close()
+    }
+
+    /** Transfers the user cancelled on the phone: they add nothing to the results notification (R9). */
+    private val cancelledHere = object : LinkedHashSet<String>() {
+        override fun add(element: String): Boolean {
+            if (size >= KEEP_CANCELLED) remove(first())
+            return super.add(element)
         }
+    }
+
+    /** The notification's Cancel. */
+    fun cancelTransfer(id: String) {
+        synchronized(cancelledHere) { cancelledHere.add(id) }
+        transfers.cancel(id)
     }
 
     /**
@@ -471,8 +482,13 @@ class AppGraph private constructor(context: Context) {
             }
         }
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
-        scope.launch { transfers.transfers.collect(::releaseFinished) }
-        TransferNotifier(app, transfers.transfers, downloads::saved).launchIn(scope)
+        scope.launch { transfers.transfers.collect { releaseFinished() } }
+        TransferNotifier(
+            app,
+            transfers.transfers,
+            saved = downloads::saved,
+            cancelledHere = { synchronized(cancelledHere) { cancelledHere.toSet() } },
+        ).launchIn(scope)
     }
 
     private fun hello(): Hello = Hello.newBuilder()
@@ -504,6 +520,7 @@ class AppGraph private constructor(context: Context) {
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
         private const val ENDPOINT_WAIT_MS = 10_000L
         private const val BULK_DIAL_MS = 15_000L
+        private const val KEEP_CANCELLED = 100
 
         // Holds only the application context, which lives as long as the process.
         @SuppressLint("StaticFieldLeak")

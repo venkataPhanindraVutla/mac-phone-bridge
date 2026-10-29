@@ -11,7 +11,7 @@ class TransferActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_CANCEL) return
         val id = intent.data?.schemeSpecificPart ?: return
-        AppGraph.get(context).transfers.cancel(id)
+        AppGraph.get(context).cancelTransfer(id)
     }
 
     companion object {

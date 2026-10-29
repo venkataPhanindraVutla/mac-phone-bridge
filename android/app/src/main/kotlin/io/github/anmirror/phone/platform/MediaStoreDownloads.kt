@@ -2,6 +2,7 @@ package io.github.anmirror.phone.platform
 
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Build
@@ -20,20 +21,43 @@ import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val RELATIVE_PATH = "Download/Android Mirroring"
+
+/**
+ * The sweep's selection: pending rows in our folder that this app owns, except [liveIds] (rows
+ * being written right now). MediaStore stores the folder with a trailing slash.
+ */
+internal fun leftoverSelection(ownerPackage: String, liveIds: Collection<Long>): Pair<String, Array<String>> {
+    val selection = StringBuilder(
+        "${MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${MediaStore.MediaColumns.IS_PENDING}=1" +
+            " AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME}=?",
+    )
+    if (liveIds.isNotEmpty()) {
+        selection.append(" AND ${MediaStore.MediaColumns._ID} NOT IN (${liveIds.joinToString(",") { "?" }})")
+    }
+    val args = listOf("$RELATIVE_PATH/", ownerPackage) + liveIds.map { it.toString() }
+    return selection.toString() to args.toTypedArray()
+}
+
 /** A received file, for the "Saved to" notification's tap. */
 data class SavedFile(val uri: Uri, val mime: String)
 
 /**
  * Files from the Mac land in `Download/Android Mirroring` through MediaStore (no storage
  * permission). A row is inserted pending (`IS_PENDING = 1`) and published by [IncomingFile.commit];
- * MediaStore renames a colliding name to `name (1).ext`. Every failure deletes the row, and the
- * first open in a process deletes pending rows a killed process left behind. Offers with a
+ * MediaStore renames a colliding name to `name (1).ext`. Every failure deletes the row; pending
+ * rows left behind (a killed process, a delete that threw) are swept when the connection service
+ * starts and before the first open in a process, skipping rows being written. Offers with a
  * browse `target` are not for Downloads (Task 10 routes them). Blocking: call off the main thread.
  */
 class MediaStoreDownloads(context: Context) : IncomingSinks {
     private val resolver: ContentResolver = context.contentResolver
+    private val ownPackage = context.packageName
     private val storage = context.getSystemService(StorageManager::class.java)
     private val swept = AtomicBoolean(false)
+
+    /** Row IDs of downloads being written: the sweep leaves them alone. Also the sweep's lock. */
+    private val live = HashSet<Long>()
     private val saved = object : LinkedHashMap<String, SavedFile>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SavedFile>?) = size > KEEP_SAVED
     }
@@ -54,19 +78,27 @@ class MediaStoreDownloads(context: Context) : IncomingSinks {
             put(MediaStore.MediaColumns.RELATIVE_PATH, RELATIVE_PATH)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(COLLECTION, values) ?: throw IOException("insert refused")
+        // Under the sweep's lock: a sweep can't run between the insert and the row being marked live.
+        val (uri, rowId) = synchronized(live) {
+            val uri = resolver.insert(COLLECTION, values) ?: throw IOException("insert refused")
+            val rowId = ContentUris.parseId(uri)
+            live += rowId
+            uri to rowId
+        }
         val out = try {
             resolver.openOutputStream(uri, "w") ?: throw IOException("no output stream")
         } catch (e: Exception) {
             runCatching { resolver.delete(uri, null, null) }
+            synchronized(live) { live -= rowId }
             throw e
         }
-        return SinkResult.Ready(Download(offer.transferId, uri, mime, out))
+        return SinkResult.Ready(Download(offer.transferId, uri, rowId, mime, out))
     }
 
     private inner class Download(
         private val transferId: String,
         private val uri: Uri,
+        private val rowId: Long,
         private val mime: String,
         override val output: OutputStream,
     ) : IncomingFile {
@@ -78,38 +110,49 @@ class MediaStoreDownloads(context: Context) : IncomingSinks {
                 if (c.moveToFirst()) c.getString(0) else null
             } ?: throw IOException("saved name unknown")
             synchronized(saved) { saved[transferId] = SavedFile(uri, mime) }
+            synchronized(live) { live -= rowId }
             return name
         }
 
         /** Also after a [commit] that threw part way: the row goes, published or not. */
         override fun abort() {
             runCatching { output.close() }
-            resolver.delete(uri, null, null)
+            try {
+                resolver.delete(uri, null, null)
+            } finally {
+                synchronized(live) { live -= rowId } // a failed delete is left to the next sweep
+            }
         }
     }
 
-    /** Deletes this app's pending rows in our folder: partial files from a process that was killed mid-transfer. */
-    private fun sweepLeftovers() {
+    /**
+     * Deletes this app's pending rows in our folder, except those being written: partial files a
+     * killed process or a failed delete left behind. Blocking; never throws.
+     */
+    fun sweepLeftovers() {
         try {
-            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${MediaStore.MediaColumns.IS_PENDING}=1"
-            val args = arrayOf("$RELATIVE_PATH/")
-            val n = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                resolver.delete(
-                    COLLECTION,
-                    Bundle().apply {
-                        putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
-                        putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-                        putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
-                    },
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                resolver.delete(MediaStore.setIncludePending(COLLECTION), selection, args)
-            }
-            if (n > 0) Log.i(TAG, "downloads: removed $n partial files")
+            synchronized(live) { sweepLocked() }
         } catch (e: Exception) {
             Log.w(TAG, "downloads: leftover sweep failed (${e.javaClass.simpleName})")
         }
+    }
+
+    private fun sweepLocked() {
+        val (selection, args) = leftoverSelection(ownPackage, live.toList())
+        val n = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            resolver.delete(
+                COLLECTION,
+                Bundle().apply {
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                },
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            resolver.delete(MediaStore.setIncludePending(COLLECTION), selection, args)
+        }
+        if (n > 0) Log.i(TAG, "downloads: removed $n partial files")
     }
 
     private fun mimeFor(offer: TransferOffer): String {
@@ -120,7 +163,6 @@ class MediaStoreDownloads(context: Context) : IncomingSinks {
 
     private companion object {
         val COLLECTION: Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        const val RELATIVE_PATH = "Download/Android Mirroring"
         const val OCTET_STREAM = "application/octet-stream"
         const val KEEP_SAVED = 20
     }

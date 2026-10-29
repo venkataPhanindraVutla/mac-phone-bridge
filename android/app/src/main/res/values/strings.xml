@@ -101,6 +101,10 @@
     <string name="share_target">Send to Mac</string>
     <!-- Toast when a shared file's size can't be known, so it can't be sent. -->
     <string name="share_file_unreadable">Couldn\'t send %1$s</string>
+    <plurals name="share_files_unreadable">
+        <item quantity="one">Couldn\'t send %1$d file</item>
+        <item quantity="other">Couldn\'t send %1$d files</item>
+    </plurals>
 
     <!-- Shared from the Mac -->
     <string name="channel_shared">Shared from your Mac</string>
@@ -117,6 +121,22 @@
     <string name="transfer_send_failed">Couldn\'t send %1$s</string>
     <string name="transfer_receive_failed">Couldn\'t receive %1$s</string>
     <string name="transfer_cancel">Cancel</string>
+    <plurals name="transfer_more_waiting">
+        <item quantity="one">%1$d more waiting</item>
+        <item quantity="other">%1$d more waiting</item>
+    </plurals>
+    <plurals name="transfer_saved_count">
+        <item quantity="one">Saved %1$d file to Download/Android Mirroring</item>
+        <item quantity="other">Saved %1$d files to Download/Android Mirroring</item>
+    </plurals>
+    <plurals name="transfer_send_failed_count">
+        <item quantity="one">Couldn\'t send %1$d file</item>
+        <item quantity="other">Couldn\'t send %1$d files</item>
+    </plurals>
+    <plurals name="transfer_receive_failed_count">
+        <item quantity="one">Couldn\'t receive %1$d file</item>
+        <item quantity="other">Couldn\'t receive %1$d files</item>
+    </plurals>
     <string name="transfer_reason_no_space_mac">Not enough space on the Mac.</string>
     <string name="transfer_reason_no_space_phone">Not enough space on the phone.</string>
     <string name="transfer_reason_connection_lost">The connection was lost.</string>

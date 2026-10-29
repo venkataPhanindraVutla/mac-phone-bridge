@@ -34,6 +34,11 @@ class ClipboardBridge(
         macHas = sha256(text)
     }
 
+    /** [text] went to the Mac another way (`share.text`, which the Mac puts on its clipboard): it has it now. */
+    fun noteSentToMac(text: String) {
+        macHas = sha256(text)
+    }
+
     /** Sends [text] (the clipboard's, read by the caller) as `clipboard.text`. */
     suspend fun sendText(text: String?): ClipSendResult {
         if (text.isNullOrEmpty()) return ClipSendResult.EMPTY

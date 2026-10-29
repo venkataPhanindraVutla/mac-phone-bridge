@@ -1,6 +1,8 @@
 package io.github.anmirror.phone.service
 
 import android.Manifest
+import android.app.DownloadManager
+import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -14,10 +16,11 @@ import io.github.anmirror.phone.R
 import io.github.anmirror.phone.platform.SavedFile
 import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.transfer.Direction
-import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -31,6 +34,12 @@ internal fun ongoingTitleRes(direction: Direction): Int = when (direction) {
 internal fun failureTitleRes(direction: Direction): Int = when (direction) {
     Direction.SEND -> R.string.transfer_send_failed
     Direction.RECEIVE -> R.string.transfer_receive_failed
+}
+
+/** "Couldn't send %1$d files" / "Couldn't receive %1$d files" (plurals). */
+internal fun failureCountRes(direction: Direction): Int = when (direction) {
+    Direction.SEND -> R.plurals.transfer_send_failed_count
+    Direction.RECEIVE -> R.plurals.transfer_receive_failed_count
 }
 
 /** The reason line under a failure title. Space and refusals are about the receiving side. */
@@ -57,115 +66,155 @@ internal fun failureReasonRes(error: TransferError?, direction: Direction): Int 
 }
 
 /**
- * Shows the transfer engine's list as notifications on channel `transfers`: ongoing ones with a
- * progress bar (updated at most every [intervalMs]) and Cancel, received files as "Saved to
- * Download/Android Mirroring" (a tap opens them), failures with their reason. A finished send just
- * goes away. Each transfer has its own notification, tagged with its ID. Posts nothing while
- * POST_NOTIFICATIONS is not granted. Never logs names.
+ * Shows the transfer engine's list as at most two notifications per direction (R9), on channel
+ * `transfers`:
+ * - **Ongoing:** the active transfer, "Sending/Receiving %1$s" with a progress bar and Cancel
+ *   (which cancels that transfer), plus "%1$d more waiting". Updated at most every [intervalMs]
+ *   per direction, sooner when the active transfer changes, so Android's update rate limit never
+ *   drops one; a skipped update is posted once the interval is up.
+ * - **Results:** what ended since the direction last started: received files ("Saved to
+ *   Download/Android Mirroring", a tap opens the file, or the Downloads view for several) and
+ *   failures with their reason. Re-posted (cancel, then notify) as results arrive.
+ * Posts nothing while POST_NOTIFICATIONS is not granted. Never logs names.
  */
 class TransferNotifier(
     context: Context,
     private val transfers: StateFlow<List<TransferStatus>>,
     private val saved: (transferId: String) -> SavedFile?,
+    private val cancelledHere: () -> Set<String>,
     private val clock: () -> Long = System::currentTimeMillis,
     private val intervalMs: Long = 500,
 ) {
     private val app = context.applicationContext
     private val manager = NotificationManagerCompat.from(app)
+    private val model = TransferNotificationModel()
 
-    private class Shown(val state: TransferState, val at: Long)
+    private class Posted(val id: String, val at: Long)
 
-    /** The last ongoing post per transfer, for the rate limit. */
-    private val shown = HashMap<String, Shown>()
+    /** The ongoing notification as last posted, per direction. Touched only by the collector. */
+    private val posted = HashMap<Direction, Posted>()
+    private val latest = HashMap<Direction, OngoingView>()
+    private var flush: Job? = null
 
-    /** Transfers whose final notification has been handled. */
-    private val ended = HashSet<String>()
-
+    /**
+     * Starts following the engine. Called once per process: first removes transfer notifications
+     * a killed process left behind (an ongoing one would otherwise stay forever).
+     */
     fun launchIn(scope: CoroutineScope): Job {
         createChannel()
-        return scope.launch { transfers.collect(::onList) }
+        for (id in ALL_IDS) manager.cancel(id)
+        // One thread: the model, [posted] and [latest] are touched only from here.
+        return scope.launch(Dispatchers.Default.limitedParallelism(1)) {
+            transfers.collect { list -> show(model.update(list, cancelledHere()), this) }
+        }
     }
 
-    private fun onList(list: List<TransferStatus>) {
+    private fun show(views: TransferViews, scope: CoroutineScope) {
         val now = clock()
-        for (t in list) {
-            when (t.state) {
-                TransferState.QUEUED, TransferState.WAITING, TransferState.ACTIVE -> {
-                    val last = shown[t.id]
-                    if (last != null && last.state == t.state && now - last.at < intervalMs) continue
-                    shown[t.id] = Shown(t.state, now)
-                    post(t.id, ongoing(t))
-                }
-                TransferState.DONE, TransferState.FAILED, TransferState.CANCELLED -> {
-                    if (!ended.add(t.id)) continue
-                    shown.remove(t.id)
-                    if (t.state == TransferState.DONE && t.direction == Direction.SEND) {
-                        manager.cancel(t.id, NOTIFICATION_ID)
-                    } else {
-                        post(t.id, if (t.state == TransferState.DONE) savedNotification(t) else failed(t))
-                    }
+        for (direction in Direction.entries) {
+            val view = views.ongoing[direction]
+            if (view == null) {
+                latest.remove(direction)
+                if (posted.remove(direction) != null) manager.cancel(ongoingId(direction))
+            } else {
+                latest[direction] = view
+                val last = posted[direction]
+                if (last == null || last.id != view.id || now - last.at >= intervalMs) {
+                    postOngoing(view, now)
+                } else {
+                    scheduleFlush(scope, intervalMs - (now - last.at))
                 }
             }
+            if (direction in views.changed) views.results[direction]?.let(::postResult)
         }
-        // The engine keeps only recent finished transfers: forget the ones it dropped.
-        val ids = list.mapTo(HashSet()) { it.id }
-        ended.retainAll(ids)
-        shown.keys.retainAll(ids)
     }
 
-    private fun base(t: TransferStatus) = NotificationCompat.Builder(app, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_notification)
-        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .setOnlyAlertOnce(true)
-        .setSortKey(t.id)
+    /** Posts what a rate-limited update skipped, once the interval is up. */
+    private fun scheduleFlush(scope: CoroutineScope, waitMs: Long) {
+        if (flush?.isActive == true) return
+        flush = scope.launch {
+            delay(waitMs)
+            val now = clock()
+            for ((direction, view) in latest) {
+                val last = posted[direction] ?: continue
+                if (now - last.at >= intervalMs) postOngoing(view, now)
+            }
+        }
+    }
 
-    private fun ongoing(t: TransferStatus): android.app.Notification {
+    private fun postOngoing(view: OngoingView, now: Long) {
+        posted[view.direction] = Posted(view.id, now)
         val cancel = PendingIntent.getBroadcast(
             app,
             0,
-            TransferActionReceiver.cancelIntent(app, t.id),
+            TransferActionReceiver.cancelIntent(app, view.id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val percent = if (t.size > 0) (t.done.coerceIn(0, t.size) * 100 / t.size).toInt() else 0
-        return base(t)
-            .setContentTitle(app.getString(ongoingTitleRes(t.direction), t.name))
-            .setProgress(100, percent, false)
+        val builder = base()
+            .setContentTitle(app.getString(ongoingTitleRes(view.direction), view.name))
+            .setProgress(100, view.percent, false)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
             .addAction(0, app.getString(R.string.transfer_cancel), cancel)
-            .build()
+        if (view.waiting > 0) {
+            builder.setContentText(app.resources.getQuantityString(R.plurals.transfer_more_waiting, view.waiting, view.waiting))
+        }
+        post(ongoingId(view.direction), builder.build())
     }
 
-    private fun savedNotification(t: TransferStatus): android.app.Notification {
-        val builder = base(t)
-            .setContentTitle(app.getString(R.string.transfer_saved))
-            .setContentText(t.savedAs ?: t.name)
+    private fun postResult(r: ResultView) {
+        val builder = base()
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
-        saved(t.id)?.let { file ->
-            val view = Intent(Intent.ACTION_VIEW)
-                .setDataAndType(file.uri, file.mime)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            builder.setContentIntent(
-                PendingIntent.getActivity(app, 0, view, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
-            )
+        val tap: Intent? = when {
+            r.failed > 0 -> {
+                val title = if (r.failed == 1) {
+                    app.getString(failureTitleRes(r.direction), r.failedName)
+                } else {
+                    app.resources.getQuantityString(failureCountRes(r.direction), r.failed, r.failed)
+                }
+                builder.setContentTitle(title)
+                    .setContentText(app.getString(failureReasonRes(r.error, r.direction)))
+                    .setCategory(NotificationCompat.CATEGORY_ERROR)
+                if (r.saved > 0) downloadsView() else null
+            }
+            r.saved == 1 -> {
+                builder.setContentTitle(app.getString(R.string.transfer_saved)).setContentText(r.savedName)
+                r.savedId?.let(saved)?.let { file ->
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(file.uri, file.mime)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            r.saved > 1 -> {
+                builder.setContentTitle(app.resources.getQuantityString(R.plurals.transfer_saved_count, r.saved, r.saved))
+                downloadsView()
+            }
+            else -> return
         }
-        return builder.build()
+        tap?.let {
+            builder.setContentIntent(PendingIntent.getActivity(app, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+        }
+        // A fresh post, not an update: Android may drop updates that come too fast, never new posts.
+        val id = resultId(r.direction)
+        manager.cancel(id)
+        post(id, builder.build())
     }
 
-    private fun failed(t: TransferStatus): android.app.Notification = base(t)
-        .setContentTitle(app.getString(failureTitleRes(t.direction), t.name))
-        .setContentText(app.getString(failureReasonRes(t.error, t.direction)))
-        .setCategory(NotificationCompat.CATEGORY_ERROR)
-        .setAutoCancel(true)
-        .build()
+    private fun downloadsView() =
+        Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-    private fun post(tag: String, notification: android.app.Notification) {
+    private fun base() = NotificationCompat.Builder(app, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setOnlyAlertOnce(true)
+
+    private fun post(id: Int, notification: Notification) {
         val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (allowed) manager.notify(tag, NOTIFICATION_ID, notification)
+        if (allowed) manager.notify(id, notification)
     }
 
     private fun createChannel() {
@@ -180,7 +229,9 @@ class TransferNotifier(
     companion object {
         const val CHANNEL_ID = "transfers"
 
-        /** With the transfer ID as tag (ConnectionService uses 1, find uses 2). */
-        private const val NOTIFICATION_ID = 3
+        // ConnectionService uses 1, find uses 2.
+        private fun ongoingId(d: Direction) = if (d == Direction.SEND) 3 else 4
+        private fun resultId(d: Direction) = if (d == Direction.SEND) 5 else 6
+        private val ALL_IDS = listOf(3, 4, 5, 6)
     }
 }

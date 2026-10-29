@@ -65,6 +65,7 @@ import io.github.anmirror.protocol.v1.NotificationFilter
 import io.github.anmirror.protocol.v1.SharedLink
 import io.github.anmirror.protocol.v1.SharedText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
@@ -75,6 +76,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Keeps the phone connected to its Mac: a `connectedDevice` foreground service that runs the
@@ -140,8 +142,9 @@ class ConnectionService : LifecycleService() {
         calls.stop()
         network.stop()
         graph.manager.stop()
-        session?.let(graph::onSessionEnded) // the collector below is cancelled before it sees Stopped
-        session = null
+        // The collector never sees Stopped once cancelled: end the session here (getAndSet: exactly one of us does).
+        sessionWatch?.cancel()
+        session.getAndSet(null)?.let(graph::onSessionEnded)
         Log.i(TAG, "service: destroyed")
         super.onDestroy()
     }
@@ -403,7 +406,8 @@ class ConnectionService : LifecycleService() {
     }
 
     /** The Connected state of the session in progress; a different state means it ended. */
-    private var session: Connected? = null
+    private val session = AtomicReference<Connected?>(null)
+    private var sessionWatch: Job? = null
 
     /**
      * Transfers: every `files.*` message goes through [AppGraph.onFilesMessage] (endpoint, R5
@@ -411,11 +415,13 @@ class ConnectionService : LifecycleService() {
      */
     private fun setUpTransfers() {
         for (type in FILES_TYPES) graph.manager.on(type) { env -> graph.onFilesMessage(env) }
-        lifecycleScope.launch {
+        // Partial downloads a killed process (or a delete that threw) left behind.
+        graph.scope.launch(Dispatchers.IO) { graph.downloads.sweepLeftovers() }
+        // Off the main thread, so a busy UI cannot delay failing the old session's transfers.
+        sessionWatch = graph.scope.launch {
             graph.manager.state.collect { state ->
-                val ended = session
+                val ended = session.getAndSet(state as? Connected)
                 if (ended != null && state !== ended) graph.onSessionEnded(ended)
-                session = state as? Connected
             }
         }
     }

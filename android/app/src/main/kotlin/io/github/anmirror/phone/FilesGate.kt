@@ -1,6 +1,8 @@
 package io.github.anmirror.phone
 
 import io.github.anmirror.protocol.v1.TransferError
+import io.github.anmirror.transfer.TransferState
+import io.github.anmirror.transfer.TransferStatus
 
 /** The features whose transfers travel as `files.*` over bulk connections (SPEC 13, 16). */
 val BULK_CAPABILITIES = setOf("files.v1", "browse.v1", "screenshots.v1", "photos.v1")
@@ -17,3 +19,18 @@ fun offerRefusal(hasTarget: Boolean, shared: Set<String>): TransferError? {
     val needed = if (hasTarget) "browse.v1" else "files.v1"
     return if (needed in shared) null else TransferError.TRANSFER_ERROR_DISABLED
 }
+
+/**
+ * Which tracked shared files can be closed: those whose transfer ended, or dropped off the
+ * engine's recent list (only finished transfers do). [fresh] must be read after [tracked] was
+ * taken, so every tracked ID was already registered with the engine and a just-queued file is
+ * listed as live.
+ */
+fun sharesToRelease(tracked: Collection<String>, fresh: List<TransferStatus>): List<String> {
+    val live = fresh.filter { it.state.isOngoing() }.mapTo(HashSet()) { it.id }
+    return tracked.filter { it !in live }
+}
+
+/** Queued, waiting for the peer, or moving bytes. */
+fun TransferState.isOngoing(): Boolean =
+    this == TransferState.QUEUED || this == TransferState.WAITING || this == TransferState.ACTIVE

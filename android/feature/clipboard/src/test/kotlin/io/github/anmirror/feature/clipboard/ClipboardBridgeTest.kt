@@ -119,4 +119,13 @@ class ClipboardBridgeTest {
         assertEquals(ClipSendResult.SENT, bridge.sendText("X"))
         assertEquals(listOf("X"), sent)
     }
+
+    @Test fun sharedTextCountsAsMacHas() = runTest {
+        val bridge = ClipboardBridge(clipboard, send)
+        // The phone sent "S" as share.text; the Mac puts it on its clipboard (R6, outgoing side).
+        bridge.noteSentToMac("S")
+        assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendText("S"))
+        assertTrue(sent.isEmpty())
+        assertEquals(ClipSendResult.SENT, bridge.sendText("T"))
+    }
 }
