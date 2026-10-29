@@ -371,6 +371,10 @@ private func phoneAnswers(_ r: Rig, with bytes: Data, name: String = "IMG_0005.j
     video.mime = "video/mp4"
     #expect(PhotosModel.promisedName(for: video, timeZone: .gmt) == "VID_20231114_221320.mp4")
 
+    var jpeg = photo
+    jpeg.mime = "image/jpeg"
+    #expect(PhotosModel.promisedName(for: jpeg, timeZone: .gmt) == "IMG_20231114_221320.jpg")
+
     // No date, or a type macOS does not know: the ID, and an extension by kind.
     var bare = AMPhotoItem()
     bare.id = 42
@@ -404,4 +408,121 @@ private func phoneAnswers(_ r: Rig, with bytes: Data, name: String = "IMG_0005.j
     #expect(r.model.phoneAvailability == off)
     #expect(r.model.items.isEmpty)
     #expect(r.model.thumbnails.isEmpty)
+}
+
+@Test func contentTypeFallsBackByKind() {
+    var item = AMPhotoItem()
+    item.mime = "image/heic"
+    #expect(PhotosModel.contentType(for: item) == .heic)
+    item.mime = "image/x-unknown-thing"
+    #expect(PhotosModel.contentType(for: item) == .image)
+    item.video = true
+    item.mime = "video/x-unknown-thing"
+    #expect(PhotosModel.contentType(for: item) == .movie)
+    item.mime = ""
+    #expect(PhotosModel.contentType(for: item) == .movie)
+    item.mime = "video/mp4"
+    #expect(PhotosModel.contentType(for: item) == .mpeg4Movie)
+}
+
+// MARK: fix round 1
+
+@MainActor @Test func refreshBeforeConnectedRunsOnConnect() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    // The window asks before the session reaches the model (NotifyWork delivers it later).
+    await r.model.refresh()
+    #expect(r.lastListRequest == nil)
+    #expect(!r.model.available)
+    await r.connect()
+    #expect(r.model.available)
+    try await until("photos.list") { r.lastListRequest != nil }
+    await r.answerList([1])
+    try await until("photos.thumbs") { !r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).isEmpty }
+
+    // Without photos.v1 nothing is asked, and a pending ask does not outlive a window close.
+    let r2 = Rig(); defer { r2.cleanUp() }
+    await r2.model.refresh()
+    await r2.connect(shared: ["files.v1"])
+    #expect(!r2.model.available)
+    let r3 = Rig(); defer { r3.cleanUp() }
+    await r3.model.refresh()
+    r3.model.clear()
+    await r3.connect()
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r2.lastListRequest == nil)
+    #expect(r3.lastListRequest == nil)
+}
+
+@MainActor @Test func refreshAsksOnlyForMissingThumbnails() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    try await r.refreshed([1, 2])
+    let link = r.linkThumbnails()
+    try await link.phone.send(record(1, Data([1])) + record(2, Data()) + endRecord)
+    await link.task.value
+
+    try await r.refreshed([3, 1, 2])
+    #expect(r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).last?.ids == [3, 2])
+    #expect(r.model.thumbnails[1] == Data([1]), "a thumbnail held is kept")
+
+    // Every one held: no request at all.
+    let count = r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).count
+    try await r.refreshed([1])
+    #expect(r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).count == count)
+}
+
+@MainActor @Test func oversizedThumbnailIsNotKept() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    try await r.refreshed([1, 2])
+    let link = r.linkThumbnails()
+    let atLimit = Data(repeating: 1, count: 64 * 1024), over = Data(repeating: 2, count: 64 * 1024 + 1)
+    try await link.phone.send(record(1, atLimit) + record(2, over) + endRecord)
+    await link.task.value
+    #expect(r.model.thumbnails == [1: atLimit])
+}
+
+@MainActor @Test func cancelledFetchCancelsItsRequest() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let target = r.downloads.appendingPathComponent("drag.jpg")
+    let task = Task { await r.model.fetch(5, to: target) }
+    try await until("photos.fetch") { !r.sent.of(.photosFetch, AMPhotoFetch.self).isEmpty }
+    task.cancel()
+    #expect(await task.value == .failure(.transfer(.cancelled)))
+    // The phone's late answer is denied.
+    let fetch = try #require(r.sent.of(.photosFetch, AMPhotoFetch.self).last)
+    var offer = AMTransferOffer()
+    offer.transferID = "late"; offer.size = 1; offer.kind = .photo; offer.requestID = fetch.requestID
+    await r.engine.message(envelope(.files, .filesOffer, offer))
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.denied] }
+}
+
+@MainActor @Test func fetchQueuedBehindAReceiveDoesNotTimeOut() async throws {
+    let r = Rig(fetchTimeout: .milliseconds(150)); defer { r.cleanUp() }
+    await r.connect()
+    // A first save whose bytes are still coming.
+    let first = Task { await r.model.save(1) }
+    try await until("photos.fetch 1") { r.sent.of(.photosFetch, AMPhotoFetch.self).count == 1 }
+    let one = try #require(r.sent.of(.photosFetch, AMPhotoFetch.self).last)
+    var offer = AMTransferOffer()
+    offer.transferID = "p1"; offer.name = "a.jpg"; offer.size = 100; offer.kind = .photo; offer.requestID = one.requestID
+    await r.engine.message(envelope(.files, .filesOffer, offer))
+    try await until("files.accept") { !r.sent.of(.filesAccept, AMTransferAccept.self).isEmpty }
+    let (mac, phone) = MemoryPipe.pair()
+    r.engine.link(mac, grant: BulkGrant(role: .phoneSends, context: "p1"))
+
+    // The second waits behind it on the phone: no timeout while the first is live.
+    var second: Result<URL, TransferFailure>?
+    let secondTask = Task { second = await r.model.save(2) }
+    try await Task.sleep(for: .milliseconds(400))
+    #expect(second == nil)
+
+    let bytes = Data(repeating: 7, count: 100)
+    try await phone.send(bytes)
+    var complete = AMTransferComplete(); complete.transferID = "p1"; complete.sha256 = sha(bytes)
+    await r.engine.message(envelope(.files, .filesComplete, complete))
+    #expect(await first.value == .success(r.downloads.appendingPathComponent("a.jpg")))
+    await secondTask.value
+    #expect(second == .failure(.transfer(.timedOut)), "once idle, its deadline runs")
 }

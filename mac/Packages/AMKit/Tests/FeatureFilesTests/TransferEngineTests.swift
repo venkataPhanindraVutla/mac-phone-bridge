@@ -701,6 +701,94 @@ final class Rig {
     try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.denied] }
 }
 
+@MainActor @Test func requestDeadlineFiresWhenIdle() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let id = r.engine.nextRequestID()
+    var result: Result<URL, TransferFailure>?
+    let start = ContinuousClock.now
+    r.engine.expect(requestID: id, destination: .folder(r.dir), deadline: .milliseconds(150)) { result = $0 }
+    try await until("deadline") { result != nil }
+    #expect(result == .failure(.transfer(.timedOut)))
+    #expect(ContinuousClock.now - start >= .milliseconds(140))
+    // The request is gone: a late offer for it is denied.
+    await r.deliver(.filesOffer, r.offer("t1", size: 10, requestID: id))
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.denied] }
+}
+
+@MainActor @Test func requestDeadlinePausesWhileReceiving() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // A phone send under way: the answer to a request would queue behind it.
+    let phone = try await r.startReceive(r.offer("t1", size: 1000))
+    let id = r.engine.nextRequestID()
+    var result: Result<URL, TransferFailure>?
+    r.engine.expect(requestID: id, destination: .folder(r.dir), deadline: .milliseconds(150)) { result = $0 }
+    try await Task.sleep(for: .milliseconds(400))
+    #expect(result == nil, "no countdown while a receive is live")
+
+    // The receive ends: the request gets a full deadline from now.
+    let bytes = randomBytes(1000)
+    try await phone.send(bytes)
+    await r.complete("t1", sha(bytes))
+    try await until("t1 done") { r.item("t1").map { $0.isFinal } == true }
+    let ended = ContinuousClock.now
+    try await Task.sleep(for: .milliseconds(60))
+    #expect(result == nil)
+    try await until("deadline") { result != nil }
+    #expect(result == .failure(.transfer(.timedOut)))
+    #expect(ContinuousClock.now - ended >= .milliseconds(140))
+}
+
+@MainActor @Test func requestDeadlineIsNotArmedUntilTheQueueDrains() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // Two phone sends: one active, one queued behind it.
+    let phone = try await r.startReceive(r.offer("t1", size: 10))
+    await r.deliver(.filesOffer, r.offer("t2", size: 10))
+    let id = r.engine.nextRequestID()
+    var result: Result<URL, TransferFailure>?
+    r.engine.expect(requestID: id, destination: .folder(r.dir), deadline: .milliseconds(100)) { result = $0 }
+    let bytes = randomBytes(10)
+    try await phone.send(bytes)
+    await r.complete("t1", sha(bytes))
+    try await until("t1 done") { r.item("t1").map { $0.isFinal } == true }
+    // t2 is still live (now waiting for its link): the deadline stays paused.
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(result == nil)
+    r.engine.cancel("t2")
+    try await until("deadline") { result != nil }
+    #expect(result == .failure(.transfer(.timedOut)))
+}
+
+@MainActor @Test func cancelRequestEndsTheRequestOrItsTransfer() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // Still waiting for its offer: it fails CANCELLED, and a late offer is denied.
+    let a = r.engine.nextRequestID()
+    var first: Result<URL, TransferFailure>?
+    r.engine.expect(requestID: a, destination: .folder(r.dir)) { first = $0 }
+    r.engine.cancelRequest(a)
+    #expect(first == .failure(.transfer(.cancelled)))
+
+    // Its offer came: the transfer is cancelled, and the phone is told.
+    let b = r.engine.nextRequestID()
+    var second: Result<URL, TransferFailure>?
+    r.engine.expect(requestID: b, destination: .folder(r.dir)) { second = $0 }
+    let phone = try await r.startReceive(r.offer("t1", size: 1000, requestID: b))
+    try await phone.send(randomBytes(100))
+    try await until("bytes") { r.item("t1")?.done == 100 }
+    r.engine.cancelRequest(b)
+    #expect(second == .failure(.transfer(.cancelled)))
+    #expect(r.item("t1")?.state == .cancelled)
+    try await until("files.cancel") { r.sent.of(.filesCancel, AMTransferCancel.self).map(\.transferID) == ["t1"] }
+    #expect(r.files().isEmpty, "the partial file is gone")
+    #expect(r.engine.lastReceiveFailure == nil, "a cancel the user asked for is no failure")
+
+    // Unknown IDs are ignored.
+    r.engine.cancelRequest(9999)
+}
+
 @MainActor @Test func failRequestAndFilesFailedAnswerTheRequest() async throws {
     let r = Rig(); defer { r.cleanUp() }
     await r.connect()

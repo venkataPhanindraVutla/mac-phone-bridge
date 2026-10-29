@@ -3,7 +3,6 @@ import AppKit
 import FeatureFiles
 import FeaturePhotos
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The Phone window's Photos tab: the phone's newest 200 photos and videos as thumbnails. A cell
 /// drags out as the full file (fetched when dropped) and has "Save to Downloads". The list is
@@ -12,12 +11,14 @@ struct PhotosTab: View {
     let model: AppModel
     /// Why the last "Save to Downloads" did not work; cleared by the next one.
     @State private var saveNote: SaveNote?
+    /// Each thumbnail decoded once; dropped with the thumbnails.
+    @State private var images = ThumbnailImages()
 
     private var photos: PhotosModel { model.photos }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !model.isConnected || !model.canPhotos {
+            if !photos.available {
                 Text(model.statusText)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
@@ -41,22 +42,28 @@ struct PhotosTab: View {
             }
         }
         .padding(.top, 8)
-        .task(id: RefreshKey(connected: model.isConnected, shared: model.canPhotos,
-                             enabled: photos.phoneAvailability?.enabled ?? true)) {
-            guard model.isConnected, model.canPhotos, photos.phoneAvailability?.enabled ?? true else { return }
+        // Keyed on the model, not the server: the model learns of a (re)connect later, through
+        // the session's work queue, and a refresh before that would find no session.
+        .task(id: RefreshKey(available: photos.available, enabled: photos.phoneAvailability?.enabled ?? true)) {
+            guard photos.available, photos.phoneAvailability?.enabled ?? true else { return }
             await photos.refresh()
         }
+        .onChange(of: photos.thumbnails.count) { images.keep(Set(photos.thumbnails.keys)) }
     }
 
     @ViewBuilder private var grid: some View {
         if photos.items.isEmpty {
-            if photos.loading { ProgressView().frame(maxWidth: .infinity) }
+            if photos.loading {
+                ProgressView().frame(maxWidth: .infinity)
+            } else {
+                Text("No photos yet.").foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
         } else {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.cell, maximum: Self.cell), spacing: 8)], spacing: 8) {
                     ForEach(photos.items, id: \.id) { item in
-                        PhotoCell(item: item, jpeg: photos.thumbnails[item.id])
+                        PhotoCell(item: item, image: images.image(item.id, photos.thumbnails[item.id]))
                             .contextMenu {
                                 Button("Save to Downloads") { Task { await save(item) } }
                             }
@@ -81,21 +88,21 @@ struct PhotosTab: View {
     }
 
     private func provider(for item: AMPhotoItem) -> NSItemProvider {
-        let type = UTType(mimeType: item.mime) ?? (item.video ? .movie : .image)
         let photos = photos, id = item.id
-        return FilePromise.provider(name: PhotosModel.promisedName(for: item), type: type) { url in
+        return FilePromise.provider(name: PhotosModel.promisedName(for: item), type: PhotosModel.contentType(for: item)) { url in
             await photos.fetch(id, to: url)
         }
     }
 
     private struct RefreshKey: Equatable {
-        let connected: Bool
-        let shared: Bool
+        let available: Bool
         let enabled: Bool
     }
 }
 
-/// Why a save failed; nil reason when the user cancelled it (it shows no note).
+/// Why a save failed, for the note under "Couldn't save to Downloads.". There is no note for a
+/// save the user cancelled (`init` returns nil), and no reason line for a failure that is not a
+/// transfer's.
 private struct SaveNote {
     let reason: LocalizedStringResource?
 
@@ -110,11 +117,34 @@ private struct SaveNote {
     }
 }
 
+/// Thumbnails decoded once each, by item ID; an entry is redone only when its bytes change.
+/// A plain class, read and filled while the grid renders.
+@MainActor
+private final class ThumbnailImages {
+    private var decoded: [Int64: (jpeg: Data, image: NSImage)] = [:]
+
+    func image(_ id: Int64, _ jpeg: Data?) -> NSImage? {
+        guard let jpeg else {
+            decoded[id] = nil
+            return nil
+        }
+        if let hit = decoded[id], hit.jpeg == jpeg { return hit.image }
+        guard let image = NSImage(data: jpeg) else { return nil }
+        decoded[id] = (jpeg, image)
+        return image
+    }
+
+    /// Forgets every image whose thumbnail the model no longer holds.
+    func keep(_ ids: Set<Int64>) {
+        decoded = decoded.filter { ids.contains($0.key) }
+    }
+}
+
 /// One grid cell: the thumbnail (or a placeholder), a duration badge on videos, and one spoken
 /// label with the date and the kind.
 private struct PhotoCell: View {
     let item: AMPhotoItem
-    let jpeg: Data?
+    let image: NSImage?
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -140,7 +170,7 @@ private struct PhotoCell: View {
     }
 
     @ViewBuilder private var thumbnail: some View {
-        if let jpeg, let image = NSImage(data: jpeg) {
+        if let image {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFill()
@@ -163,10 +193,17 @@ private struct PhotoCell: View {
     /// `m:ss`, or `h:mm:ss` from an hour.
     static func duration(_ ms: Int64) -> String {
         let seconds = max(0, Int(ms / 1000))
+        return (seconds >= 3600 ? hours : minutes).string(from: TimeInterval(seconds)) ?? ""
+    }
+
+    private static let minutes = durationFormatter([.minute, .second])
+    private static let hours = durationFormatter([.hour, .minute, .second])
+
+    private static func durationFormatter(_ units: NSCalendar.Unit) -> DateComponentsFormatter {
         let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = seconds >= 3600 ? [.hour, .minute, .second] : [.minute, .second]
+        formatter.allowedUnits = units
         formatter.unitsStyle = .positional
         formatter.zeroFormattingBehavior = .pad
-        return formatter.string(from: TimeInterval(seconds)) ?? ""
+        return formatter
     }
 }

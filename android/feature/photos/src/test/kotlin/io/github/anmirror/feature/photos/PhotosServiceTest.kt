@@ -45,6 +45,7 @@ private class FakeLibrary(
     val items: List<MediaItem> = emptyList(),
     val thumbs: Map<Long, ByteArray?> = emptyMap(),
     val files: Map<Long, OutgoingFile> = emptyMap(),
+    val throwsFor: Set<Long> = emptySet(),
 ) : MediaLibrary {
     val recentCalls = CopyOnWriteArrayList<Pair<Int, Long>>()
     val thumbCalls = CopyOnWriteArrayList<Long>()
@@ -56,6 +57,7 @@ private class FakeLibrary(
 
     override fun thumbnail(id: Long): ByteArray? {
         thumbCalls += id
+        if (id in throwsFor) throw IllegalStateException("encoder")
         return thumbs[id]
     }
 
@@ -268,6 +270,51 @@ class PhotosServiceTest {
         photos.stop()
         withTimeout(5_000) { job.join() }
         assertTrue(streams.single().closed.get())
+    }
+
+    @Test
+    fun throwingThumbnailIsEmptyRecord() = runBlocking {
+        val library = FakeLibrary(thumbs = mapOf(1L to byteArrayOf(1), 3L to byteArrayOf(3)), throwsFor = setOf(2L))
+        service(library).onThumbs(PhotosThumbsRequest.newBuilder().addAllIds(listOf(1L, 2L, 3L)).build())
+        val got = records((streams.single().output as ByteArrayOutputStream).toByteArray())
+        assertEquals(listOf(1L, 2L, 3L, 0L), got.map { it.first })
+        assertEquals(listOf(1, 0, 1, 0), got.map { it.second.size })
+    }
+
+    @Test
+    fun olderDialArrivingLateNeverClosesTheNewerStream() = runBlocking {
+        val firstDial = CountDownLatch(1)
+        val dials = AtomicInteger()
+        val photos = PhotosService(
+            library = FakeLibrary(thumbs = mapOf(1L to byteArrayOf(1))),
+            send = { type, payload -> sent += type to payload; true },
+            bulk = BulkOpener { hello ->
+                hellos += hello
+                if (dials.incrementAndGet() == 1) {
+                    // The older request's dial is slow: it comes back after the newer one is streaming.
+                    kotlinx.coroutines.withContext(Dispatchers.IO) { firstDial.await() }
+                    FakeStream().also { streams += it }
+                } else {
+                    FakeStream(BlockingOutput()).also { streams += it }
+                }
+            },
+            transfers = engine,
+            partial = { false },
+        )
+        val older = scope.launchThumbs(photos, 1)
+        awaitUntil("first dial") { dials.get() == 1 }
+        val newer = scope.launchThumbs(photos, 1)
+        awaitUntil("newer stream") { streams.size == 1 }
+        firstDial.countDown()
+        withTimeout(5_000) { older.join() }
+        val late = streams[1]
+        val current = streams[0]
+        assertTrue(late.closed.get(), "the late, older stream is closed unused")
+        assertEquals(0, (late.output as ByteArrayOutputStream).size())
+        assertTrue(!current.closed.get(), "the newer stream is left alone")
+        photos.stop()
+        withTimeout(5_000) { newer.join() }
+        assertTrue(current.closed.get())
     }
 
     @Test

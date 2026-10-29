@@ -486,7 +486,7 @@ class ConnectionService : LifecycleService() {
             combine(
                 graph.manager.state.map { it is Connected && "photos.v1" in it.shared }.distinctUntilChanged(),
                 graph.photosOn,
-                graph.mediaAccess,
+                graph.photosAccess,
             ) { shared, on, access -> Triple(shared, on, access) }
                 .distinctUntilChanged()
                 .collect { (shared, on, access) ->

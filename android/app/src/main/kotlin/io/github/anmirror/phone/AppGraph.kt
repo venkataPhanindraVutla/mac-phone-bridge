@@ -43,6 +43,7 @@ import io.github.anmirror.phone.platform.SharedFile
 import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.ui.isGranted
 import io.github.anmirror.phone.ui.mediaAccess
+import io.github.anmirror.phone.ui.photosAccess
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.service.SharedNotifications
 import io.github.anmirror.phone.service.TransferNotifier
@@ -398,6 +399,11 @@ class AppGraph private constructor(context: Context) {
     /** How much of the photos this app may read (re-read on resume and after the permission prompt). */
     val mediaAccess: StateFlow<MediaAccess> = _mediaAccess.asStateFlow()
 
+    private val _photosAccess = MutableStateFlow(app.photosAccess())
+
+    /** The same for photos and videos together: images alone are PARTIAL for the photos feature. */
+    val photosAccess: StateFlow<MediaAccess> = _photosAccess.asStateFlow()
+
     fun setScreenshotsOn(on: Boolean) {
         screenshotsPrefs.edit { putBoolean(KEY_SCREENSHOTS_ON, on) }
         _screenshotsOn.value = on
@@ -405,6 +411,7 @@ class AppGraph private constructor(context: Context) {
 
     fun refreshMediaAccess() {
         _mediaAccess.value = app.mediaAccess()
+        _photosAccess.value = app.photosAccess()
     }
 
     /** The connected Mac shares screenshots.v1. */
@@ -456,7 +463,7 @@ class AppGraph private constructor(context: Context) {
      * The phone answers no `photos.*` request and sends no photo unless the Mac shares photos.v1,
      * the switch is on and some photos are readable (with only the picked ones, those are listed).
      */
-    fun photosOpen(): Boolean = photosShared() && _photosOn.value && app.mediaAccess() != MediaAccess.NONE
+    fun photosOpen(): Boolean = photosShared() && _photosOn.value && app.photosAccess() != MediaAccess.NONE
 
     /**
      * Sends a photos answer when [photosOpen]; false (and nothing sent) otherwise. Its
@@ -477,7 +484,7 @@ class AppGraph private constructor(context: Context) {
         send = ::sendPhotos,
         bulk = BulkOpener(::openBulk),
         transfers = transfers,
-        partial = { app.mediaAccess() == MediaAccess.PARTIAL },
+        partial = { app.photosAccess() == MediaAccess.PARTIAL },
         onQueued = { id, file -> track(listOf(id), listOf(file)) },
         log = { Log.i(TAG, it) },
     )

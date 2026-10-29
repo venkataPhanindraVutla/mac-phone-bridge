@@ -15,9 +15,10 @@ enum FilePromise {
     static let keepDelivered: Duration = .seconds(120)
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "promise")
 
-    /// `fetch` gets the file URL to write and returns where the file ended up. The load handler
-    /// calls its completion exactly once: with the file, with the fetch's failure, or with
-    /// "cancelled" when the receiver gives up first (the file is then removed once it arrives).
+    /// `fetch` gets the file URL to write and returns where the file ended up; it runs in a task
+    /// that is cancelled when the receiver gives up, so it should end its request then. The load
+    /// handler calls its completion exactly once: with the file, with the fetch's failure, or
+    /// with "cancelled" when the receiver gives up first (a file that still arrives is removed).
     static func provider(name: String, type: UTType,
                          fetch: @escaping @MainActor @Sendable (URL) async -> Result<URL, TransferFailure>) -> NSItemProvider {
         let provider = NSItemProvider()
@@ -27,10 +28,7 @@ enum FilePromise {
             let once = Once(completion)
             let dir = folder.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let file = dir.appendingPathComponent(FileNameSanitizer.sanitize(name))
-            progress.cancellationHandler = {
-                once(nil, CocoaError(.userCancelled))
-            }
-            Task { @MainActor in
+            let work = Task { @MainActor in
                 do {
                     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 } catch {
@@ -55,6 +53,11 @@ enum FilePromise {
                     remove(dir)
                     once(nil, failure == .transfer(.cancelled) ? CocoaError(.userCancelled) : CocoaError(.fileReadUnknown))
                 }
+            }
+            progress.cancellationHandler = {
+                once(nil, CocoaError(.userCancelled))
+                // On the main actor, where the fetch ends its request (`TransferEngine.cancelRequest`).
+                Task { @MainActor in work.cancel() }
             }
             return progress
         }

@@ -26,6 +26,9 @@ public final class PhotosModel: SessionFeature {
     public static let thumbsContext = "thumbs"
     /// How many items a refresh lists (the `photos.items` limit).
     public static let pageSize: UInt32 = 200
+    /// A thumbnail longer than this is not kept: the phone sends at most 64 KB (Global
+    /// Constraints). The reader itself allows up to SPEC's 1 MiB per record.
+    public static let maxThumbnailBytes = 64 * 1024
 
     /// Newest first, as the phone listed them.
     public private(set) var items: [AMPhotoItem] = []
@@ -37,6 +40,9 @@ public final class PhotosModel: SessionFeature {
     public private(set) var phoneAvailability: AMFeatureAvailability?
     /// A refresh is waiting for the list.
     public private(set) var loading = false
+    /// The phone in session shares `photos.v1`: set when the session reaches this model, which
+    /// is after the server reports the connection, so the window keys on this, not on the server.
+    public private(set) var available = false
 
     @ObservationIgnored private let engine: TransferEngine
     @ObservationIgnored private let bulk: any BulkGrants
@@ -49,6 +55,8 @@ public final class PhotosModel: SessionFeature {
     @ObservationIgnored private var isConnected = false
     /// The phone in session shares `photos.v1`; nothing `photos.*` goes out otherwise.
     @ObservationIgnored private var sharesPhotos = false
+    /// `refresh()` was asked for before the session reached this model; it runs on `connected`.
+    @ObservationIgnored private var refreshPending = false
     /// Moves on with every refresh, clear, connect and disconnect: what an older one started is dropped.
     @ObservationIgnored private var generation: UInt64 = 0
     /// The refresh waiting for `photos.items`.
@@ -60,9 +68,9 @@ public final class PhotosModel: SessionFeature {
     @ObservationIgnored private var link: (any BulkPipe)?
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "photos")
 
-    /// `requestTimeout` bounds the wait for the list and for the thumbnail link; `fetchTimeout` the
-    /// wait for a fetch's offer (it may queue behind another phone send); `stallTimeout` how long
-    /// the thumbnail link may go without a byte.
+    /// `requestTimeout` bounds the wait for the list and for the thumbnail link; `fetchTimeout` is
+    /// the engine's request deadline for a fetch's offer (paused while another phone send is live);
+    /// `stallTimeout` is how long the thumbnail link may go without a byte.
     public init(engine: TransferEngine, bulk: any BulkGrants,
                 send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
                 downloads: URL, requestTimeout: Duration = .seconds(15), fetchTimeout: Duration = .seconds(30),
@@ -79,15 +87,20 @@ public final class PhotosModel: SessionFeature {
     // MARK: SessionFeature
 
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
+        let wanted = refreshPending
         isConnected = true
         sharesPhotos = shared.contains("photos.v1")
+        available = sharesPhotos
         phoneAvailability = nil
         clear()
+        // Not awaited: the session's ordered work queue must not wait for the phone's answer.
+        if wanted, sharesPhotos { Task { await refresh() } }
     }
 
     public func disconnected() {
         isConnected = false
         sharesPhotos = false
+        available = false
         phoneAvailability = nil
         clear()
     }
@@ -114,11 +127,16 @@ public final class PhotosModel: SessionFeature {
 
     // MARK: API
 
-    /// Lists the newest 200 items, then asks for all their thumbnails over one bulk stream. Ends
-    /// whatever an earlier refresh still had under way. Does nothing unless the phone in session
-    /// shares `photos.v1`; returns once the list is in (or did not come) and thumbnails are asked for.
+    /// Lists the newest 200 items, then asks over one bulk stream for the thumbnails not already
+    /// held. Ends whatever an earlier refresh still had under way. Returns once the list is in (or
+    /// did not come) and thumbnails are asked for. Asked for before the session has reached this
+    /// model, it runs when it does (if the phone shares `photos.v1`).
     public func refresh() async {
-        guard isConnected, sharesPhotos else { return }
+        guard isConnected else {
+            refreshPending = true
+            return
+        }
+        guard sharesPhotos else { return }
         let gen = restart()
         loading = true
         let requestID = engine.nextRequestID()
@@ -145,10 +163,12 @@ public final class PhotosModel: SessionFeature {
         }
         items = Array(list.items.prefix(Int(Self.pageSize)))
         partialAccess = list.partialAccess
-        let ids = items.map(\.id)
+        let listed = Set(items.map(\.id))
+        thumbnails = thumbnails.filter { listed.contains($0.key) }
+        Self.log.info("list \(requestID, privacy: .public): \(listed.count, privacy: .public) items")
+        // Thumbnails already held are not fetched again.
+        let ids = items.map(\.id).filter { thumbnails[$0] == nil }
         let wanted = Set(ids)
-        thumbnails = thumbnails.filter { wanted.contains($0.key) }
-        Self.log.info("list \(requestID, privacy: .public): \(ids.count, privacy: .public) items")
         guard !ids.isEmpty else { return }
 
         var thumbs = AMPhotosThumbsRequest()
@@ -213,7 +233,7 @@ public final class PhotosModel: SessionFeature {
             // One change per chunk, not per record.
             var updated = thumbnails
             var changed = false
-            for r in records where !r.jpeg.isEmpty && waiting.ids.contains(r.id) {
+            for r in records where !r.jpeg.isEmpty && r.jpeg.count <= Self.maxThumbnailBytes && waiting.ids.contains(r.id) {
                 updated[r.id] = r.jpeg
                 changed = true
                 received += 1
@@ -248,13 +268,26 @@ public final class PhotosModel: SessionFeature {
         } else {
             stem = String(item.id)
         }
-        let ext = UTType(mimeType: item.mime)?.preferredFilenameExtension ?? (item.video ? "mp4" : "jpg")
-        return FileNameSanitizer.sanitize((item.video ? "VID_" : "IMG_") + stem + "." + ext)
+        let type = contentType(for: item)
+        let fallback = item.video ? "mp4" : "jpg"
+        var ext: String = (type.isDynamic ? nil : type.preferredFilenameExtension) ?? fallback
+        if ext == "jpeg" { ext = "jpg" }
+        let prefix = item.video ? "VID_" : "IMG_"
+        return FileNameSanitizer.sanitize("\(prefix)\(stem).\(ext)")
     }
 
-    /// Drops the list and every thumbnail, and ends a refresh or thumbnail stream under way.
-    /// Fetches go on: they are transfers, ended by the engine.
+    /// The item's type for a drag: from its MIME type, else (unknown to macOS, which would give a
+    /// dynamic type) plain image or movie.
+    public nonisolated static func contentType(for item: AMPhotoItem) -> UTType {
+        let fallback: UTType = item.video ? .movie : .image
+        guard let type = UTType(mimeType: item.mime, conformingTo: fallback), !type.isDynamic else { return fallback }
+        return type
+    }
+
+    /// Drops the list and every thumbnail, and ends a refresh or thumbnail stream under way (one
+    /// still pending for the next connect too). Fetches go on: they are transfers, ended by the engine.
     public func clear() {
+        refreshPending = false
         _ = restart()
         items = []
         thumbnails = [:]
@@ -281,27 +314,25 @@ public final class PhotosModel: SessionFeature {
     }
 
     /// `photos.fetch`, answered by an offer carrying its request ID (the engine receives it into
-    /// `destination`) or by `files.failed`. With no offer within `fetchTimeout`, it fails `TIMED_OUT`.
+    /// `destination`) or by `files.failed`. The engine fails it `TIMED_OUT` when no offer comes
+    /// within `fetchTimeout` of idle time. Cancelling the calling task cancels the request, or its
+    /// transfer once under way.
     private func fetch(_ id: Int64, into destination: IncomingDestination) async -> Result<URL, TransferFailure> {
         guard isConnected else { return .failure(.transfer(.interrupted)) }
         guard sharesPhotos else { return .failure(.transfer(.disabled)) }
         let requestID = engine.nextRequestID()
         let answer = Answer<Result<URL, TransferFailure>>()
-        engine.expect(requestID: requestID, destination: destination) { answer.resolve($0) }
+        engine.expect(requestID: requestID, destination: destination, deadline: fetchTimeout) { answer.resolve($0) }
         let engine = engine
-        let timeout = Task { [fetchTimeout] in
-            try? await Task.sleep(for: fetchTimeout)
-            guard !Task.isCancelled else { return }
-            // A no-op once the offer came: the engine then forgets the request, and the transfer
-            // has its own time limits.
-            engine.failRequest(requestID, .transfer(.timedOut))
-        }
         var fetch = AMPhotoFetch()
         fetch.requestID = requestID
         fetch.id = id
-        await send(.photosFetch, fetch)
-        let result = await answer.wait() ?? .failure(.transfer(.interrupted))
-        timeout.cancel()
+        let result = await withTaskCancellationHandler {
+            await send(.photosFetch, fetch)
+            return await answer.wait() ?? .failure(.transfer(.interrupted))
+        } onCancel: {
+            Task { @MainActor in engine.cancelRequest(requestID) }
+        }
         if case let .failure(failure) = result {
             Self.log.info("fetch \(requestID, privacy: .public) failed: \(String(describing: failure), privacy: .public)")
         }

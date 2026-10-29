@@ -77,6 +77,7 @@ fun HomeScreen(
     onScreenshotsToggle: (Boolean) -> Unit,
     onMediaPermissionResult: () -> Unit,
     photosOn: Boolean,
+    photosAccess: MediaAccess,
     onPhotosToggle: (Boolean) -> Unit,
     onForget: () -> Unit,
     onPairAgain: () -> Unit,
@@ -127,7 +128,7 @@ fun HomeScreen(
             on = screenshotsOn, access = mediaAccess, onToggle = onScreenshotsToggle,
             onPermissionResult = onMediaPermissionResult,
         )
-        PhotosRow(on = photosOn, access = mediaAccess, onToggle = onPhotosToggle, onPermissionResult = onMediaPermissionResult)
+        PhotosRow(on = photosOn, access = photosAccess, onToggle = onPhotosToggle, onPermissionResult = onMediaPermissionResult)
         FindMyPhoneRow()
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = { confirmForget = true }, modifier = Modifier.fillMaxWidth()) {
@@ -310,7 +311,9 @@ private fun ClipboardRow(on: Boolean, onToggle: (Boolean) -> Unit) {
 private fun ScreenshotsRow(on: Boolean, access: MediaAccess, onToggle: (Boolean) -> Unit, onPermissionResult: () -> Unit) {
     val context = LocalContext.current
     val title = stringResource(R.string.home_screenshots_title)
-    val (chain, _) = rememberPermissionChain(screenshotPermissions(), onDone = onPermissionResult)
+    val done by rememberUpdatedState(onPermissionResult)
+    // One request, not a chain: on API 34+ it carries the picked-photos grant with the images one.
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { done() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -326,7 +329,7 @@ private fun ScreenshotsRow(on: Boolean, access: MediaAccess, onToggle: (Boolean)
                 checked = on,
                 onCheckedChange = { checked ->
                     onToggle(checked)
-                    if (checked) chain.start()
+                    if (checked && access != MediaAccess.FULL) ask.launch(screenshotPermissions().toTypedArray())
                 },
                 modifier = Modifier.semantics { contentDescription = title },
             )
@@ -372,9 +375,8 @@ private fun PhotosRow(on: Boolean, access: MediaAccess, onToggle: (Boolean) -> U
                 checked = on,
                 onCheckedChange = { checked ->
                     onToggle(checked)
-                    // Not just "access != FULL": images may be allowed (for screenshots) and videos not.
-                    val missing = photosPermissions().filterNot { context.isGranted(it) }
-                    if (checked && missing.isNotEmpty()) ask.launch(missing.toTypedArray())
+                    // Images alone (allowed for screenshots, say) are PARTIAL here, so videos get asked for too.
+                    if (checked && access != MediaAccess.FULL) ask.launch(photosPermissions().toTypedArray())
                 },
                 modifier = Modifier.semantics { contentDescription = title },
             )

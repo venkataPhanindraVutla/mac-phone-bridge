@@ -1,6 +1,7 @@
 package io.github.anmirror.phone.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -46,35 +47,76 @@ fun callsPermissions(): List<String> = buildList {
 /**
  * "Send screenshots to your Mac": new screenshots can only be found with access to all photos,
  * READ_MEDIA_IMAGES (API 33+), or READ_EXTERNAL_STORAGE (up to 32). On API 34+ the system dialog
- * also offers "Select photos", which grants only READ_MEDIA_VISUAL_USER_SELECTED.
+ * also offers "Select photos"; asking for READ_MEDIA_VISUAL_USER_SELECTED in the same request makes
+ * that choice a lasting partial grant instead of one for this session only.
  */
-fun screenshotPermissions(): List<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        listOf(Manifest.permission.READ_MEDIA_IMAGES)
-    } else {
-        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }
+// The newer permission names are plain strings, used only where `sdk` says the system has them;
+// lint cannot follow a parameter check.
+@SuppressLint("InlinedApi")
+fun screenshotPermissions(sdk: Int = Build.VERSION.SDK_INT): List<String> = when {
+    sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+        listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    sdk >= Build.VERSION_CODES.TIRAMISU -> listOf(Manifest.permission.READ_MEDIA_IMAGES)
+    else -> listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+}
 
 /**
  * "Show recent photos on your Mac": photos and videos, READ_MEDIA_IMAGES + READ_MEDIA_VIDEO
- * (API 33+, asked together so the system shows one dialog), or READ_EXTERNAL_STORAGE (up to 32).
- * On API 34+ "Select photos" grants only READ_MEDIA_VISUAL_USER_SELECTED: the picked items are listed.
+ * (API 33+, asked in one request so the system shows one dialog), or READ_EXTERNAL_STORAGE (up to
+ * 32). On API 34+ READ_MEDIA_VISUAL_USER_SELECTED joins the request, as for screenshots: "Select
+ * photos" then lasts, and the picked items are listed.
  */
-fun photosPermissions(): List<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
-    } else {
-        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }
+// The newer permission names are plain strings, used only where `sdk` says the system has them;
+// lint cannot follow a parameter check.
+@SuppressLint("InlinedApi")
+fun photosPermissions(sdk: Int = Build.VERSION.SDK_INT): List<String> = when {
+    sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> listOf(
+        Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO,
+        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+    )
+    sdk >= Build.VERSION_CODES.TIRAMISU -> listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+    else -> listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+}
 
-/** How much of the phone's photos this app may read right now. */
-fun Context.mediaAccess(): MediaAccess = when {
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isGranted(Manifest.permission.READ_MEDIA_IMAGES) -> MediaAccess.FULL
-    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && isGranted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccess.FULL
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
-        isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> MediaAccess.PARTIAL
+/** What screenshots can read on API [sdk]: all images (FULL), the picked ones (API 34+), or none. */
+// The newer permission names are plain strings, used only where `sdk` says the system has them;
+// lint cannot follow a parameter check.
+@SuppressLint("InlinedApi")
+fun screenshotAccess(sdk: Int, granted: (String) -> Boolean): MediaAccess = when {
+    sdk >= Build.VERSION_CODES.TIRAMISU && granted(Manifest.permission.READ_MEDIA_IMAGES) -> MediaAccess.FULL
+    sdk < Build.VERSION_CODES.TIRAMISU && granted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccess.FULL
+    sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) ->
+        MediaAccess.PARTIAL
     else -> MediaAccess.NONE
 }
+
+/**
+ * What photos can read on API [sdk]: FULL needs both images and videos (API 33+); one of them,
+ * or only the picked items (API 34+), is PARTIAL, since part of the library is listed.
+ */
+// The newer permission names are plain strings, used only where `sdk` says the system has them;
+// lint cannot follow a parameter check.
+@SuppressLint("InlinedApi")
+fun photosAccess(sdk: Int, granted: (String) -> Boolean): MediaAccess {
+    if (sdk < Build.VERSION_CODES.TIRAMISU) {
+        return if (granted(Manifest.permission.READ_EXTERNAL_STORAGE)) MediaAccess.FULL else MediaAccess.NONE
+    }
+    val images = granted(Manifest.permission.READ_MEDIA_IMAGES)
+    val videos = granted(Manifest.permission.READ_MEDIA_VIDEO)
+    return when {
+        images && videos -> MediaAccess.FULL
+        images || videos -> MediaAccess.PARTIAL
+        sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) ->
+            MediaAccess.PARTIAL
+        else -> MediaAccess.NONE
+    }
+}
+
+/** How much of the phone's images screenshots may read right now. */
+fun Context.mediaAccess(): MediaAccess = screenshotAccess(Build.VERSION.SDK_INT, ::isGranted)
+
+/** How much of the phone's photos and videos the photos feature may read right now. */
+fun Context.photosAccess(): MediaAccess = photosAccess(Build.VERSION.SDK_INT, ::isGranted)
 
 fun Context.isGranted(permission: String): Boolean =
     ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED

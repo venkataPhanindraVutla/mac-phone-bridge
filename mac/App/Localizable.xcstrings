@@ -1552,6 +1552,17 @@
           }
         }
       }
+    },
+    "No photos yet.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No photos yet."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

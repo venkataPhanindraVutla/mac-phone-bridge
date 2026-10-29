@@ -81,6 +81,8 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored private var finished: [TransferItem] = []
     /// Requests (photos, browse) whose answer is an offer carrying their ID.
     @ObservationIgnored private var expected: [UInt64: Expectation] = [:]
+    /// The running deadline of each request in `expected`, while no receive is live.
+    @ObservationIgnored private var deadlines: [UInt64: Task<Void, Never>] = [:]
     @ObservationIgnored private var lastRequestID: UInt64 = 0
     /// The bulk port told to the phone in session; nil until it has been.
     @ObservationIgnored private var announcedPort: UInt16?
@@ -146,6 +148,8 @@ public final class TransferEngine: SessionFeature {
         bulk.revokeAll()
         bulk.allow(peerFingerprint: nil)
         for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
+        for timer in deadlines.values { timer.cancel() }
+        deadlines = [:]
         let waiting = expected
         expected = [:]
         for e in waiting.values { e.completion(.failure(.transfer(.interrupted))) }
@@ -233,15 +237,33 @@ public final class TransferEngine: SessionFeature {
     }
 
     /// The phone answers request `requestID` with an offer carrying it: that file goes to
-    /// `destination`, and `completion` gets the result. Any other request ID is denied.
-    public func expect(requestID: UInt64, destination: IncomingDestination,
+    /// `destination`, and `completion` gets the result. With no offer within `deadline` it fails
+    /// `TIMED_OUT`. The deadline counts only while no phone send is live (queued, waiting or
+    /// active), since the answer queues behind those; when the last one ends, every waiting
+    /// request gets its full deadline again.
+    /// An offer carrying any other request ID is denied.
+    public func expect(requestID: UInt64, destination: IncomingDestination, deadline: Duration = .seconds(30),
                        completion: @escaping @MainActor (Result<URL, TransferFailure>) -> Void) {
-        expected[requestID] = Expectation(destination: destination, completion: completion)
+        expected[requestID] = Expectation(destination: destination, deadline: deadline, completion: completion)
+        if hasLiveReceive { dropDeadline(requestID) } else { armDeadline(requestID) }
     }
 
     /// The request was answered with a failure (`browse.result`, `files.failed`) instead of an offer.
     public func failRequest(_ requestID: UInt64, _ failure: TransferFailure) {
+        dropDeadline(requestID)
         expected.removeValue(forKey: requestID)?.completion(.failure(failure))
+    }
+
+    /// The user gave up on request `requestID`: a request still waiting for its offer fails
+    /// `CANCELLED`; one whose transfer is under way has it cancelled (the phone is told). Unknown
+    /// IDs are ignored.
+    public func cancelRequest(_ requestID: UInt64) {
+        guard requestID != 0 else { return }
+        if expected[requestID] != nil {
+            failRequest(requestID, .transfer(.cancelled))
+        } else if let job = jobs.first(where: { $0.item.direction == .receive && $0.offer.requestID == requestID }) {
+            cancel(job.item.id)
+        }
     }
 
     /// Stops a transfer; the phone is told unless it never heard of it.
@@ -375,7 +397,10 @@ public final class TransferEngine: SessionFeature {
                                 size: o.size, kind: o.kind, state: .queued)
         let job = Job(item: item, offer: o, source: nil)
         jobs.append(job)
+        // A receive is live: requests wait behind it without counting down.
+        pauseDeadlines()
         if o.requestID != 0 {
+            dropDeadline(o.requestID)
             guard let e = expected.removeValue(forKey: o.requestID) else {
                 finish(job, .failed(.denied), notice: .reject(.denied), listed: false)
                 return
@@ -578,6 +603,10 @@ public final class TransferEngine: SessionFeature {
                         listed: Bool = true, byUser: Bool = false) {
         guard let index = jobs.firstIndex(where: { $0 === job }) else { return }
         jobs.remove(at: index)
+        // The last live receive ended: every waiting request starts its full deadline again.
+        if job.item.direction == .receive, !hasLiveReceive {
+            for id in expected.keys { armDeadline(id) }
+        }
         job.watchdog?.cancel()
         job.worker?.cancel()
         job.pipe?.close()
@@ -662,6 +691,34 @@ public final class TransferEngine: SessionFeature {
     }
 
     private func isLive(_ job: Job) -> Bool { jobs.contains { $0 === job } }
+
+    /// A phone send is queued, waiting or under way.
+    private var hasLiveReceive: Bool { jobs.contains { $0.item.direction == .receive } }
+
+    /// (Re)starts request `id`'s full deadline.
+    private func armDeadline(_ id: UInt64) {
+        deadlines[id]?.cancel()
+        guard let deadline = expected[id]?.deadline else {
+            deadlines[id] = nil
+            return
+        }
+        deadlines[id] = Task { [weak self] in
+            try? await Task.sleep(for: deadline)
+            guard !Task.isCancelled, let self else { return }
+            self.deadlines[id] = nil
+            Self.log.info("request \(id, privacy: .public) timed out")
+            self.failRequest(id, .transfer(.timedOut))
+        }
+    }
+
+    private func dropDeadline(_ id: UInt64) {
+        deadlines.removeValue(forKey: id)?.cancel()
+    }
+
+    private func pauseDeadlines() {
+        for timer in deadlines.values { timer.cancel() }
+        deadlines = [:]
+    }
 
     private func post(_ type: MessageType, _ message: any SwiftProtobuf.Message & Sendable) {
         outbox.yield(Outgoing(session: session.value, type: type, message: message))
@@ -801,6 +858,7 @@ private struct Outgoing: Sendable {
 
 private struct Expectation {
     let destination: IncomingDestination
+    let deadline: Duration
     let completion: @MainActor (Result<URL, TransferFailure>) -> Void
 }
 

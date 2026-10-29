@@ -24,7 +24,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Phone side of `photos.*` (SPEC 18). The caller checks that the feature is open (the Mac shares
@@ -45,8 +44,13 @@ class PhotosService(
     private val stallMs: Long = STALL_MS,
     private val log: (String) -> Unit = {},
 ) {
-    /** The thumbnail stream being written; a newer request, or [stop], closes it. */
-    private val current = AtomicReference<BulkStream?>(null)
+    /**
+     * The thumbnail stream being written, and the newest request's generation. A newer request,
+     * or [stop], closes the stream. Taking over [current] and checking [generation] happen together
+     * under [lock], so an older request can never close a newer one's stream.
+     */
+    private val lock = Any()
+    private var current: BulkStream? = null
     private val generation = AtomicLong(0)
 
     /** `photos.list`: answered by `photos.items`, newest first, `limit` clamped to 1..200. */
@@ -79,11 +83,21 @@ class PhotosService(
             log("photos: thumbnail dial failed (${e.javaClass.simpleName})")
             return
         }
-        if (generation.get() != gen) {
+        var stale = false
+        val older = synchronized(lock) {
+            if (generation.get() != gen) {
+                stale = true
+                null
+            } else {
+                current.also { current = stream }
+            }
+        }
+        if (stale) {
+            // A newer request came while this one dialed.
             stream.close()
             return
         }
-        current.getAndSet(stream)?.close()
+        older?.close()
         val moved = AtomicLong(System.nanoTime())
         try {
             withContext(io) {
@@ -101,7 +115,13 @@ class PhotosService(
                     val out = stream.output
                     for (id in ids) {
                         if (generation.get() != gen) throw IOException("superseded")
-                        val jpeg = library.thumbnail(id)
+                        // A thumbnail that fails to load or encode is an empty record, not the end.
+                        val jpeg = try {
+                            library.thumbnail(id)
+                        } catch (e: Exception) {
+                            log("photos: thumbnail $id failed (${e.javaClass.simpleName})")
+                            null
+                        }
                         ThumbRecords.write(out, id, jpeg)
                         // Each record goes out as it is ready, so the Mac fills the grid as it goes.
                         out.flush()
@@ -117,7 +137,7 @@ class PhotosService(
         } catch (e: IOException) {
             log("photos: thumbnail stream ended early (${e.javaClass.simpleName})")
         } finally {
-            current.compareAndSet(stream, null)
+            synchronized(lock) { if (current === stream) current = null }
             stream.close()
         }
     }
@@ -144,8 +164,11 @@ class PhotosService(
 
     /** Closes the thumbnail stream in progress, if any (the session ended, or the feature closed). */
     fun stop() {
-        generation.incrementAndGet()
-        current.getAndSet(null)?.close()
+        val stream = synchronized(lock) {
+            generation.incrementAndGet()
+            current.also { current = null }
+        }
+        stream?.close()
     }
 
     private fun MediaItem.toProto(): PhotoItem = PhotoItem.newBuilder()

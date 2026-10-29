@@ -91,6 +91,7 @@ private fun AppRoot(graph: AppGraph) {
     val screenshotsOn by graph.screenshotsOn.collectAsStateWithLifecycle()
     val mediaAccess by graph.mediaAccess.collectAsStateWithLifecycle()
     val photosOn by graph.photosOn.collectAsStateWithLifecycle()
+    val photosAccess by graph.photosAccess.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -134,6 +135,7 @@ private fun AppRoot(graph: AppGraph) {
                         onScreenshotsToggle = graph::setScreenshotsOn,
                         onMediaPermissionResult = graph::refreshMediaAccess,
                         photosOn = photosOn,
+                        photosAccess = photosAccess,
                         onPhotosToggle = graph::setPhotosOn,
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
