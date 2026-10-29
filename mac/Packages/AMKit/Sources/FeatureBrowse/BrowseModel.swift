@@ -39,8 +39,10 @@ public enum BrowseNotice: Equatable, Sendable {
     case notFound
     /// The root is read-only, or the phone said no.
     case denied
-    /// The name is taken, or a file is still being written into that folder.
+    /// The name is taken, or a file is still being written into that folder (mkdir, rename).
     case exists
+    /// A delete refused (EXISTS) because files are still being written into that folder.
+    case inUse
     /// The name the user typed is not a safe file name as it stands (SPEC section 16).
     case badName
     case failed
@@ -161,8 +163,10 @@ public final class BrowseModel: SessionFeature {
     // MARK: API
 
     /// Asks the phone for its roots again (`browse.roots` answers).
+    /// Nothing is sent while a roots request is still waiting for its answer.
     public func refreshRoots() {
-        guard sharesBrowse else { return }
+        guard sharesBrowse, rootsTimer == nil else { return }
+        if notice == .timedOut { notice = nil }
         requestRoots()
     }
 
@@ -216,7 +220,7 @@ public final class BrowseModel: SessionFeature {
     public func delete(_ entry: AMBrowseEntry) async {
         guard sharesBrowse, let location else { return }
         let path = location.path(of: entry.name)
-        await change(.browseDelete, naming: false) { id in
+        await change(.browseDelete, naming: false, deleting: true) { id in
             var m = AMBrowsePath()
             m.requestID = id
             m.rootID = location.rootID
@@ -255,11 +259,16 @@ public final class BrowseModel: SessionFeature {
         guard !entry.isDir else { return .failure(.browse(.badPath)) }
         let read = Read(requestID: engine.nextRequestID(), rootID: folder.rootID, path: folder.path(of: entry.name), file: file)
         let requestID = read.requestID
+        let cancelled = read.cancelled
         let result = await withTaskCancellationHandler {
+            // Cancelled already (the drag gave up): never queued, never sent.
+            guard !Task.isCancelled else { return Result<URL, TransferFailure>.failure(.transfer(.cancelled)) }
             queuedReads.append(read)
             pumpReads()
             return await read.answer.wait() ?? .failure(.transfer(.interrupted))
         } onCancel: {
+            // Marked at once, so a slot that frees before the hop below does not send it.
+            cancelled.set()
             Task { @MainActor [weak self] in self?.cancelRead(requestID) }
         }
         if case let .failure(failure) = result {
@@ -337,7 +346,9 @@ public final class BrowseModel: SessionFeature {
         let timeout = requestTimeout, session = session.value
         rootsTimer = Task { [weak self] in
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, let self, self.session.value == session, !self.rootsLoaded else { return }
+            guard !Task.isCancelled, let self, self.session.value == session else { return }
+            self.rootsTimer = nil
+            guard !self.rootsLoaded else { return }
             Self.log.info("roots did not come")
             self.notice = .timedOut
         }
@@ -363,7 +374,11 @@ public final class BrowseModel: SessionFeature {
         let wasOff = phoneAvailability.map { !$0.enabled } ?? false
         phoneAvailability = a
         if a.enabled {
-            if wasOff { requestRoots() }
+            if wasOff {
+                // Loading again: the tab shows it, and the roots timer can fire.
+                rootsLoaded = false
+                requestRoots()
+            }
             return
         }
         Self.log.info("browsing off on the phone: \(a.reason.rawValue, privacy: .public)")
@@ -378,10 +393,9 @@ public final class BrowseModel: SessionFeature {
         rootsTimer = nil
         roots = []
         rootsLoaded = true
-        if location != nil {
-            closeLocation()
-            notice = .revoked
-        }
+        // The tab says to turn browsing on; no other notice.
+        closeLocation()
+        notice = nil
     }
 
     /// `browse.list` pages of `location` from `offset` until at least `atLeast` entries are in
@@ -391,6 +405,9 @@ public final class BrowseModel: SessionFeature {
         let generation = listGeneration, session = session.value
         loading = true
         var collected: [AMBrowseEntry] = append ? entries : []
+        // Names are the list's row IDs: a name already in (a folder that changed between pages
+        // shifts the offsets) is kept once.
+        var names = Set(collected.map(\.name))
         let start = collected.count
         var offset = offset
         while true {
@@ -408,7 +425,7 @@ public final class BrowseModel: SessionFeature {
             guard generation == listGeneration, session == self.session.value else { return }
             switch reply {
             case let .listing(l) where l.outcome == .ok:
-                collected += l.entries
+                for e in l.entries where names.insert(e.name).inserted { collected.append(e) }
                 // A page that does not move on ends the listing, whatever `more` says.
                 let more = l.more && l.nextOffset > offset
                 offset = l.nextOffset
@@ -439,7 +456,7 @@ public final class BrowseModel: SessionFeature {
     }
 
     /// A change (mkdir, delete, rename): on OK the folder reloads, else the notice says why.
-    private func change(_ type: MessageType, naming: Bool,
+    private func change(_ type: MessageType, naming: Bool, deleting: Bool = false,
                         _ make: (UInt64) -> any SwiftProtobuf.Message & Sendable) async {
         let session = session.value
         notice = nil
@@ -450,7 +467,7 @@ public final class BrowseModel: SessionFeature {
             await reload()
         case let .result(r):
             Self.log.info("\(type.rawValue, privacy: .public) failed: \(r.outcome.rawValue, privacy: .public)")
-            notice = Self.notice(for: r.outcome, naming: naming)
+            notice = deleting && r.outcome == .exists ? .inUse : Self.notice(for: r.outcome, naming: naming)
         case .listing:
             notice = .failed
         case .timedOut:
@@ -478,12 +495,11 @@ public final class BrowseModel: SessionFeature {
         return reply
     }
 
-    /// The name with spaces around it trimmed, if it is its own sanitized form; else `.badName`.
-    /// Nil (and nothing shown) for an empty name.
+    /// The name with spaces around it trimmed, if it is its own sanitized form and not empty;
+    /// else `.badName` and nil.
     private func checked(_ name: String) -> String? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard FileNameSanitizer.sanitize(trimmed) == trimmed else {
+        guard !trimmed.isEmpty, FileNameSanitizer.sanitize(trimmed) == trimmed else {
             notice = .badName
             return nil
         }
@@ -512,6 +528,10 @@ public final class BrowseModel: SessionFeature {
     private func pumpReads() {
         while sharesBrowse, sentReads.count < Self.maxReads, !queuedReads.isEmpty {
             let read = queuedReads.removeFirst()
+            if read.cancelled.isSet {
+                read.answer.resolve(.failure(.transfer(.cancelled)))
+                continue
+            }
             sentReads[read.requestID] = read
             let id = read.requestID
             engine.expect(requestID: id, destination: .file(read.file)) { [weak self] result in
@@ -593,6 +613,8 @@ private final class Read {
     let path: String
     let file: URL
     let answer = Answer<Result<URL, TransferFailure>>()
+    /// Set by the calling task's cancellation handler, on whatever thread it runs.
+    nonisolated let cancelled = CancelFlag()
 
     init(requestID: UInt64, rootID: String, path: String, file: URL) {
         self.requestID = requestID
@@ -600,6 +622,15 @@ private final class Read {
         self.path = path
         self.file = file
     }
+}
+
+/// A flag set once from any thread.
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
 }
 
 /// One answer, given at most once, that one caller waits for.

@@ -14,6 +14,8 @@ struct FilesTab: View {
     @State private var naming: Naming?
     @State private var nameText = ""
     @State private var deleting: AMBrowseEntry?
+    /// The name in the delete question, kept while the dialog closes (it never reads "Delete “”?").
+    @State private var deleteName = ""
     @State private var droppedFolders = false
     @State private var dropTargeted = false
 
@@ -33,6 +35,9 @@ struct FilesTab: View {
             } else if !browse.rootsLoaded {
                 if browse.notice != nil {
                     noticeLine
+                    if browse.notice == .timedOut {
+                        Button("Try Again") { browse.refreshRoots() }
+                    }
                 } else {
                     ProgressView().frame(maxWidth: .infinity)
                 }
@@ -88,6 +93,7 @@ struct FilesTab: View {
             }
             .fixedSize()
             .accessibilityLabel(Text("Phone folder"))
+            .accessibilityValue(Text(currentRoot?.name ?? ""))
             Button {
                 Task { await browse.up() }
             } label: {
@@ -99,7 +105,7 @@ struct FilesTab: View {
                 .disabled(!writable)
             Button("Rename") { if let entry = selectedEntry { startNaming(.rename(entry)) } }
                 .disabled(!writable || selectedEntry == nil)
-            Button("Delete") { deleting = selectedEntry }
+            Button("Delete") { askDelete(selectedEntry) }
                 .disabled(!writable || selectedEntry == nil)
         }
     }
@@ -134,8 +140,19 @@ struct FilesTab: View {
 
     @ViewBuilder private var noticeLine: some View {
         if let notice = browse.notice {
-            Label { Text(Self.text(notice)) } icon: { Image(systemName: "exclamationmark.triangle") }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Label { Text(Self.text(notice)) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    browse.dismissNotice()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(Text("Dismiss"))
+            }
         }
     }
 
@@ -182,7 +199,7 @@ struct FilesTab: View {
                 }
                 if writable {
                     Button("Rename") { startNaming(.rename(entry)) }
-                    Button("Delete") { deleting = entry }
+                    Button("Delete") { askDelete(entry) }
                 }
             }
         } primaryAction: { ids in
@@ -194,7 +211,7 @@ struct FilesTab: View {
             return .handled
         }
         .onDeleteCommand {
-            if writable, let entry = selectedEntry { deleting = entry }
+            if writable { askDelete(selectedEntry) }
         }
         .overlay {
             if rows.isEmpty {
@@ -287,7 +304,13 @@ struct FilesTab: View {
     }
 
     private var deleteTitle: Text {
-        Text("Delete “\(deleting?.name ?? "")”?")
+        Text("Delete “\(deleteName)”?")
+    }
+
+    private func askDelete(_ entry: AMBrowseEntry?) {
+        guard let entry else { return }
+        deleteName = entry.name
+        deleting = entry
     }
 
     // MARK: words
@@ -298,8 +321,9 @@ struct FilesTab: View {
         case .notFound: "It's no longer on the phone."
         case .denied: "The phone doesn't allow changes here."
         case .exists: "That name is taken, or files are still being copied into it."
+        case .inUse: "Files are still being copied into it. Try again when they're done."
         case .badName: "That name can't be used on the phone."
-        case .failed: "The phone couldn't do that."
+        case .failed: "The phone couldn't finish that. Try again."
         case .timedOut: "The phone didn't answer."
         }
     }

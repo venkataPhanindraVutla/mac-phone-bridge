@@ -161,14 +161,48 @@ private func entry(_ name: String, dir: Bool = false, size: UInt64 = 10) -> AMBr
     #expect(r.model.roots.isEmpty)
     #expect(r.model.location == nil)
     #expect(r.model.entries.isEmpty)
-    #expect(r.model.notice == .revoked)
+    #expect(r.model.notice == nil, "the tab says to turn browsing on, nothing else")
+    #expect(r.model.rootsLoaded)
 
-    // Back on: the roots are asked for again.
+    // Back on: loading again, and the roots are asked for again.
     let asked = r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count
     var on = AMFeatureAvailability()
     on.enabled = true
     await r.deliver(.browseAvailability, on)
+    #expect(!r.model.rootsLoaded)
     try await until("roots asked again") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == asked + 1 }
+}
+
+@MainActor @Test func availabilityBackOnWithNoRootsTimesOut() async throws {
+    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    await r.connect()
+    await r.pushRoots(["r1"])
+    var off = AMFeatureAvailability()
+    off.enabled = false
+    await r.deliver(.browseAvailability, off)
+    var on = AMFeatureAvailability()
+    on.enabled = true
+    await r.deliver(.browseAvailability, on)
+    try await until("timed out") { r.model.notice == .timedOut }
+    #expect(!r.model.rootsLoaded)
+}
+
+@MainActor @Test func refreshRootsWaitsForTheOutstandingRequest() async throws {
+    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    await r.connect()
+    try await until("first request") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 1 }
+    r.model.refreshRoots()
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 1, "one is already waiting")
+    try await until("timed out") { r.model.notice == .timedOut }
+    // Try Again: asked once more, and the notice goes while it waits.
+    r.model.refreshRoots()
+    #expect(r.model.notice == nil)
+    try await until("retry") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 2 }
+    await r.pushRoots(["r1"])
+    #expect(r.model.rootsLoaded)
+    r.model.refreshRoots()
+    try await until("refresh after the answer") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 3 }
 }
 
 // MARK: listing
@@ -249,6 +283,50 @@ private func entry(_ name: String, dir: Bool = false, size: UInt64 = 10) -> AMBr
     await r.model.open(BrowseLocation(rootID: "r1", path: ""))
     #expect(r.model.notice == .timedOut)
     #expect(!r.model.loading)
+    // The answer that comes after all changes nothing.
+    await r.answerList([entry("late")])
+    #expect(r.model.entries.isEmpty)
+    #expect(r.model.notice == .timedOut)
+}
+
+@MainActor @Test func lateListingAfterRootRemovalIsIgnored() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    await r.pushRoots(["r1", "r2"])
+    let task = Task { await r.model.open(BrowseLocation(rootID: "r1", path: "")) }
+    try await until("browse.list") { !r.lists.isEmpty }
+    await r.pushRoots(["r2"])
+    #expect(r.model.location == nil)
+    #expect(r.model.notice == .revoked)
+    #expect(!r.model.loading)
+    await r.answerList([entry("late")])
+    await task.value
+    #expect(r.model.entries.isEmpty)
+    #expect(r.model.location == nil)
+    #expect(!r.model.loading)
+    #expect(r.model.notice == .revoked)
+}
+
+@MainActor @Test func repeatedNameAcrossPagesIsKeptOnce() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("", [entry("a"), entry("b"), entry("c")], more: true)
+    // A file was added before "c" between pages: "c" comes again at the new offset.
+    let more = Task { await r.model.loadMore() }
+    try await until("page 2") { r.lists.count == 2 }
+    await r.answerList([entry("c"), entry("d")], more: true)
+    await more.value
+    #expect(r.model.entries.map(\.name) == ["a", "b", "c", "d"])
+    #expect(r.lists.last?.offset == 3)
+
+    // The multi-page reload keeps each name once too.
+    let task = Task { await r.model.reload() }
+    try await until("reload 1") { r.lists.count == 3 }
+    await r.answerList([entry("a"), entry("b"), entry("c")], more: true)
+    try await until("reload 2") { r.lists.count == 4 }
+    await r.answerList([entry("c"), entry("d"), entry("e")], more: false)
+    await task.value
+    #expect(r.model.entries.map(\.name) == ["a", "b", "c", "d", "e"])
+    #expect(!r.model.hasMore)
 }
 
 @MainActor @Test func rootsThatNeverComeTimeOut() async throws {
@@ -349,7 +427,8 @@ private func entry(_ name: String, dir: Bool = false, size: UInt64 = 10) -> AMBr
 @MainActor @Test func makeFolderSendsSanitizedNameOnly() async throws {
     let r = Rig(); defer { r.cleanUp() }
     try await r.opened("docs")
-    for bad in ["../x", "a/b", ".hidden", "x\u{202E}y"] {
+    for bad in ["../x", "a/b", ".hidden", "x\u{202E}y", "  "] {
+        r.model.dismissNotice()
         await r.model.makeFolder(named: bad)
         #expect(r.model.notice == .badName, "\(bad)")
     }
@@ -380,7 +459,21 @@ private func entry(_ name: String, dir: Bool = false, size: UInt64 = 10) -> AMBr
 
     await r.model.rename(entry("a.txt"), to: "x/y.txt")
     #expect(r.model.notice == .badName)
+    r.model.dismissNotice()
+    await r.model.rename(entry("a.txt"), to: "   ")
+    #expect(r.model.notice == .badName, "nothing left after trimming")
     #expect(r.sent.of(.browseRename, AMBrowseRename.self).count == 1)
+}
+
+@MainActor @Test func deleteOfAFolderBeingWrittenShowsInUse() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("", [entry("busy", dir: true)])
+    let task = Task { await r.model.delete(entry("busy", dir: true)) }
+    try await until("browse.delete") { r.browseTypes.contains(.browseDelete) }
+    await r.answer(try #require(r.sent.of(.browseDelete, AMBrowsePath.self).last).requestID, .exists)
+    await task.value
+    #expect(r.model.notice == .inUse)
+    #expect(r.lists.count == 1)
 }
 
 // MARK: downloads
@@ -517,4 +610,50 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     #expect(r.lists.last?.path == "docs")
     await r.answerList([entry("a.txt"), entry("b.txt")])
     try await until("entries") { r.model.entries.count == 2 }
+}
+
+@MainActor @Test func completedTransferFreesASlot() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("", (0..<10).map { entry("f\($0)") })
+    var tasks: [Task<Result<URL, TransferFailure>, Never>] = []
+    for i in 0..<10 {
+        let e = entry("f\(i)"), file = r.dir.appendingPathComponent("f\(i)")
+        tasks.append(Task { await r.model.download(e, to: file) })
+    }
+    try await until("eight reads") { r.reads.count == 8 }
+    let bytes = Data(repeating: 1, count: 64)
+    try await phoneSends(r, r.reads[0], bytes)
+    #expect(await tasks[0].value == .success(r.dir.appendingPathComponent("f0")))
+    try await until("ninth read") { r.reads.count == 9 }
+    #expect(r.reads.last?.path == "f8")
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.reads.count == 9, "one slot freed, one read sent")
+    r.disconnect()
+    for t in tasks[1...] { _ = await t.value }
+}
+
+@MainActor @Test func cancelledQueuedReadIsNeverPosted() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    try await r.opened("", (0..<10).map { entry("f\($0)") })
+    var tasks: [Task<Result<URL, TransferFailure>, Never>] = []
+    for i in 0..<9 {
+        let e = entry("f\(i)"), file = r.dir.appendingPathComponent("f\(i)")
+        tasks.append(Task { await r.model.download(e, to: file) })
+    }
+    try await until("eight reads") { r.reads.count == 8 }
+    // Cancelled, and a slot frees in the same turn, before the cancel reaches the model.
+    tasks[8].cancel()
+    await r.answer(r.reads[0].requestID, .io)
+    #expect(await tasks[8].value == .failure(.transfer(.cancelled)))
+    // A download whose task is cancelled before it starts never queues.
+    let early = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return await r.model.download(entry("f9"), to: r.dir.appendingPathComponent("f9"))
+    }
+    #expect(await early.value == .failure(.transfer(.cancelled)))
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(r.reads.count == 8, "neither was sent")
+    #expect(!r.reads.contains { $0.path == "f8" || $0.path == "f9" })
+    r.disconnect()
+    for t in tasks { _ = await t.value }
 }

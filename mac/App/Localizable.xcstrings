@@ -1806,17 +1806,6 @@
         }
       }
     },
-    "The phone couldn't do that.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The phone couldn't do that."
-          }
-        }
-      }
-    },
     "Folder, %@": {
       "extractionState": "manual",
       "localizations": {
@@ -1835,6 +1824,50 @@
           "stringUnit": {
             "state": "translated",
             "value": "File, %1$@, %2$@"
+          }
+        }
+      }
+    },
+    "Try Again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try Again"
+          }
+        }
+      }
+    },
+    "Dismiss": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss"
+          }
+        }
+      }
+    },
+    "Files are still being copied into it. Try again when they're done.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files are still being copied into it. Try again when they're done."
+          }
+        }
+      }
+    },
+    "The phone couldn't finish that. Try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The phone couldn't finish that. Try again."
           }
         }
       }
