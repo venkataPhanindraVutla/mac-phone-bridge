@@ -524,7 +524,8 @@ class ConnectionService : LifecycleService() {
      * browse.v1, the switch is on, there is a root: All files access or a picked folder); each runs
      * on its own, off the main thread. `browse.availability` is sent regardless, while the Mac
      * shares browse.v1, and `browse.roots` is pushed whenever browsing opens (on connect, say) or
-     * the roots change while it is open. Closing it stops browse transfers still under way.
+     * the roots change while it is open. When a root goes, its transfers stop; closing browsing stops
+     * them all.
      */
     private fun setUpBrowse() {
         graph.manager.on(MessageType.BROWSE_ROOTS_REQUEST) { env ->
@@ -556,7 +557,7 @@ class ConnectionService : LifecycleService() {
             browseRequest("read") { graph.browse.onRead(path) }
         }
         // Picked folders whose grant went away while the app was not running.
-        graph.scope.launch(Dispatchers.IO) { graph.refreshBrowseAccess() }
+        graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         lifecycleScope.launch {
             var wasOpen = false
             combine(
@@ -572,7 +573,9 @@ class ConnectionService : LifecycleService() {
                     }
                     val open = shared && on && roots.isNotEmpty()
                     if (open) browseRequest("push roots") { graph.browse.pushRoots() }
-                    if (wasOpen && !open) graph.cancelBrowseTransfers()
+                    // A root removed, revoked or no longer reachable: its transfers stop.
+                    if (open) graph.launchQuietly("browse: roots changed") { graph.browse.onRootsChanged() }
+                    if (wasOpen && !open) graph.browse.cancelAll()
                     wasOpen = open
                 }
         }

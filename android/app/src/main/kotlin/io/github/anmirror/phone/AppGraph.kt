@@ -568,7 +568,7 @@ class AppGraph private constructor(context: Context) {
             when (root.kind) {
                 RootKind.ROOT_KIND_ALL_FILES ->
                     JavaFileTree(Environment.getExternalStorageDirectory(), root, ::mimeFor) { downloads.freeBytes() }
-                else -> folders[root.id]?.let { SafFileTree(app, it.uri, root) }
+                else -> folders[root.id]?.let { SafFileTree(app, it.uri, root) { downloads.freeBytes() } }
             }
         }
         trees.set(Trees(roots, made))
@@ -617,11 +617,20 @@ class AppGraph private constructor(context: Context) {
     private fun browseSink(offer: TransferOffer): SinkResult =
         if (browseOpen()) browse.sinkFor(offer) else SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED)
 
-    /** Browsing closed: browse reads and writes still queued or running stop (the Mac is told). */
-    fun cancelBrowseTransfers() {
-        transfers.transfers.value
-            .filter { it.state.isOngoing() && (it.browseTarget || (it.requestId != 0L && it.kind == TransferKind.TRANSFER_KIND_FILE)) }
-            .forEach { transfers.cancel(it.id) }
+    /**
+     * Runs [block] on the app scope off the main thread. A failure logs its class only: a message
+     * could carry a tree URI or a path.
+     */
+    fun launchQuietly(what: String, block: suspend () -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "$what failed (${e.javaClass.simpleName})")
+            }
+        }
     }
 
     /**

@@ -50,5 +50,10 @@ fun interface RootsSource {
     fun trees(): List<FileTree>
 }
 
-/** The engine's in-progress files, `.<uuid>.part`: never listed. */
-internal val PART_NAME = Regex("""\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.part""")
+/** The engine's in-progress files, `.<uuid>.part` (any case): never listed or reachable. */
+internal val PART_NAME = Regex("""\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part""", RegexOption.IGNORE_CASE)
+
+/** A write destination that knows how much room its volume has left (null when unknown). */
+interface SpaceAware {
+    fun freeBytes(): Long?
+}

@@ -2,6 +2,8 @@ package io.github.anmirror.feature.browse
 
 import com.google.protobuf.MessageLite
 import io.github.anmirror.protocol.MessageType
+import io.github.anmirror.protocol.envelope
+import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.BrowseListRequest
 import io.github.anmirror.protocol.v1.BrowseListing
 import io.github.anmirror.protocol.v1.BrowseOutcome
@@ -19,9 +21,11 @@ import io.github.anmirror.transfer.IncomingFile
 import io.github.anmirror.transfer.OutgoingFile
 import io.github.anmirror.transfer.SinkResult
 import io.github.anmirror.transfer.TransferEngine
+import io.github.anmirror.transfer.TransferState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -47,10 +51,16 @@ private class MemFile(override val name: String, data: ByteArray) : OutgoingFile
     override fun open(): InputStream = ByteArrayInputStream(bytes)
 }
 
-private class MemSink : IncomingFile {
+private open class MemSink : IncomingFile {
     override val output: OutputStream = ByteArrayOutputStream()
+    @Volatile var aborted = false
     override fun commit() = "x"
-    override fun abort() {}
+    override fun abort() { aborted = true }
+}
+
+/** A sink on a nearly full volume. */
+private class TightSink(private val free: Long) : MemSink(), SpaceAware {
+    override fun freeBytes(): Long = free
 }
 
 private fun file(name: String, size: Long = 1) = EntryInfo(name, false, size, 1, "text/plain")
@@ -62,10 +72,10 @@ private class FakeTree(
     var entries: List<EntryInfo> = emptyList(),
     var failure: BrowseOutcome? = null,
     val readable: Map<String, OutgoingFile> = emptyMap(),
+    val sink: MemSink = MemSink(),
 ) : FileTree {
     val calls = CopyOnWriteArrayList<String>()
     val writes = CopyOnWriteArrayList<Triple<String, String, Boolean>>()
-    val sink = MemSink()
 
     private fun <T> answer(call: String, value: () -> T): TreeResult<T> {
         calls += call
@@ -95,11 +105,14 @@ class BrowseServiceTest {
     private val revoked = CopyOnWriteArrayList<RootInfo>()
     private val ids = AtomicInteger()
 
+    @Volatile private var browse: BrowseService? = null
+
+    /** Mac offers with a target go to the service, as in the app; a bulk dial never completes. */
     private val engine = TransferEngine(
         scope = scope,
         send = { type, payload -> sent += type to payload; true },
-        bulk = BulkOpener { throw IOException("no bulk in this test") },
-        sinks = { SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED) },
+        bulk = BulkOpener { awaitCancellation() },
+        sinks = { offer -> browse?.sinkFor(offer) ?: SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED) },
         freeBytes = { null },
         newId = { "t${ids.incrementAndGet()}" },
     )
@@ -122,7 +135,16 @@ class BrowseServiceTest {
             onQueued = { id, f -> queued += id to f },
             scope = scope,
             io = Dispatchers.IO,
-        )
+        ).also { browse = it }
+    }
+
+    private fun state(id: String) = engine.transfers.value.firstOrNull { it.id == id }?.state
+
+    /** A Mac write into [root]/[dir], delivered to the engine; it waits in the bulk dial once its sink is open. */
+    private fun macWrite(id: String, root: String, dir: String) = runBlocking {
+        val offer = writeOffer(root, dir).toBuilder().setTransferId(id).build()
+        engine.onMessage(envelope(Channel.CHANNEL_FILES, 1, MessageType.FILES_OFFER, offer))
+        awaitUntil("$id active") { state(id) == TransferState.ACTIVE }
     }
 
     @After
@@ -296,6 +318,8 @@ class BrowseServiceTest {
         assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
         browse.onDelete(path(2, picked.id, ".0f8fad5b-d9cb-469f-a165-70867728950e.part/x"))
         assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        browse.onStat(path(3, picked.id, ".0F8FAD5B-D9CB-469F-A165-70867728950E.PART"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
         assertTrue(tree.calls.isEmpty())
     }
 
@@ -364,5 +388,92 @@ class BrowseServiceTest {
         }
         browse.onList(list(107, picked.id))
         assertEquals(107L, last<BrowseListing>(MessageType.BROWSE_LISTING).requestId)
+    }
+
+    @Test fun removingARootCancelsItsTransfers() = runBlocking {
+        val mine = FakeTree(picked, readable = mapOf("a.txt" to MemFile("a.txt", ByteArray(3))))
+        val theirs = FakeTree(other, readable = mapOf("b.txt" to MemFile("b.txt", ByteArray(3))))
+        val browse = service(mine, theirs)
+        browse.onRead(path(1, picked.id, "a.txt"))
+        browse.onRead(path(2, other.id, "b.txt"))
+        val (readMine, readTheirs) = queued.map { it.first }
+        macWrite("m1", picked.id, "")
+        assertTrue(listOf(readMine, readTheirs, "m1").all { state(it) != TransferState.CANCELLED })
+
+        // Removed (or revoked, or All files access withdrawn): the root is no longer listed.
+        trees.remove(mine)
+        browse.onRootsChanged()
+        awaitUntil("cancelled") { state(readMine) == TransferState.CANCELLED && state("m1") == TransferState.CANCELLED }
+        assertTrue(state(readTheirs) in setOf(TransferState.QUEUED, TransferState.WAITING), "the other root's read goes on")
+    }
+
+    @Test fun browseReadsAreCapped() = runBlocking {
+        val files = (1..65).associate { "f$it.txt" to MemFile("f$it.txt", ByteArray(1)) }
+        val tree = FakeTree(picked, readable = files)
+        val browse = service(tree)
+        for (i in 1..64) browse.onRead(path(i.toLong(), picked.id, "f$i.txt"))
+        assertEquals(64, queued.size)
+        browse.onRead(path(65, picked.id, "f65.txt"))
+        val refused = last<BrowseResult>(MessageType.BROWSE_RESULT)
+        assertEquals(65L, refused.requestId)
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_IO, refused.outcome)
+        assertFalse("read f65.txt" in tree.calls, "nothing is opened for a refused read")
+        assertEquals(64, queued.size)
+
+        // Once one ends, there is room again.
+        engine.cancel(queued.first().first)
+        awaitUntil("ended") { state(queued.first().first) == TransferState.CANCELLED }
+        browse.onRead(path(66, picked.id, "f65.txt"))
+        assertEquals(65, queued.size)
+    }
+
+    @Test fun activeWriteBlocksRenameAndDeleteOfItsFolders() = runBlocking {
+        val tree = FakeTree(picked)
+        val browse = service(tree)
+        macWrite("m1", picked.id, "docs/sub")
+        for ((i, p) in listOf("docs", "docs/sub", "Docs").withIndex()) {
+            browse.onDelete(path(10L + i, picked.id, p))
+            assertEquals(BrowseOutcome.BROWSE_OUTCOME_EXISTS, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome, p)
+            browse.onRename(rename(20L + i, picked.id, p, "x"))
+            assertEquals(BrowseOutcome.BROWSE_OUTCOME_EXISTS, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome, p)
+        }
+        assertTrue(tree.calls.none { it.startsWith("delete") || it.startsWith("rename") })
+        // A sibling, or a file inside the folder being written, is fine.
+        browse.onDelete(path(30, picked.id, "other"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_OK, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        browse.onDelete(path(31, picked.id, "docs/sub/old.txt"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_OK, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        // Once the write ends, the folder can go.
+        engine.cancel("m1")
+        awaitUntil("ended") { state("m1") == TransferState.CANCELLED }
+        browse.onDelete(path(32, picked.id, "docs"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_OK, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+    }
+
+    @Test fun readOnlyRootRefusesChanges() = runBlocking {
+        val tree = FakeTree(other, entries = listOf(file("a.txt")))
+        val browse = service(tree)
+        browse.onMkdir(path(1, other.id, "new"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_DENIED, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        browse.onDelete(path(2, other.id, "a.txt"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_DENIED, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        browse.onRename(rename(3, other.id, "a.txt", "b.txt"))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_DENIED, last<BrowseResult>(MessageType.BROWSE_RESULT).outcome)
+        assertTrue(tree.calls.isEmpty())
+        // Reading still works.
+        browse.onList(list(4, other.id))
+        assertEquals(BrowseOutcome.BROWSE_OUTCOME_OK, last<BrowseListing>(MessageType.BROWSE_LISTING).outcome)
+    }
+
+    @Test fun writeWithoutRoomIsRefusedNoSpace() {
+        val sink = TightSink(free = 64L shl 20)
+        val browse = service(FakeTree(picked, sink = sink))
+        val offer = writeOffer(picked.id, "").toBuilder().setSize(1).build()
+        assertEquals(SinkResult.Refused(TransferError.TRANSFER_ERROR_NO_SPACE), browse.sinkFor(offer))
+        assertTrue(sink.aborted, "the part is removed")
+        val fits = TightSink(free = (64L shl 20) + 10)
+        val roomy = service(FakeTree(picked.copy(id = "aaaaaaaaaaaaaaaa"), sink = fits))
+        val ok = writeOffer("aaaaaaaaaaaaaaaa", "").toBuilder().setSize(10).build()
+        assertIs<SinkResult.Ready>(roomy.sinkFor(ok))
     }
 }

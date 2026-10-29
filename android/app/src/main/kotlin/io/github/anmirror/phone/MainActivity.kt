@@ -30,7 +30,6 @@ import io.github.anmirror.phone.ui.HomeScreen
 import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -51,7 +50,7 @@ class MainActivity : ComponentActivity() {
         graph.refreshContactsGranted()
         graph.refreshCallsPermissions()
         graph.refreshMediaAccess()
-        graph.scope.launch(Dispatchers.IO) { graph.refreshBrowseAccess() }
+        graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
         // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
@@ -148,8 +147,8 @@ private fun AppRoot(graph: AppGraph) {
                         pickedFolders = pickedFolders,
                         onBrowseToggle = graph::setBrowseOn,
                         // The grant and the folder's name come from the provider: off the main thread.
-                        onFolderPicked = { uri -> graph.scope.launch(Dispatchers.IO) { graph.pickedFolders.add(uri) } },
-                        onRemoveFolder = { folder -> graph.scope.launch(Dispatchers.IO) { graph.pickedFolders.remove(folder.root.id) } },
+                        onFolderPicked = { uri -> graph.launchQuietly("browse: add folder") { graph.pickedFolders.add(uri) } },
+                        onRemoveFolder = { folder -> graph.launchQuietly("browse: remove folder") { graph.pickedFolders.remove(folder.root.id) } },
                         onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
                         onPairAgain = {
                             graph.scope.launch { graph.manager.forget(mac.id) }

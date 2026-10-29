@@ -18,6 +18,8 @@ import io.github.anmirror.transfer.FileNames
 import io.github.anmirror.transfer.OutgoingFile
 import io.github.anmirror.transfer.SinkResult
 import io.github.anmirror.transfer.TransferEngine
+import io.github.anmirror.transfer.TransferState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +35,11 @@ import java.io.Closeable
  * when the transfer ends. Writes are Mac offers with a `target`, opened by [sinkFor].
  *
  * A root whose permission is gone answers `REVOKED`: [onRevoked] drops it, and the new roots are
- * pushed. Logs carry request IDs, root IDs, counts and outcomes only, never paths or names.
+ * pushed. Every browse transfer is remembered with its root: [onRootsChanged] cancels those whose
+ * root is gone, and [cancelAll] all of them. At most [MAX_READS] reads are outstanding (each holds
+ * an open descriptor); a folder (or one above it) with a write under way can't be renamed or
+ * deleted (`EXISTS`), and a read-only root refuses mkdir, delete and rename (`DENIED`). Logs carry
+ * request IDs, root IDs, counts and outcomes only, never paths or names.
  */
 class BrowseService(
     private val roots: RootsSource,
@@ -45,6 +51,13 @@ class BrowseService(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val log: (String) -> Unit = {},
 ) {
+    /** A browse transfer: its root, and for a write the folder it writes into. */
+    private class Tracked(val rootId: String, val write: Boolean, val dir: List<String>)
+
+    private val lock = Any()
+    private val tracked = HashMap<String, Tracked>() // transfer ID → what it is; under [lock]
+    private var readsOpening = 0 // reads past the cap check, not yet tracked; under [lock]
+
     /** `browse.roots_request`: answered by `browse.roots`. */
     suspend fun onRootsRequest() = pushRoots()
 
@@ -83,16 +96,21 @@ class BrowseService(
 
     suspend fun onStat(p: BrowsePath) = answer("stat", p.requestId, run(p.rootId, p.path) { it.stat(p.path) })
 
-    suspend fun onMkdir(p: BrowsePath) = answer("mkdir", p.requestId, run(p.rootId, p.path) { it.mkdir(p.path) })
+    suspend fun onMkdir(p: BrowsePath) =
+        answer("mkdir", p.requestId, run(p.rootId, p.path, change = true) { it.mkdir(p.path) })
 
-    suspend fun onDelete(p: BrowsePath) = answer("delete", p.requestId, run(p.rootId, p.path) { it.delete(p.path) })
+    /** `browse.delete`: `EXISTS` while a write goes into this folder or one below it. */
+    suspend fun onDelete(p: BrowsePath) {
+        val ran = if (writing(p.rootId, p.path)) Ran(null, exists) else run(p.rootId, p.path, change = true) { it.delete(p.path) }
+        answer("delete", p.requestId, ran)
+    }
 
     /** `browse.rename`: a `new_name` that is not its own sanitized form (SPEC 16) is `BAD_PATH`. */
     suspend fun onRename(r: BrowseRename) {
-        val ran = if (r.newName.isEmpty() || r.newName != FileNames.sanitize(r.newName)) {
-            Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH))
-        } else {
-            run(r.rootId, r.path) { it.rename(r.path, r.newName) }
+        val ran = when {
+            r.newName.isEmpty() || r.newName != FileNames.sanitize(r.newName) -> Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH))
+            writing(r.rootId, r.path) -> Ran(null, exists)
+            else -> run(r.rootId, r.path, change = true) { it.rename(r.path, r.newName) }
         }
         answer("rename", r.requestId, ran)
     }
@@ -100,26 +118,77 @@ class BrowseService(
     /**
      * `browse.read`: the file goes as a `TRANSFER_KIND_FILE` offer carrying the request's ID, or
      * `browse.result` says why not. A read without a request ID can't be answered as one (it would
-     * look like a file the user shared) and is `BAD_PATH`.
+     * look like a file the user shared) and is `BAD_PATH`. With [MAX_READS] reads outstanding, a
+     * new one is `IO` and nothing is opened for it.
      */
     suspend fun onRead(p: BrowsePath) {
-        val ran = if (p.requestId == 0L) {
-            Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH))
-        } else {
-            run(p.rootId, p.path) { it.openRead(p.path) }
+        if (p.requestId == 0L) return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH)))
+        val room = synchronized(lock) {
+            prune()
+            val open = tracked.values.count { !it.write } + readsOpening
+            (open < MAX_READS).also { if (it) readsOpening++ }
         }
-        when (val result = ran.result) {
-            is TreeResult.Err -> answer("read", p.requestId, ran)
-            is TreeResult.Ok -> {
-                val file = result.value
-                val id = try {
-                    transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
-                } catch (e: Exception) {
-                    (file as? Closeable)?.close()
-                    throw e
+        if (!room) {
+            log("browse: read ${p.requestId} refused, $MAX_READS outstanding")
+            return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_IO)))
+        }
+        try {
+            val ran = run(p.rootId, p.path) { it.openRead(p.path) }
+            when (val result = ran.result) {
+                is TreeResult.Err -> answer("read", p.requestId, ran)
+                is TreeResult.Ok -> {
+                    val file = result.value
+                    val id = try {
+                        transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
+                    } catch (e: Exception) {
+                        (file as? Closeable)?.close()
+                        throw e
+                    }
+                    synchronized(lock) { tracked[id] = Tracked(p.rootId, write = false, dir = emptyList()) }
+                    onQueued(id, file)
+                    log("browse: read ${p.requestId} queued as $id")
                 }
-                onQueued(id, file)
-                log("browse: read ${p.requestId} queued as $id")
+            }
+        } finally {
+            synchronized(lock) { readsOpening-- }
+        }
+    }
+
+    /** The roots changed: browse transfers whose root is gone (removed, revoked, access withdrawn) stop. */
+    fun onRootsChanged() {
+        val live = roots.trees().mapTo(HashSet()) { it.root.id }
+        cancelWhere { it.rootId !in live }
+    }
+
+    /** Browsing closed: every browse transfer still under way stops (the Mac is told). */
+    fun cancelAll() = cancelWhere { true }
+
+    private fun cancelWhere(gone: (Tracked) -> Boolean) {
+        val ids = synchronized(lock) {
+            prune()
+            val ids = tracked.filterValues(gone).keys.toList()
+            ids.forEach(tracked::remove)
+            ids
+        }
+        ids.forEach(transfers::cancel)
+        if (ids.isNotEmpty()) log("browse: cancelled ${ids.size} transfers")
+    }
+
+    /** Forgets transfers that ended. Under [lock]. */
+    private fun prune() {
+        val ongoing = transfers.transfers.value.filter { it.state in ONGOING }.mapTo(HashSet()) { it.id }
+        tracked.keys.retainAll(ongoing)
+    }
+
+    /** A write under way goes into [path] of [rootId], or a folder below it. */
+    private fun writing(rootId: String, path: String): Boolean {
+        val segments = BrowsePaths.segments(path)?.map(FileNames::key) ?: return false
+        if (segments.isEmpty()) return false
+        return synchronized(lock) {
+            prune()
+            tracked.values.any { t ->
+                t.write && t.rootId == rootId && t.dir.size >= segments.size &&
+                    t.dir.subList(0, segments.size).map(FileNames::key) == segments
             }
         }
     }
@@ -138,11 +207,29 @@ class BrowseService(
         val tree = tree(target.rootId) ?: return SinkResult.Refused(TransferError.TRANSFER_ERROR_BAD_TARGET)
         if (!tree.root.writable) return SinkResult.Refused(TransferError.TRANSFER_ERROR_DENIED)
         return when (val r = tree.openWrite(target.dirPath, offer.name, target.overwrite)) {
-            is TreeResult.Ok -> SinkResult.Ready(r.value)
+            is TreeResult.Ok -> {
+                val file = r.value
+                // Off the primary volume the engine can't know the room; the part's own volume can.
+                if (!fitsFreeSpace(offer.size, (file as? SpaceAware)?.freeBytes())) {
+                    runCatching { file.abort() }
+                    log("browse: write ${offer.transferId} refused NO_SPACE")
+                    return SinkResult.Refused(TransferError.TRANSFER_ERROR_NO_SPACE)
+                }
+                synchronized(lock) { tracked[offer.transferId] = Tracked(tree.root.id, write = true, dir = segments) }
+                SinkResult.Ready(file)
+            }
             is TreeResult.Err -> {
                 if (r.outcome == BrowseOutcome.BROWSE_OUTCOME_REVOKED) {
                     revoked(tree)
-                    scope.launch { pushRoots() }
+                    scope.launch {
+                        try {
+                            pushRoots()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            log("browse: push failed (${e.javaClass.simpleName})") // the class only: a message could carry a URI
+                        }
+                    }
                 }
                 log("browse: write ${offer.transferId} refused ${r.outcome}")
                 SinkResult.Refused(r.outcome.toTransferError())
@@ -167,11 +254,12 @@ class BrowseService(
      * Runs [op] on the root's tree off the main thread. A bad path, or one through an in-progress
      * `.<uuid>.part` (never listed), does not reach the tree; an unknown root is `NOT_FOUND`.
      */
-    private suspend fun <T> run(rootId: String, path: String, op: (FileTree) -> TreeResult<T>): Ran<T> {
+    private suspend fun <T> run(rootId: String, path: String, change: Boolean = false, op: (FileTree) -> TreeResult<T>): Ran<T> {
         val segments = BrowsePaths.segments(path) ?: return Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH))
         if (segments.any { PART_NAME.matches(it) }) return Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND))
         return withContext(io) {
             val tree = tree(rootId) ?: return@withContext Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND))
+            if (change && !tree.root.writable) return@withContext Ran(tree, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_DENIED))
             Ran(tree, op(tree))
         }
     }
@@ -225,6 +313,12 @@ class BrowseService(
     companion object {
         /** `browse.listing` page limit (Global Constraints). */
         const val MAX_PAGE = 500
+
+        /** Outstanding browse reads (each holds an open descriptor until its transfer ends). */
+        const val MAX_READS = 64
+
+        private val ONGOING = setOf(TransferState.QUEUED, TransferState.WAITING, TransferState.ACTIVE)
+        private val exists = TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_EXISTS)
 
         private val ORDER: Comparator<EntryInfo> = compareBy<EntryInfo> { !it.isDir }
             .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }

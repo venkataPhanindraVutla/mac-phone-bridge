@@ -10,8 +10,6 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.nio.channels.Channels
-import java.nio.channels.SeekableByteChannel
 import java.nio.file.AccessDeniedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
@@ -20,9 +18,11 @@ import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.NotDirectoryException
 import java.nio.file.Path
+import java.nio.file.SecureDirectoryStream
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 
@@ -33,19 +33,38 @@ import java.util.UUID
  * form, which must be the root or lie under it (`BAD_PATH` otherwise). Operations act on that
  * checked canonical path. [delete] and [rename] resolve only the parent that way and act on the
  * last segment itself, without following it, so a link is deleted or renamed, never its target.
- * Links whose target leaves the root (or is missing) are not listed and answer `BAD_PATH`. A
- * write goes to a hidden `.<uuid>.part` created (`O_EXCL`) in the checked folder, and the folder
- * is checked again just before the rename on commit, so a folder swapped for a link meanwhile
- * fails the write instead of reaching outside the root (the part is then deleted: its random name
- * can only be ours). Java has no `openat`, so a swap in the
- * instant between that last check and the rename itself is not covered.
+ * Links whose target leaves the root (or is missing) are not listed and answer `BAD_PATH`.
+ *
+ * Against a folder swapped for a link between the check and the use ([Descriptors]):
+ * - reads open with `O_NOFOLLOW`, and on Android the opened descriptor's real path
+ *   (`/proc/self/fd`) must lie under the root, else it is closed and the read is `BAD_PATH`;
+ * - a write's hidden `.<uuid>.part` is created with `O_CREAT | O_EXCL | O_NOFOLLOW` in the checked
+ *   folder; on commit, right before the rename, the part's descriptor must still be in that
+ *   folder and the folder's path must still resolve to itself. The abort deletes the part where
+ *   its descriptor says it is (its random name can only be ours);
+ * - delete removes entries through a [SecureDirectoryStream] (`openat`/`unlinkat`) where the
+ *   platform has one, else by walking the tree without following links.
+ *
+ * Java has no `renameat`, so a rename (and mkdir, and the walk) still goes by path: a swap in the
+ * instant between the last check and the call is not covered. That remaining window rests on
+ * Android shared storage (`/storage/emulated`, FUSE) refusing to create symlinks, so no app can
+ * plant one there. On the JVM test host the platform opener is [NioDescriptors], which can't see
+ * a descriptor's real path; the tests stand in for it, and the `/proc` path runs on devices only.
  */
-class JavaFileTree(
+class JavaFileTree internal constructor(
     rootDir: File,
     override val root: RootInfo,
     private val mimeFor: (String) -> String,
-    private val free: () -> Long? = { null },
+    private val free: () -> Long?,
+    private val fds: Descriptors,
 ) : FileTree {
+    constructor(
+        rootDir: File,
+        root: RootInfo,
+        mimeFor: (String) -> String,
+        free: () -> Long? = { null },
+    ) : this(rootDir, root, mimeFor, free, Descriptors.platform())
+
     private val rootCanon: File = rootDir.canonicalFile
     private val rootPrefix = rootCanon.path.trimEnd(File.separatorChar) + File.separatorChar
 
@@ -106,7 +125,15 @@ class JavaFileTree(
         if (!exists(target)) return@guard notFound
         if (isLink(target) && visibleTarget(target) == null) return@guard badPath
         if (!stillChecked(parent)) return@guard badPath
-        // No FOLLOW_LINKS: a link (at the top or anywhere below) is visited as a file and deleted itself.
+        Files.newDirectoryStream(parent.toPath()).use { stream ->
+            // Opened: the folder must still be the one checked; from here on nothing goes by path.
+            if (stream is SecureDirectoryStream<Path> && stillChecked(parent)) {
+                deleteBelow(stream, target.toPath().fileName)
+                return@guard TreeResult.Ok(Unit)
+            }
+        }
+        // No SecureDirectoryStream (the JVM test host; maybe Android): no FOLLOW_LINKS, so a link
+        // (at the top or anywhere below) is visited as a file and deleted itself.
         Files.walkFileTree(
             target.toPath(),
             object : SimpleFileVisitor<Path>() {
@@ -146,9 +173,7 @@ class JavaFileTree(
             if (!stillChecked(parent)) return@guard badPath
             if (caseOnly) {
                 // Files.move treats a case-only rename as a no-op: go through a hidden temporary name.
-                val temp = File(parent, partName())
-                Files.move(source.toPath(), temp.toPath())
-                Files.move(temp.toPath(), dest.toPath())
+                renameThrough(source.toPath(), File(parent, partName()).toPath(), dest.toPath())
             } else {
                 Files.move(source.toPath(), dest.toPath()) // a link moves itself; never replaces
             }
@@ -165,14 +190,21 @@ class JavaFileTree(
         if (!file.exists()) return@guard notFound
         if (!file.isFile) return@guard badPath
         val attrs = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
-        val channel = Files.newByteChannel(file.toPath(), StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
-        // Opened: the path must still be the one checked (no folder on the way swapped for a link).
-        if (!stillChecked(file)) {
-            channel.close()
+        val handle = try {
+            fds.openRead(file)
+        } catch (e: IOException) {
+            // O_NOFOLLOW: the file became a link since the check.
+            if (e is LinkRefused || isLink(file)) return@guard badPath
+            throw e
+        }
+        // Opened: the descriptor (or, where the system can't tell, the path) must still be in the root.
+        val inside = handle.realPath?.let { inRoot(File(it)) } ?: stillChecked(file)
+        if (!inside) {
+            handle.close()
             return@guard badPath
         }
         val name = segments.last()
-        TreeResult.Ok(OpenedFile(name, channel.size(), mimeFor(name), attrs.lastModifiedTime().toMillis(), channel))
+        TreeResult.Ok(OpenedFile(name, handle.size, mimeFor(name), attrs.lastModifiedTime().toMillis(), handle))
     }
 
     override fun openWrite(dirPath: String, name: String, overwrite: Boolean): TreeResult<IncomingFile> = guard {
@@ -190,15 +222,12 @@ class JavaFileTree(
                 if (old.isDirectory) return@guard TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_EXISTS)
             }
         }
-        val part = File(dir, partName())
-        // CREATE_NEW is O_EXCL: it never opens an existing file or follows a link.
-        val out = Files.newOutputStream(part.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
-        if (!stillChecked(dir)) {
-            runCatching { out.close() }
-            Files.deleteIfExists(part.toPath()) // a fresh random name: only ever our own file
+        val partFile = PartFile(dir, File(dir, partName()), clean, overwrite, fds)
+        if (!partFile.inPlace()) {
+            partFile.abort()
             return@guard badPath
         }
-        TreeResult.Ok(PartFile(dir, part, clean, overwrite, out))
+        TreeResult.Ok(partFile)
     }
 
     /** [free]: the app passes StorageManager's allocatable bytes for the shared volume. */
@@ -210,12 +239,22 @@ class JavaFileTree(
         private val part: File,
         private val name: String,
         private val overwrite: Boolean,
-        override val output: OutputStream,
+        fds: Descriptors,
     ) : IncomingFile {
+        private val handle = fds.createNew(part) // O_CREAT | O_EXCL | O_NOFOLLOW
+        override val output: OutputStream = handle.output
+
+        /** The part is (still) in the checked folder, and that folder's path still resolves to itself. */
+        fun inPlace(): Boolean {
+            val real = handle.realPath()
+            if (real != null && File(real).parent != dir.path) return false
+            return stillChecked(dir)
+        }
+
         override fun commit(): String {
+            // Right before the rename: the part must still be where it was checked.
+            if (!inPlace()) throw IOException("destination folder changed")
             output.close()
-            // The folder must still be the one checked when the write began.
-            if (!stillChecked(dir)) throw IOException("destination folder changed")
             val saved = if (overwrite) {
                 val old = File(dir, name)
                 if (exists(old) && !isLink(old) && old.isDirectory) throw IOException("a folder has that name")
@@ -239,8 +278,9 @@ class JavaFileTree(
          * can only ever remove our own file, wherever the path leads now.
          */
         override fun abort() {
+            val real = runCatching { handle.realPath() }.getOrNull()?.let(::File)?.takeIf { it.name == part.name }
             runCatching { output.close() }
-            Files.deleteIfExists(part.toPath())
+            Files.deleteIfExists((real ?: part).toPath())
         }
     }
 
@@ -250,10 +290,23 @@ class JavaFileTree(
         override val size: Long,
         override val mime: String,
         override val modifiedMs: Long,
-        private val channel: SeekableByteChannel,
+        private val handle: ReadHandle,
     ) : OutgoingFile, Closeable {
-        override fun open(): InputStream = Channels.newInputStream(channel)
-        override fun close() = channel.close()
+        override fun open(): InputStream = handle.input
+        override fun close() = handle.close()
+    }
+
+    /** Deletes [name] in [dir] and, for a folder, everything in it, all through descriptors: no link is followed. */
+    private fun deleteBelow(dir: SecureDirectoryStream<Path>, name: Path) {
+        val attrs = dir.getFileAttributeView(name, BasicFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS).readAttributes()
+        if (attrs.isDirectory) {
+            dir.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS).use { child ->
+                for (entry in child.map { it.fileName }.toList()) deleteBelow(child, entry)
+            }
+            dir.deleteDirectory(name)
+        } else {
+            dir.deleteFile(name) // a link goes itself
+        }
     }
 
     // ---- resolving -------------------------------------------------------------------------
@@ -332,5 +385,19 @@ class JavaFileTree(
         val badPath = TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_BAD_PATH)
         val notFound = TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND)
         val denied = TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_DENIED)
+    }
+}
+
+/**
+ * Renames [source] to [dest] through [temp] (a case-only rename). If the second step fails, the
+ * file goes back to [source].
+ */
+internal fun renameThrough(source: Path, temp: Path, dest: Path, move: (Path, Path) -> Unit = { a, b -> Files.move(a, b) }) {
+    move(source, temp)
+    try {
+        move(temp, dest)
+    } catch (e: Exception) {
+        runCatching { move(temp, source) }
+        throw e
     }
 }
