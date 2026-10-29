@@ -122,6 +122,12 @@ public final class ClipboardModel: SessionFeature {
         pasteboard.writeString(text)
     }
 
+    /// `text` was sent another way (`share.text`), and the phone put it on its clipboard: the
+    /// same text copied on the Mac is not sent again.
+    public func noteSentToPhone(_ text: String) {
+        phoneHas = SHA256.hash(data: Data(text.utf8))
+    }
+
     /// The pasteboard's text for an explicit send; nil when there is none. Skips no type: the
     /// user asked for it.
     public func currentText() -> String? {

@@ -19,7 +19,12 @@ public protocol BulkGrants: AnyObject {
 /// Anything else closes the connection without a reply.
 @MainActor
 public final class BulkServer: BulkGrants {
-    public private(set) var port: UInt16?
+    public private(set) var port: UInt16? {
+        didSet { if port != oldValue { onPortChange?(port) } }
+    }
+    /// Told every time `port` changes: nil while the listener is down or restarting (after wake,
+    /// or a failure), then the new port once it is ready.
+    public var onPortChange: ((UInt16?) -> Void)?
     /// Gets every connection whose hello redeemed. With no handler, the link is closed.
     public var onLink: ((any BulkPipe, BulkGrant) -> Void)?
 

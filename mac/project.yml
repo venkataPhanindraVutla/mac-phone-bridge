@@ -40,6 +40,10 @@ targets:
       - package: AMKit
         product: FeatureClipboard
       - package: AMKit
+        product: FeatureFiles
+      - package: AMKit
+        product: FeatureShare
+      - package: AMKit
         product: AppSession
     settings:
       base:

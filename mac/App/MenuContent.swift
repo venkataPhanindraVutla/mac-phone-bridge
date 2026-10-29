@@ -1,5 +1,6 @@
 import AppKit
 import FeatureCalls
+import FeatureFiles
 import FeatureFind
 import FeatureStatus
 import SwiftUI
@@ -81,6 +82,9 @@ struct MenuContent: View {
            !availability.enabled, availability.reason == .offByUser {
             Text("Turn on clipboard sharing in the phone app.")
         }
+        if model.isConnected {
+            sendSection
+        }
         if model.isConnected, model.canCall, let call = model.calls.active {
             Text("On a call with \(model.calls.displayName(call)) · \(model.calls.elapsedText ?? "00:00")")
             if call.muteSupported {
@@ -98,6 +102,37 @@ struct MenuContent: View {
         if model.isConnected, let status = model.phoneStatus.status {
             Text(StatusFormatter.detail(status))
                 .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))
+        }
+    }
+
+    /// Sending to the phone and the transfers under way (connected only).
+    @ViewBuilder private var sendSection: some View {
+        Button("Show Phone Window") { show(WindowID.phone) }
+            .accessibilityLabel(Text("Show Phone Window"))
+        if model.canSendFiles {
+            Button("Send File to Phone…") { model.chooseFilesToSend() }
+                .accessibilityLabel(Text("Send File to Phone"))
+        }
+        if model.canShare {
+            Button("Send Clipboard to Phone") { Task { await model.share.sendClipboard() } }
+                .accessibilityLabel(Text("Send Clipboard to Phone"))
+            if let note = TransferText.note(model.share.lastOutcome) {
+                Text(note)
+            }
+        }
+        ForEach(model.transfers.transfers.filter { !$0.isFinal }) { item in
+            Menu {
+                Button("Cancel") { model.transfers.cancel(item.id) }
+                    .accessibilityLabel(Text(TransferText.cancelLabel(item)))
+            } label: {
+                Text(TransferText.title(item))
+            }
+        }
+        if let failure = model.transfers.lastFailure {
+            Text(TransferText.title(failure))
+            if let reason = TransferText.reason(failure) {
+                Text(reason)
+            }
         }
     }
 

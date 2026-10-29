@@ -396,3 +396,20 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
         #expect(log.grants.last == BulkGrant(role: .phoneSends, context: "t2"))
     }
 }
+
+@MainActor @Test func portChangesAreReported() async throws {
+    let server = BulkServer(identity: P12IdentityProvider(url: identityURL("mac"), password: "test"))
+    var reported: [UInt16?] = []
+    server.onPortChange = { reported.append($0) }
+    try server.start()
+    defer { server.stop() }
+    #expect(await eventually { server.port != nil })
+    #expect(reported == [server.port])
+
+    server.handleWake()
+    #expect(reported.count == 2)
+    #expect(reported.last == .some(nil))
+    #expect(await eventually { server.port != nil })
+    #expect(reported.count == 3)
+    #expect(reported.last == server.port)
+}

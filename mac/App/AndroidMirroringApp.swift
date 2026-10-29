@@ -28,6 +28,10 @@ struct AndroidMirroringApp: App {
         }
         .windowResizability(.contentSize)
 
+        Window("Phone", id: WindowID.phone) {
+            PhoneWindow(model: model)
+        }
+
         Window("Settings", id: WindowID.settings) {
             SettingsView(model: model)
         }
@@ -54,4 +58,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum WindowID {
     static let pairing = "pairing"
     static let settings = "settings"
+    static let phone = "phone"
 }

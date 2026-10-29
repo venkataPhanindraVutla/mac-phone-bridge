@@ -39,7 +39,12 @@ public final class TransferEngine: SessionFeature {
     public let messagePrefixes = ["files."]
 
     /// Active and queued transfers first, in arrival order, then the last 20 finished, newest first.
+    /// Transfers the Mac refused on its own (a feature off, an answer to no request) are not
+    /// listed: the user did not start them and cannot act on them.
     public private(set) var transfers: [TransferItem] = []
+    /// The newest listed transfer that failed, or that the phone cancelled, until the next
+    /// transfer is queued. The user's own cancels do not count.
+    public private(set) var lastFailure: TransferItem?
 
     /// Called once for every transfer that ends (done, failed or cancelled), with where a
     /// received file was saved. Check `item.state`. `item.name` is the sanitized name; the
@@ -49,8 +54,8 @@ public final class TransferEngine: SessionFeature {
 
     nonisolated static let chunkBytes = BulkLink.bufferBytes
     static let keptFinished = 20
-    /// Any of these makes the Mac announce its bulk port.
-    static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1"]
+    /// Any of these makes the Mac announce its bulk port; `files.*` messages serve all four.
+    public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1"]
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "transfer")
 
     @ObservationIgnored private let bulk: any BulkGrants
@@ -75,6 +80,8 @@ public final class TransferEngine: SessionFeature {
     /// Requests (photos, browse) whose answer is an offer carrying their ID.
     @ObservationIgnored private var expected: [UInt64: Expectation] = [:]
     @ObservationIgnored private var lastRequestID: UInt64 = 0
+    /// The bulk port told to the phone in session; nil until it has been.
+    @ObservationIgnored private var announcedPort: UInt16?
 
     public init(bulk: any BulkGrants,
                 send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
@@ -106,12 +113,25 @@ public final class TransferEngine: SessionFeature {
         self.shared = shared
         // Before any token: changing the allowed phone revokes every outstanding one.
         bulk.allow(peerFingerprint: Self.bytes(hex: phoneID))
-        if !shared.isDisjoint(with: Self.bulkCapabilities), let port = bulk.port {
-            var endpoint = AMBulkEndpoint()
-            endpoint.port = UInt32(port)
-            post(.filesEndpoint, endpoint)
-        }
+        announcedPort = nil
+        announcePort()
         pump()
+    }
+
+    /// The bulk listener's port changed (it came back after wake, or after a failure): a phone
+    /// that connected while it had no port, or that knows the old one, is told the new one.
+    public func bulkPortChanged() {
+        announcePort()
+    }
+
+    /// `files.endpoint`, when a bulk capability is shared and the phone does not know this port yet.
+    private func announcePort() {
+        guard isConnected, !shared.isDisjoint(with: Self.bulkCapabilities), let port = bulk.port,
+              port != announcedPort else { return }
+        announcedPort = port
+        var endpoint = AMBulkEndpoint()
+        endpoint.port = UInt32(port)
+        post(.filesEndpoint, endpoint)
     }
 
     /// Every transfer that has not ended fails `INTERRUPTED`; nothing is sent.
@@ -120,6 +140,7 @@ public final class TransferEngine: SessionFeature {
         isConnected = false
         phoneID = nil
         shared = []
+        announcedPort = nil
         bulk.revokeAll()
         bulk.allow(peerFingerprint: nil)
         for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
@@ -160,6 +181,7 @@ public final class TransferEngine: SessionFeature {
     @discardableResult
     public func send(files: [URL], target: AMBrowseTarget? = nil) -> [String] {
         var ids: [String] = []
+        if !files.isEmpty { lastFailure = nil }
         for url in files {
             var id = newID()
             // IDs stay unique among live transfers, so a phone message names one transfer only.
@@ -218,7 +240,7 @@ public final class TransferEngine: SessionFeature {
     public func cancel(_ id: String) {
         guard let job = jobs.first(where: { $0.item.id == id }) else { return }
         let offered = job.item.direction == .receive || job.item.state != .queued
-        finish(job, .cancelled, notice: offered ? .cancel : .none)
+        finish(job, .cancelled, notice: offered ? .cancel : .none, byUser: true)
     }
 
     /// A bulk connection whose token redeemed: `PHONE_RECEIVES` carries a Mac send,
@@ -347,7 +369,7 @@ public final class TransferEngine: SessionFeature {
         jobs.append(job)
         if o.requestID != 0 {
             guard let e = expected.removeValue(forKey: o.requestID) else {
-                finish(job, .failed(.denied), notice: .reject(.denied))
+                finish(job, .failed(.denied), notice: .reject(.denied), listed: false)
                 return
             }
             job.destination = e.destination
@@ -355,10 +377,12 @@ public final class TransferEngine: SessionFeature {
         } else {
             job.destination = destination(o)
         }
+        // The Mac's own refusal (a feature that is off): not listed, see `transfers`.
         if case let .refuse(reason) = job.destination {
-            finish(job, .failed(reason), notice: .reject(reason))
+            finish(job, .failed(reason), notice: .reject(reason), listed: false)
             return
         }
+        lastFailure = nil
         publish()
         pump()
     }
@@ -540,8 +564,10 @@ public final class TransferEngine: SessionFeature {
     }
 
     /// Ends `job`: closes its link, deletes its part file, revokes its token, tells the phone
-    /// as `notice` says, answers its request, and starts the next transfer.
-    private func finish(_ job: Job, _ state: TransferItem.State, notice: Notice) {
+    /// as `notice` says, answers its request, and starts the next transfer. An ending that is
+    /// not `listed` stays out of `transfers`; one `byUser` is not a `lastFailure`.
+    private func finish(_ job: Job, _ state: TransferItem.State, notice: Notice,
+                        listed: Bool = true, byUser: Bool = false) {
         guard let index = jobs.firstIndex(where: { $0 === job }) else { return }
         jobs.remove(at: index)
         job.watchdog?.cancel()
@@ -587,17 +613,24 @@ public final class TransferEngine: SessionFeature {
         case .queued, .waiting, .active:
             break
         }
-        record(job.item, offer: job.offer, url: url)
+        record(job.item, offer: job.offer, url: url, listed: listed, byUser: byUser)
         pump()
     }
 
     // MARK: helpers
 
-    /// Adds a finished item and calls `onFinished`, on the next main-actor turn when `deferred`
-    /// (inside `send(files:)`, whose caller must get the ID first).
-    private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?, deferred: Bool = false) {
-        finished.insert(item, at: 0)
-        if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
+    /// Adds a finished item (when `listed`) and calls `onFinished`, on the next main-actor turn
+    /// when `deferred` (inside `send(files:)`, whose caller must get the ID first).
+    private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?, deferred: Bool = false,
+                        listed: Bool = true, byUser: Bool = false) {
+        if listed {
+            finished.insert(item, at: 0)
+            if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
+            switch item.state {
+            case .failed, .cancelled: if !byUser { lastFailure = item }
+            case .queued, .waiting, .active, .done: break
+            }
+        }
         publish()
         if deferred {
             Task { [weak self] in self?.onFinished?(item, offer, url) }

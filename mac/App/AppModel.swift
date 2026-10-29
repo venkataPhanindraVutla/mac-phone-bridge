@@ -6,8 +6,10 @@ import CryptoKit
 import FeatureCalls
 import FeatureClipboard
 import FeatureContacts
+import FeatureFiles
 import FeatureFind
 import FeatureNotify
+import FeatureShare
 import FeatureStatus
 import Foundation
 import Observation
@@ -18,7 +20,9 @@ import os
 @MainActor
 @Observable
 final class AppModel {
-    static let capabilities: Set<String> = ["status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1"]
+    static let capabilities: Set<String> = [
+        "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
+    ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
 
@@ -28,6 +32,10 @@ final class AppModel {
     let notifications: NotificationsModel
     let calls: CallModel
     let clipboard: ClipboardModel
+    /// File transfers both ways; received files go to Downloads.
+    let transfers: TransferEngine
+    /// Links and text shared both ways.
+    let share: ShareModel
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
     private(set) var showPhoneCalls: Bool = AppModel.savedShowPhoneCalls
     /// Whether phone contacts name callers and notification titles (default on). Turning it off wipes the stores.
@@ -41,6 +49,8 @@ final class AppModel {
     private(set) var startupError: String?
 
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
+    /// The second listener, for transfer bytes (SPEC section 13); runs alongside `server`.
+    @ObservationIgnored private let bulk: BulkServer
     @ObservationIgnored private let notificationPresenter: UserNotificationPresenter
     @ObservationIgnored private let icons: IconCache
     @ObservationIgnored private var callPanels: IncomingCallPanels?
@@ -65,6 +75,7 @@ final class AppModel {
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
     }
+    @ObservationIgnored private static let appLog = Logger(subsystem: "io.github.anmirror.mac", category: "app")
     #if DEBUG
     private static func debugLine(_ text: String) {
         FileHandle.standardError.write(Data((text + "\n").utf8))
@@ -145,7 +156,37 @@ final class AppModel {
             }
         )
         self.clipboard = clipboard
+        let bulk = BulkServer(identity: KeychainIdentityProvider())
+        self.bulk = bulk
+        let transfers = TransferEngine(
+            bulk: bulk,
+            send: { type, message in
+                // files.* serve every bulk feature; only a phone that shares one of them gets them.
+                guard let shared = server.activePhone?.shared,
+                      !shared.isDisjoint(with: TransferEngine.bulkCapabilities) else { return }
+                try? await server.send(type, message, channel: .files)
+            },
+            destination: { Self.destination(for: $0) }
+        )
+        self.transfers = transfers
+        bulk.onLink = { [weak transfers] pipe, grant in
+            if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
+        }
+        // After wake the port may change, and the phone may be back before it is ready.
+        bulk.onPortChange = { [weak transfers] _ in transfers?.bulkPortChanged() }
+        let share = ShareModel(
+            clipboard: clipboard, presenter: presenter,
+            openURL: { NSWorkspace.shared.open($0) },
+            send: { type, message in
+                // Only a phone that shares share.v1 gets share messages.
+                guard server.activePhone?.shared.contains("share.v1") == true else { return }
+                try? await server.send(type, message, channel: .share)
+            }
+        )
+        self.share = share
         notifyWork.register(clipboard)
+        notifyWork.register(transfers)
+        notifyWork.register(share)
         calls.enabled = showPhoneCalls
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
@@ -165,7 +206,10 @@ final class AppModel {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.server.handleWake() }
+            MainActor.assumeIsolated {
+                self?.server.handleWake()
+                self?.bulk.handleWake()
+            }
         }
         start()
     }
@@ -204,6 +248,23 @@ final class AppModel {
 
     /// Clipboard sync runs only while the connected phone shares `clipboard.v1`.
     var canClipboard: Bool { server.activePhone?.shared.contains("clipboard.v1") ?? false }
+
+    /// Sending files is offered only while the connected phone shares `files.v1`.
+    var canSendFiles: Bool { server.activePhone?.shared.contains("files.v1") ?? false }
+
+    /// Sending links, text and the clipboard is offered only while the connected phone shares `share.v1`.
+    var canShare: Bool { server.activePhone?.shared.contains("share.v1") ?? false }
+
+    /// "Send File to Phone…": any number of files, no folders.
+    func chooseFilesToSend() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, canSendFiles, !panel.urls.isEmpty else { return }
+        transfers.send(files: panel.urls)
+    }
 
     /// The "Send Mac clipboard to the phone" switch in Settings.
     var sendMacClipboard: Bool { clipboard.sendEnabled }
@@ -296,6 +357,7 @@ final class AppModel {
     func shutdown() {
         let hadPhone = server.activePhone != nil
         server.stop()
+        bulk.stop()
         if hadPhone { Thread.sleep(forTimeInterval: 0.25) }
     }
 
@@ -306,6 +368,21 @@ final class AppModel {
         } catch {
             startupError = String(describing: error)
         }
+        do {
+            try bulk.start()
+        } catch {
+            // Transfers stay unavailable; the phone gets no files.endpoint.
+            Self.appLog.error("bulk listener did not start: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// Phone files go to Downloads. Other kinds belong to features this Mac does not have yet,
+    /// and are refused.
+    private static func destination(for offer: AMTransferOffer) -> IncomingDestination {
+        guard offer.kind == .file,
+              let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        else { return .refuse(.disabled) }
+        return .folder(downloads)
     }
 
     private func handle(_ event: MacServerEvent) {

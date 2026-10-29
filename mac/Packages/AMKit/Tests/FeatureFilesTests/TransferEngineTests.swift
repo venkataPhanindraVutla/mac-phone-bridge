@@ -970,3 +970,101 @@ extension Data {
     #expect(offers.map(\.transferID) == [write[0]])
     #expect(offers.first?.target == target)
 }
+
+// MARK: Task 7: late bulk port, what the UI lists
+
+@MainActor @Test func endpointSentWhenPortArrivesAfterConnect() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    // The bulk listener is still coming back after wake when the phone reconnects.
+    r.bulk.port = nil
+    await r.connect()
+    r.engine.bulkPortChanged()
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(r.sent.all.isEmpty)
+
+    r.bulk.port = 5000
+    r.engine.bulkPortChanged()
+    try await until("files.endpoint") { r.sent.types == [.filesEndpoint] }
+    #expect(r.sent.of(.filesEndpoint, AMBulkEndpoint.self).map(\.port) == [5000])
+    // The same port again is not announced twice.
+    r.engine.bulkPortChanged()
+    // A new port is.
+    r.bulk.port = 5001
+    r.engine.bulkPortChanged()
+    try await until("second endpoint") { r.sent.types.count == 2 }
+    #expect(r.sent.of(.filesEndpoint, AMBulkEndpoint.self).map(\.port) == [5000, 5001])
+
+    // Not connected, or no bulk capability shared: nothing.
+    r.engine.disconnected()
+    r.bulk.port = 5002
+    r.engine.bulkPortChanged()
+    await r.connect(shared: ["notify.v1"])
+    r.bulk.port = 5003
+    r.engine.bulkPortChanged()
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(r.sent.types.count == 2)
+
+    // A reconnect announces the port at connect, and only once.
+    await r.connect(shared: ["photos.v1"])
+    r.engine.bulkPortChanged()
+    try await until("reconnect endpoint") { r.sent.types.count == 3 }
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(r.sent.of(.filesEndpoint, AMBulkEndpoint.self).map(\.port) == [5000, 5001, 5003])
+}
+
+@MainActor @Test func macRefusalsAreNotListed() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    // A feature that is off on the Mac.
+    r.destination = .refuse(.disabled)
+    await r.deliver(.filesOffer, r.offer("t1", size: 10))
+    // An answer to a request the Mac never made.
+    await r.deliver(.filesOffer, r.offer("t2", size: 10, requestID: 77))
+    try await until("rejects") { r.sent.of(.filesReject, AMTransferReject.self).count == 2 }
+    #expect(r.engine.transfers.isEmpty)
+    #expect(r.engine.lastFailure == nil)
+    // Still reported to whoever watches endings.
+    #expect(r.finished.map(\.item.id) == ["t1", "t2"])
+    #expect(r.finished.map(\.item.state) == [.failed(.disabled), .failed(.denied)])
+
+    // A refusal the user can act on is listed.
+    r.destination = .folder(r.dir)
+    r.free = 0
+    await r.deliver(.filesOffer, r.offer("t3", size: 10))
+    try await until("no space") { r.item("t3")?.state == .failed(.noSpace) }
+    #expect(r.engine.lastFailure?.id == "t3")
+}
+
+@MainActor @Test func lastFailureStaysUntilNextTransferStarts() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let a = try r.write(randomBytes(10), as: "a.txt")
+    let b = try r.write(randomBytes(10), as: "b.txt")
+    _ = r.engine.send(files: [a, b])
+    try await until("first offer") { r.sent.of(.filesOffer, AMTransferOffer.self).count == 1 }
+    var reject = AMTransferReject(); reject.transferID = "m1"; reject.reason = .noSpace
+    await r.deliver(.filesReject, reject)
+    #expect(r.engine.lastFailure?.id == "m1")
+    #expect(r.engine.lastFailure?.state == .failed(.noSpace))
+    // The rest of the same batch going on does not hide it.
+    try await until("second offer") { r.item("m2")?.state == .waiting }
+    #expect(r.engine.lastFailure?.id == "m1")
+
+    // The user cancelling is not a failure to report.
+    r.engine.cancel("m2")
+    #expect(r.item("m2")?.state == .cancelled)
+    #expect(r.engine.lastFailure?.id == "m1")
+
+    // The phone cancelling is.
+    _ = r.engine.send(files: [a])
+    #expect(r.engine.lastFailure == nil)
+    try await until("third offer") { r.item("m3")?.state == .waiting }
+    var cancel = AMTransferCancel(); cancel.transferID = "m3"
+    await r.deliver(.filesCancel, cancel)
+    #expect(r.engine.lastFailure?.id == "m3")
+    #expect(r.engine.lastFailure?.state == .cancelled)
+
+    // A phone offer is a new transfer too.
+    await r.deliver(.filesOffer, r.offer("t1", size: 10))
+    #expect(r.engine.lastFailure == nil)
+}
