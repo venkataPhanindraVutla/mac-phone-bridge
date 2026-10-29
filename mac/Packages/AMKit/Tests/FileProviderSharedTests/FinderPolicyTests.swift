@@ -126,3 +126,17 @@ private func create(_ kind: FinderPolicy.CreateKind, content: Bool = true, reimp
     cache.remove(PhoneItemID.encode(rootID: "r", path: "x/b"))
     #expect(cache.entry(for: PhoneItemID.encode(rootID: "r", path: "x/b")) == nil)
 }
+
+@Test func packagesAreDirectoriesNeverFiles() {
+    // Folders and packages (.rtfd, .pages, .app) both conform to public.directory.
+    #expect(FinderPolicy.kind(isDirectory: true, isLink: false) == .folder)
+    #expect(FinderPolicy.kind(isDirectory: false, isLink: true) == .other)
+    #expect(FinderPolicy.kind(isDirectory: false, isLink: false) == .file)
+    let package = FinderPolicy.kind(isDirectory: true, isLink: false)
+    // A dataless package with no match is kept, never given the nil item (which deletes it).
+    #expect(FinderPolicy.create(kind: package, hasContent: false, mayAlreadyExist: true, rootWritable: true, lookup: .absent)
+        == .refuse(.excludedFromSync))
+    // Created in Finder: kept on the Mac, never uploaded.
+    #expect(FinderPolicy.create(kind: package, hasContent: false, mayAlreadyExist: false, rootWritable: true, lookup: .absent)
+        == .refuse(.excludedFromSync))
+}

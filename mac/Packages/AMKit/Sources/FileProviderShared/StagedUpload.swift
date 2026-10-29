@@ -29,7 +29,8 @@ public enum StagedUpload {
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw Refused() }
         // Blocking again for the copy (a regular file never blocks, but the stream copy expects it).
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
+        let flags = fcntl(fd, F_GETFL)
+        guard flags != -1, fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != -1 else { throw Refused() }
 
         if fclonefileat(fd, AT_FDCWD, destination.path, 0) == 0 { return }
         try stream(fd, to: destination)

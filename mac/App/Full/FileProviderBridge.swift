@@ -3,11 +3,13 @@ import AMProtocol
 import ConnectionCore
 import FeatureBrowse
 import FeatureFiles
+import FeatureNotify
 import FileProvider
 import FileProviderShared
 import Foundation
 import Observation
 import os
+import UserNotifications
 
 /// The Finder sidebar's side of the app (F-04, Full build). While the connected phone shares
 /// `browse.v1`, its File Provider domain is there (named after the phone) and connected, and the
@@ -24,6 +26,8 @@ final class FileProviderBridge: SessionFeature {
     let messagePrefixes: [String] = []
 
     private let browse: BrowseModel
+    private let presenter: any NotificationPresenter
+    private let reveal: (URL) -> Void
     private let downloads: URL
     /// Where the extension stages uploads (read only through `StagedUpload`).
     private let uploads: URL
@@ -42,8 +46,15 @@ final class FileProviderBridge: SessionFeature {
     /// The longest a register handshake with the extension may take.
     private static let registerTimeout: Duration = .seconds(10)
 
-    init(browse: BrowseModel, container: URL, pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
+    /// `userInfo` keys of the "files were kept" notification.
+    private static let preservedMarkerKey = "fileProviderPreserved"
+    private static let preservedPathKey = "fileProviderPreservedPath"
+
+    init(browse: BrowseModel, container: URL, presenter: any NotificationPresenter, reveal: @escaping (URL) -> Void,
+         pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
         self.browse = browse
+        self.presenter = presenter
+        self.reveal = reveal
         downloads = container.appendingPathComponent(FullBuild.downloadsFolder, isDirectory: true)
         uploads = container.appendingPathComponent(FullBuild.uploadsFolder, isDirectory: true)
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -53,10 +64,10 @@ final class FileProviderBridge: SessionFeature {
         for folder in [downloads, uploads, sending] { try? FileManager.default.removeItem(at: folder) }
         watchRoots()
         // Domains of phones forgotten while the app was not running.
-        enqueue {
+        enqueue { [weak self] in
             let paired = pairedPhoneIDs()
             for domain in (try? await NSFileProviderManager.domains()) ?? [] where !paired.contains(domain.identifier.rawValue) {
-                _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData)
+                await self?.removeDomain(domain)
             }
         }
     }
@@ -69,7 +80,7 @@ final class FileProviderBridge: SessionFeature {
             phone = nil
             observeEndpointNote(for: nil)
             services.removeValue(forKey: phoneID)?.invalidate()
-            enqueue { _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData) }
+            enqueue { [weak self] in await self?.removeDomain(domain) }
             return
         }
         phone = (phoneID, phoneName)
@@ -108,8 +119,8 @@ final class FileProviderBridge: SessionFeature {
         }
         services.removeValue(forKey: phoneID)?.invalidate()
         let domain = Self.domain(phoneID, name: "")
-        enqueue {
-            _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData)
+        enqueue { [weak self] in
+            await self?.removeDomain(domain)
             Self.log.info("domain \(phoneID, privacy: .public) removed")
         }
     }
@@ -122,6 +133,42 @@ final class FileProviderBridge: SessionFeature {
             await previous?.value
             await work()
         }
+    }
+
+    /// Removes `domain`, keeping files that had not reached the phone. When the system kept
+    /// some, it says so once in a notification whose click shows the folder.
+    private func removeDomain(_ domain: NSFileProviderDomain) async {
+        let preserved: URL?
+        do {
+            preserved = try await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData)
+        } catch {
+            Self.log.error("domain not removed: \((error as NSError).code, privacy: .public)")
+            return
+        }
+        guard let preserved else { return }
+        Self.log.info("domain removed; files that had not reached the phone were kept")
+        let content = UNMutableNotificationContent()
+        content.body = String(localized: "Files that hadn't reached your phone were kept in a folder on your Mac.")
+        content.userInfo = [Self.preservedMarkerKey: true, Self.preservedPathKey: preserved.path]
+        _ = await presenter.authorize()
+        do {
+            try await presenter.deliver(id: "fp-kept|" + UUID().uuidString, content: content)
+        } catch {
+            Self.log.error("kept-files notice not shown: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// A click on a notification: true when it was the "files were kept" one, after showing that
+    /// folder in Finder (if it is still a folder).
+    func handleResponse(userInfo: [AnyHashable: Any]) -> Bool {
+        guard userInfo[Self.preservedMarkerKey] as? Bool == true else { return false }
+        if let path = userInfo[Self.preservedPathKey] as? String {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+                reveal(URL(fileURLWithPath: path, isDirectory: true))
+            }
+        }
+        return true
     }
 
     private static func domain(_ phoneID: String, name: String) -> NSFileProviderDomain {

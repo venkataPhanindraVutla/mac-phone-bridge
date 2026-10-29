@@ -63,6 +63,15 @@ public enum FinderPolicy {
 
     public enum CreateKind: Sendable { case file, folder, other }
 
+    /// The kind of a Finder item from its content type: anything that conforms to
+    /// `public.directory` (folders and packages such as .rtfd, .pages, .app) is a folder, never a
+    /// file, so it is never uploaded nor given the nil item that deletes it; a symlink or alias is
+    /// `other`; the rest are files.
+    public static func kind(isDirectory: Bool, isLink: Bool) -> CreateKind {
+        if isDirectory { return .folder }
+        return isLink ? .other : .file
+    }
+
     public enum CreateDecision: Equatable, Sendable {
         case upload
         /// The phone has it already (a re-import): that item, nothing uploaded.

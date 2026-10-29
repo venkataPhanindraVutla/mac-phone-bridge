@@ -3,6 +3,7 @@ import FileProviderShared
 import Foundation
 import os
 import Security
+import UniformTypeIdentifiers
 
 /// Shows a paired phone in Finder's sidebar (F-04): one domain per phone, named after it. Every
 /// listing, download and upload goes to the main app over XPC (`PhoneFilesXPC`), which serves
@@ -116,11 +117,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             completionHandler($0.0, $0.1, $0.2, $0.3)
         }
         let progress = Progress(totalUnitCount: 1)
-        let kind: FinderPolicy.CreateKind = switch itemTemplate.contentType {
-        case .some(.folder): .folder
-        case .some(.symbolicLink), .some(.aliasFile): .other
-        default: .file
-        }
+        // Folders and packages (a nil content URL) alike are directories: never files.
+        let type = itemTemplate.contentType
+        let kind = FinderPolicy.kind(
+            isDirectory: type?.conforms(to: .directory) == true,
+            isLink: type.map { $0.conforms(to: .symbolicLink) || $0.conforms(to: .aliasFile) } == true
+        )
         let mayAlreadyExist = options.contains(.mayAlreadyExist)
         let name = itemTemplate.filename
         let parent = itemTemplate.parentItemIdentifier

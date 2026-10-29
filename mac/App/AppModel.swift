@@ -262,7 +262,9 @@ final class AppModel {
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
             let paired: @MainActor () -> Set<String> = { Set(((try? store.all()) ?? []).map(\.id)) }
-            let bridge = FileProviderBridge(browse: browse, container: container, pairedPhoneIDs: paired)
+            let bridge = FileProviderBridge(browse: browse, container: container, presenter: presenter,
+                                            reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+                                            pairedPhoneIDs: paired)
             let outbox = ShareOutbox(container: container, defaults: UserDefaults(suiteName: group),
                                      transfers: transfers, share: share, pairedPhoneIDs: paired)
             notifyWork.register(bridge)
@@ -275,8 +277,14 @@ final class AppModel {
         callPanels = IncomingCallPanels(model: calls)
         server.onEvent = { [weak self] event in self?.handle(event) }
         server.onMessage = { [weak self] envelope in self?.handle(message: envelope) }
+        #if FULL_BUILD
+        let fileProviderBridge = fileProviderBridge
+        #endif
         presenter.onResponse = { actionID, userInfo, reply in
             if screenshots.handleResponse(userInfo: userInfo) { return }
+            #if FULL_BUILD
+            if fileProviderBridge?.handleResponse(userInfo: userInfo) == true { return }
+            #endif
             await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
         }
         // The user may allow notifications in System Settings and come back.
