@@ -156,3 +156,12 @@ private let everything: Set<String> = ["files.v1", "share.v1"]
     let over = String(repeating: "é", count: OutboxEnvelope.maxTextBytes / 2 + 1)
     #expect(OutboxEnvelope.check([.file("/a"), .text(over)]) == .textTooLong)
 }
+
+@Test func pendingRewritesNameTheirOriginal() {
+    let pending = OutboxFiles.pendingName(for: "ABC.json")
+    #expect((pending as NSString).pathExtension == "pending")
+    #expect(!pending.hasSuffix(".json"), "the drain never reads it")
+    #expect(OutboxFiles.original(ofPending: pending) == "ABC.json")
+    #expect(OutboxFiles.original(ofPending: "ABC.json") == nil)
+    #expect(OutboxFiles.original(ofPending: "x.pending") == nil, "not a rewrite of an outbox file")
+}

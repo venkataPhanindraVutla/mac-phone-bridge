@@ -53,4 +53,9 @@ private struct Dir {
         }
     }
     #expect(!fm.fileExists(atPath: d.root.appendingPathComponent("o1").path))
+
+    // A FIFO is refused at once, not waited on.
+    let fifo = staged.appendingPathComponent("pipe")
+    #expect(mkfifo(fifo.path, 0o600) == 0)
+    #expect(throws: (any Error).self) { try StagedUpload.copy(fifo, stagedIn: d.uploads, to: d.root.appendingPathComponent("o3")) }
 }

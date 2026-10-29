@@ -56,7 +56,7 @@ final class FileProviderBridge: SessionFeature {
         enqueue {
             let paired = pairedPhoneIDs()
             for domain in (try? await NSFileProviderManager.domains()) ?? [] where !paired.contains(domain.identifier.rawValue) {
-                try? await NSFileProviderManager.remove(domain)
+                _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData)
             }
         }
     }
@@ -69,7 +69,7 @@ final class FileProviderBridge: SessionFeature {
             phone = nil
             observeEndpointNote(for: nil)
             services.removeValue(forKey: phoneID)?.invalidate()
-            enqueue { try? await NSFileProviderManager.remove(domain) }
+            enqueue { _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData) }
             return
         }
         phone = (phoneID, phoneName)
@@ -109,7 +109,7 @@ final class FileProviderBridge: SessionFeature {
         services.removeValue(forKey: phoneID)?.invalidate()
         let domain = Self.domain(phoneID, name: "")
         enqueue {
-            try? await NSFileProviderManager.remove(domain)
+            _ = try? await NSFileProviderManager.remove(domain, mode: .preserveDirtyUserData)
             Self.log.info("domain \(phoneID, privacy: .public) removed")
         }
     }
@@ -155,11 +155,17 @@ final class FileProviderBridge: SessionFeature {
             connection.remoteObjectInterface = FullBuild.controlInterface()
             connection.resume()
             defer { connection.invalidate() }
-            return await withCheckedContinuation { continuation in
-                let once = OnceResult(continuation)
-                let proxy = connection.remoteObjectProxyWithErrorHandler { _ in once.resume(false) }
-                guard let extensionSide = proxy as? FileProviderControlXPC else { return once.resume(false) }
-                extensionSide.register(appEndpoint: service.endpoint) { once.resume(true) }
+            // Ends at the extension's reply, the connection's error, or the timeout's cancel.
+            let once = OnceResult()
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    once.set(continuation)
+                    let proxy = connection.remoteObjectProxyWithErrorHandler { _ in once.resume(false) }
+                    guard let extensionSide = proxy as? FileProviderControlXPC else { return once.resume(false) }
+                    extensionSide.register(appEndpoint: service.endpoint) { once.resume(true) }
+                }
+            } onCancel: {
+                once.resume(false)
             }
         } catch {
             log.error("endpoint for \(phoneID, privacy: .public): \((error as NSError).code, privacy: .public)")
@@ -167,16 +173,25 @@ final class FileProviderBridge: SessionFeature {
         }
     }
 
-    /// `work`'s answer, or false once `limit` has passed (the work is cancelled then).
+    /// `work`'s answer, or false once `limit` has passed: the work is cancelled then. The timer
+    /// stops when the work ends first.
     private static func withTimeout(_ limit: Duration, _ work: @escaping @MainActor () async -> Bool) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let once = OnceResult(continuation)
-            let worker = Task { @MainActor in once.resume(await work()) }
-            Task {
+        let once = OnceResult()
+        let timer = CancelBox()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            let worker = Task { @MainActor in
+                let result = await work()
+                timer.cancel()
+                once.resume(result)
+            }
+            let sleeper = Task {
                 try? await Task.sleep(for: limit)
+                guard !Task.isCancelled else { return }
                 worker.cancel()
                 once.resume(false)
             }
+            timer.set { sleeper.cancel() }
         }
     }
 
@@ -424,17 +439,35 @@ final class PhoneFilesService: NSObject, NSXPCListenerDelegate, PhoneFilesXPC, @
     }
 }
 
-/// Resumes a continuation once, whichever answer comes first.
+/// Resumes a continuation once, whichever answer comes first; an answer before the
+/// continuation is set is kept for it.
 private final class OnceResult: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var answer: Bool?
+    private var done = false
 
-    init(_ continuation: CheckedContinuation<Bool, Never>) {
-        self.continuation = continuation
+    func set(_ continuation: CheckedContinuation<Bool, Never>) {
+        let early: Bool? = lock.withLock {
+            if let answer { done = true; return answer }
+            self.continuation = continuation
+            return nil
+        }
+        if let early { continuation.resume(returning: early) }
     }
 
     func resume(_ value: Bool) {
-        lock.withLock { defer { continuation = nil }; return continuation }?.resume(returning: value)
+        let waiting: CheckedContinuation<Bool, Never>? = lock.withLock {
+            guard !done, answer == nil else { return nil }
+            guard let c = continuation else {
+                answer = value
+                return nil
+            }
+            done = true
+            continuation = nil
+            return c
+        }
+        waiting?.resume(returning: value)
     }
 }
 #endif

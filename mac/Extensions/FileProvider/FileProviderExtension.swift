@@ -153,10 +153,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             completionHandler($0.0, $0.1, $0.2, $0.3)
         }
         let identifier = item.itemIdentifier
+        let contentsChanged = changedFields.contains(.contents)
         let task = Task {
-            let known = try? await self.resolve(identifier)
-            switch FinderPolicy.answer(to: .modify, known: known) {
-            case let .unchanged(server): done.call((server, [], false, nil))
+            let known: PhoneItem?
+            do {
+                known = try await self.known(identifier)
+            } catch {
+                done.call((nil, [], false, Self.nsError(error, .read)))
+                return
+            }
+            switch FinderPolicy.answer(to: .modify(contentsChanged: contentsChanged), known: known) {
+            case let .unchanged(server, fetchContent): done.call((server, [], fetchContent, nil))
             case .rejectDeletion: done.call((nil, [], false, Self.nsError(.cannotSynchronize)))
             case let .error(e): done.call((nil, [], false, Self.nsError(e)))
             }
@@ -174,7 +181,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     completionHandler: @escaping (Error?) -> Void) -> Progress {
         let done = Once<Error?> { completionHandler($0) }
         let task = Task {
-            let known = try? await self.resolve(identifier)
+            let known: PhoneItem?
+            do {
+                known = try await self.known(identifier)
+            } catch {
+                done.call(Self.nsError(error, .read))
+                return
+            }
             switch FinderPolicy.answer(to: .delete, known: known) {
             case let .rejectDeletion(server): done.call(NSError.fileProviderErrorForRejectedDeletion(of: server))
             case .unchanged: done.call(Self.nsError(.cannotSynchronize))
@@ -225,6 +238,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
     }
 
+    /// The phone's item, nil when it has none; any other failure (unreachable, a folder too long
+    /// to search) is thrown.
+    private func known(_ identifier: NSFileProviderItemIdentifier) async throws -> PhoneItem? {
+        do {
+            return try await resolve(identifier)
+        } catch let error as NSFileProviderError where error.code == .noSuchItem {
+            return nil
+        }
+    }
+
     /// Looks `name` up in the folder's listing; every page seen is cached.
     private func search(_ name: String, rootID: String, folder: String) async throws -> EntrySearch {
         try await EntrySearch.find(name) { offset in
@@ -237,42 +260,48 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     private func create(kind: FinderPolicy.CreateKind, named name: String, in parent: NSFileProviderItemIdentifier,
                         contents url: URL?, mayAlreadyExist: Bool, token: String) async throws -> PhoneItem? {
         let roots = try await app.roots()
-        // At the top level, items are the phone's roots: never created, only matched.
+        let hasContent = url != nil
+        // At the top level, items are the phone's roots: only matched, never created. Anything
+        // else there is decided as in a read-only root.
         if parent == .rootContainer {
-            guard mayAlreadyExist, kind == .folder, let root = roots.first(where: { $0.name == name }) else {
-                if mayAlreadyExist { return nil }
-                throw Refusal(.excludedFromSync)
+            if mayAlreadyExist, kind == .folder, let root = roots.first(where: { $0.name == name }) {
+                return PhoneItem.root(root)
             }
-            return PhoneItem.root(root)
+            return try decided(FinderPolicy.create(kind: kind, hasContent: hasContent, mayAlreadyExist: mayAlreadyExist,
+                                                   rootWritable: false, lookup: .absent))
         }
         guard let (rootID, dirPath) = PhoneItemID.decode(parent.rawValue),
               let root = roots.first(where: { $0.id == rootID })
         else {
-            if mayAlreadyExist { return nil }
-            throw Refusal(.excludedFromSync)
+            return try decided(FinderPolicy.create(kind: kind, hasContent: hasContent, mayAlreadyExist: mayAlreadyExist,
+                                                   rootWritable: false, lookup: .absent))
         }
-        let existing: EntryDTO?
-        switch try await search(name, rootID: rootID, folder: dirPath) {
-        case let .found(entry): existing = entry
-        case .absent: existing = nil
-        case .gaveUp: throw Refusal(.cannotSynchronize)
-        }
-        switch FinderPolicy.create(kind: kind, mayAlreadyExist: mayAlreadyExist, rootWritable: root.writable,
-                                   existing: existing) {
+        let lookup = try await search(name, rootID: rootID, folder: dirPath)
+        let decision = FinderPolicy.create(kind: kind, hasContent: hasContent, mayAlreadyExist: mayAlreadyExist,
+                                           rootWritable: root.writable, lookup: lookup)
+        let item = { (entry: EntryDTO) in PhoneItem.entry(entry, rootID: rootID, folderPath: dirPath, writable: root.writable) }
+        switch decision {
         case let .existing(entry):
-            return PhoneItem.entry(entry, rootID: rootID, folderPath: dirPath, writable: root.writable)
-        case .notMatched:
-            return nil
+            return item(entry)
         case let .collision(entry):
-            let item = PhoneItem.entry(entry, rootID: rootID, folderPath: dirPath, writable: root.writable)
-            throw NSError.fileProviderErrorForCollision(with: item)
-        case let .refuse(error):
-            throw Refusal(error)
+            throw NSError.fileProviderErrorForCollision(with: item(entry))
         case .upload:
             guard let url else { throw Refusal(.excludedFromSync) }
             let entry = try await upload(url, named: name, rootID: rootID, dirPath: dirPath, token: token)
             cache.store([entry], rootID: rootID, folderPath: dirPath)
-            return PhoneItem.entry(entry, rootID: rootID, folderPath: dirPath, writable: root.writable)
+            return item(entry)
+        case .notMatched, .refuse:
+            return try decided(decision)
+        }
+    }
+
+    /// A decision that needs no phone item: nil (a dataless file the phone does not have), or
+    /// the refusal thrown.
+    private func decided(_ decision: FinderPolicy.CreateDecision) throws -> PhoneItem? {
+        switch decision {
+        case .notMatched: return nil
+        case let .refuse(error): throw Refusal(error)
+        case .upload, .existing, .collision: throw Refusal(.excludedFromSync)
         }
     }
 

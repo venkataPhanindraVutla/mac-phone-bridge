@@ -159,6 +159,21 @@ public struct OutboxDelivery: Equatable, Sendable {
 }
 
 public enum OutboxFiles {
+    private static let pendingSuffix = ".rewrite.pending"
+
+    /// The name a rewrite of the outbox file `original` is written under before it takes a
+    /// place of its own; the drain reads `.json` files only.
+    public static func pendingName(for original: String) -> String {
+        original + pendingSuffix
+    }
+
+    /// The outbox file a pending rewrite was made from; nil for any other name.
+    public static func original(ofPending name: String) -> String? {
+        guard name.hasSuffix(pendingSuffix) else { return nil }
+        let original = String(name.dropLast(pendingSuffix.count))
+        return original.hasSuffix(".json") ? original : nil
+    }
+
     /// Whether `path` is an absolute path to a regular file (or a link to one) that can be read
     /// now. Folders and packages are not sent, as with any other send (`SendableFiles`).
     public static func isSendable(_ path: String) -> Bool {

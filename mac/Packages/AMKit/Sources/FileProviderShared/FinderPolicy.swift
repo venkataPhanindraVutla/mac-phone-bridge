@@ -36,23 +36,28 @@ public enum FinderPolicy {
         }
     }
 
-    public enum Change: Sendable { case delete, modify }
+    public enum Change: Sendable {
+        case delete
+        /// `contentsChanged`: Finder's change includes the file's contents.
+        case modify(contentsChanged: Bool)
+    }
 
     public enum ChangeAnswer<Item>: Equatable where Item: Equatable {
         /// `NSError.fileProviderErrorForRejectedDeletion(of:)` with the server's item.
         case rejectDeletion(Item)
-        /// The server's item as it is: nothing changed on the phone.
-        case unchanged(Item)
+        /// The server's item as it is: nothing changed on the phone. `fetchContent`: the system
+        /// fetches the phone's contents again (`shouldFetchContent`), replacing the local edit.
+        case unchanged(Item, fetchContent: Bool)
         case error(FinderError)
     }
 
     /// Finder deleting or changing an item: refused, the contract's way, with the item as the
-    /// phone has it; without it, `cannotSynchronize`.
+    /// phone has it; without it (no such item), `cannotSynchronize`.
     public static func answer<Item: Equatable>(to change: Change, known item: Item?) -> ChangeAnswer<Item> {
         guard let item else { return .error(.cannotSynchronize) }
         switch change {
         case .delete: return .rejectDeletion(item)
-        case .modify: return .unchanged(item)
+        case let .modify(contentsChanged): return .unchanged(item, fetchContent: contentsChanged)
         }
     }
 
@@ -62,23 +67,38 @@ public enum FinderPolicy {
         case upload
         /// The phone has it already (a re-import): that item, nothing uploaded.
         case existing(EntryDTO)
-        /// A re-import the phone has no match for: a nil item, no error.
+        /// A dataless re-imported file the phone has no match for: a nil item, no error (the
+        /// system deletes it from disk; it held no content).
         case notMatched
         /// The name is taken: `fileProviderErrorForCollision(with:)` that item.
         case collision(EntryDTO)
         case refuse(FinderError)
     }
 
-    /// What to do with Finder's `createItem`. `existing` is the entry of that name in the parent
-    /// folder, if any. A re-import (`mayAlreadyExist`) never uploads.
-    public static func create(kind: CreateKind, mayAlreadyExist: Bool, rootWritable: Bool,
-                              existing: EntryDTO?) -> CreateDecision {
+    /// What to do with Finder's `createItem`. `lookup` is the name's search in the parent folder
+    /// (the top level is passed as a read-only root with nothing found). A nil item deletes the
+    /// item from disk, recursively for folders, so it is given only for a dataless file with no
+    /// match. Anything else with no match is uploaded (a new file with content, into a writable
+    /// root) or kept on the Mac (`excludedFromSync`). A re-import never uploads over a match,
+    /// and one whose search gave up is retried later.
+    public static func create(kind: CreateKind, hasContent: Bool, mayAlreadyExist: Bool, rootWritable: Bool,
+                              lookup: EntrySearch) -> CreateDecision {
+        var existing: EntryDTO?
+        switch lookup {
+        case let .found(entry): existing = entry
+        case .absent: existing = nil
+        case .gaveUp:
+            // The phone adds a counter rather than overwrite, so a plain create can go; a
+            // re-import might duplicate what is there.
+            if mayAlreadyExist { return .refuse(.cannotSynchronize) }
+        }
         if mayAlreadyExist {
-            guard let existing, kind != .other, existing.isDir == (kind == .folder) else { return .notMatched }
-            return .existing(existing)
+            if let match = existing, kind != .other, match.isDir == (kind == .folder) { return .existing(match) }
+            if kind == .file, !hasContent { return .notMatched }
         }
         guard kind == .file, rootWritable else { return .refuse(.excludedFromSync) }
         if let existing { return .collision(existing) }
+        guard hasContent else { return .refuse(.excludedFromSync) }
         return .upload
     }
 }

@@ -31,8 +31,6 @@ final class ShareOutbox: SessionFeature {
     private var draining = false
     private var drainAgain = false
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "outbox")
-    /// A rewritten envelope before it takes its place (`pending()` reads `.json` only).
-    private static let pendingExtension = "pending"
 
     init(container: URL, defaults: UserDefaults?, transfers: TransferEngine, share: ShareModel,
          pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
@@ -41,10 +39,15 @@ final class ShareOutbox: SessionFeature {
         self.transfers = transfers
         self.share = share
         self.pairedPhoneIDs = pairedPhoneIDs
-        // Rewrites a crash left half done (their original is gone or still there: at most once).
-        for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-            where url.pathExtension == Self.pendingExtension {
-            try? FileManager.default.removeItem(at: url)
+        // Rewrites left half done: with the original still there nothing was sent, so the rewrite
+        // goes; with it gone, the rewrite holds what still waits and takes a place of its own.
+        for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
+            guard let original = OutboxFiles.original(ofPending: url.lastPathComponent) else { continue }
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent(original).path) {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                settle(url)
+            }
         }
         observeShares()
         // Shares for forgotten phones, and old ones, go now; the rest wait for their phone.
@@ -133,7 +136,7 @@ final class ShareOutbox: SessionFeature {
                 // What waits is written first, under a name the drain does not read.
                 var rewrite: URL?
                 if !delivery.kept.isEmpty {
-                    let pending = folder.appendingPathComponent(UUID().uuidString + ".json." + Self.pendingExtension)
+                    let pending = folder.appendingPathComponent(OutboxFiles.pendingName(for: url.lastPathComponent))
                     guard (try? envelope.keeping(delivery.kept).encoded().write(to: pending, options: .atomic)) != nil else {
                         continue
                     }
@@ -145,11 +148,20 @@ final class ShareOutbox: SessionFeature {
                     continue
                 }
                 if let rewrite {
-                    try? FileManager.default.moveItem(at: rewrite, to: rewrite.deletingPathExtension())
+                    settle(rewrite)
                     Self.log.info("\(delivery.kept.count, privacy: .public) items wait for the phone to take them")
                 }
                 await deliver(delivery, to: envelope.phoneID)
             }
+        }
+    }
+
+    /// Moves a pending rewrite into the outbox as a share of its own. If that fails it stays
+    /// pending, and the next launch tries again (its original is gone).
+    private func settle(_ pending: URL) {
+        let target = folder.appendingPathComponent(UUID().uuidString + ".json")
+        if (try? FileManager.default.moveItem(at: pending, to: target)) == nil {
+            Self.log.error("a rewritten share stays pending")
         }
     }
 

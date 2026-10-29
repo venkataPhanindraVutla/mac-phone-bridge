@@ -27,31 +27,53 @@ private func entry(_ name: String, dir: Bool = false) -> EntryDTO {
     // Delete: rejected with the server's item (the system restores it); unknown item: cannot sync.
     #expect(FinderPolicy.answer(to: .delete, known: "item") == .rejectDeletion("item"))
     #expect(FinderPolicy.answer(to: .delete, known: String?.none) == .error(.cannotSynchronize))
-    // Modify: the unchanged server item.
-    #expect(FinderPolicy.answer(to: .modify, known: "item") == .unchanged("item"))
-    #expect(FinderPolicy.answer(to: .modify, known: String?.none) == .error(.cannotSynchronize))
+    // Modify: the unchanged server item; its content fetched again when Finder changed it.
+    #expect(FinderPolicy.answer(to: .modify(contentsChanged: false), known: "item") == .unchanged("item", fetchContent: false))
+    #expect(FinderPolicy.answer(to: .modify(contentsChanged: true), known: "item") == .unchanged("item", fetchContent: true))
+    #expect(FinderPolicy.answer(to: .modify(contentsChanged: true), known: String?.none) == .error(.cannotSynchronize))
+}
+
+private func create(_ kind: FinderPolicy.CreateKind, content: Bool = true, reimport: Bool = false,
+                    writable: Bool = true, _ lookup: EntrySearch = .absent) -> FinderPolicy.CreateDecision {
+    FinderPolicy.create(kind: kind, hasContent: content, mayAlreadyExist: reimport, rootWritable: writable, lookup: lookup)
 }
 
 @Test func createUploadsOnlyNewFilesIntoWritableRoots() {
     let a = entry("a.txt")
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: false, rootWritable: true, existing: nil) == .upload)
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: false, rootWritable: true, existing: a) == .collision(a))
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: false, rootWritable: false, existing: nil)
-        == .refuse(.excludedFromSync))
-    #expect(FinderPolicy.create(kind: .folder, mayAlreadyExist: false, rootWritable: true, existing: nil)
-        == .refuse(.excludedFromSync))
-    #expect(FinderPolicy.create(kind: .other, mayAlreadyExist: false, rootWritable: true, existing: nil)
-        == .refuse(.excludedFromSync))
+    #expect(create(.file) == .upload)
+    #expect(create(.file, .found(a)) == .collision(a))
+    #expect(create(.file, writable: false) == .refuse(.excludedFromSync))
+    #expect(create(.folder) == .refuse(.excludedFromSync))
+    #expect(create(.other) == .refuse(.excludedFromSync))
+    #expect(create(.file, content: false) == .refuse(.excludedFromSync), "nothing to upload")
+    // A folder too long to search: the phone never overwrites (it adds a counter), so it goes.
+    #expect(create(.file, .gaveUp) == .upload)
 }
 
-@Test func reimportMatchesExistingItemsAndNeverUploads() {
+@Test func reimportMatchesExistingItemsAndNeverUploadsAMatch() {
     let a = entry("a.txt"), dir = entry("d", dir: true)
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: true, rootWritable: true, existing: a) == .existing(a))
-    #expect(FinderPolicy.create(kind: .folder, mayAlreadyExist: true, rootWritable: false, existing: dir) == .existing(dir))
-    // No match (or a file where a folder is): nil item, no error, nothing uploaded.
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: true, rootWritable: true, existing: nil) == .notMatched)
-    #expect(FinderPolicy.create(kind: .file, mayAlreadyExist: true, rootWritable: true, existing: dir) == .notMatched)
-    #expect(FinderPolicy.create(kind: .other, mayAlreadyExist: true, rootWritable: true, existing: a) == .notMatched)
+    #expect(create(.file, reimport: true, .found(a)) == .existing(a))
+    #expect(create(.file, content: false, reimport: true, .found(a)) == .existing(a))
+    #expect(create(.folder, reimport: true, writable: false, .found(dir)) == .existing(dir))
+    // Not known whether it is there: retried later, never uploaded.
+    #expect(create(.file, reimport: true, .gaveUp) == .refuse(.cannotSynchronize))
+}
+
+@Test func reimportWithoutAMatchNeverDeletesUserData() {
+    // Only a dataless file with no match gets the nil item (which deletes it from disk).
+    #expect(create(.file, content: false, reimport: true) == .notMatched)
+    // A file with content: uploaded into a writable folder, else kept on the Mac only.
+    #expect(create(.file, content: true, reimport: true) == .upload)
+    #expect(create(.file, content: true, reimport: true, writable: false) == .refuse(.excludedFromSync),
+            "read-only root (the top level counts as one)")
+    // A folder or a link with no match: kept on the Mac, never deleted.
+    #expect(create(.folder, content: false, reimport: true) == .refuse(.excludedFromSync))
+    #expect(create(.other, reimport: true) == .refuse(.excludedFromSync))
+    #expect(create(.other, content: false, reimport: true) == .refuse(.excludedFromSync))
+    // A name taken by the other kind: a collision for the system to resolve, not a nil item.
+    let dir = entry("a.txt", dir: true)
+    #expect(create(.file, content: true, reimport: true, .found(dir)) == .collision(dir))
+    #expect(create(.file, content: false, reimport: true, .found(dir)) == .notMatched)
 }
 
 @Test func workingSetAnchorIsAShortHashOfTheRoots() {
