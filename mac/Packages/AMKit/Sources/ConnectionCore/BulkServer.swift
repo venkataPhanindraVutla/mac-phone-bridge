@@ -42,6 +42,8 @@ public final class BulkServer: BulkGrants {
 
     private static let listenerQueue = DispatchQueue(label: "io.github.anmirror.bulk-listener")
     private static let maxRestartAttempts = 40
+    /// Accepted connections allowed to wait for their hello at once; more are closed at once.
+    static let maxPendingHellos = 8
 
     public init(identity: any IdentityProvider, tokens: BulkTokens = BulkTokens(),
                 helloTimeout: Duration = .seconds(10)) {
@@ -60,18 +62,23 @@ public final class BulkServer: BulkGrants {
         try startListener()
     }
 
-    /// Closes every connection and the listener.
+    /// Closes every connection and the listener and revokes every token. A pending listener
+    /// retry does not bring it back; only `start()` does.
     public func stop() {
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
         port = nil
+        identity = nil
         closeConnections()
+        tokens.revokeAll()
     }
 
-    /// After wake from sleep: closes every connection and listens again (the port may change).
+    /// After wake from sleep: closes every connection, revokes every token and listens again
+    /// (the port may change).
     public func handleWake() {
         closeConnections()
+        tokens.revokeAll()
         guard identity != nil else { return }
         listenerGeneration += 1
         listener?.cancel()
@@ -83,12 +90,14 @@ public final class BulkServer: BulkGrants {
 
     // MARK: BulkGrants
 
-    /// Changing the allowed phone (or refusing everyone) also closes every open connection.
+    /// Changing the allowed phone (or refusing everyone) also closes every open connection
+    /// and revokes every outstanding token.
     public func allow(peerFingerprint: Data?) {
         guard peerFingerprint != allowed else { return }
         allowed = peerFingerprint
         policy.update(paired: peerFingerprint.map { [$0] } ?? [], pairingOpen: false)
         closeConnections()
+        tokens.revokeAll()
     }
 
     public func issue(role: AMBulkRole, context: String) -> Data {
@@ -130,6 +139,11 @@ public final class BulkServer: BulkGrants {
         l.start(queue: Self.listenerQueue)
     }
 
+    /// Test hook: handles a listener failure as if Network.framework had reported one.
+    func simulateListenerFailureForTesting() {
+        listenerChanged(.failed, generation: listenerGeneration)
+    }
+
     private enum ListenerReport: Sendable {
         case ready(UInt16)
         case failed
@@ -149,7 +163,9 @@ public final class BulkServer: BulkGrants {
             restartAttempts += 1
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self, self.listener == nil, self.identity != nil else { return }
+                // stop(), handleWake() and any newer listener all move the generation on.
+                guard let self, generation == self.listenerGeneration,
+                      self.listener == nil, self.identity != nil else { return }
                 try? self.startListener()
             }
         }
@@ -158,7 +174,8 @@ public final class BulkServer: BulkGrants {
     // MARK: connections
 
     private func accept(_ nw: NWConnection, generation: Int) {
-        guard generation == listenerGeneration, listener != nil else {
+        // Only the pinned phone gets this far, but a misbehaving one cannot pile up connections.
+        guard generation == listenerGeneration, listener != nil, pending.count < Self.maxPendingHellos else {
             nw.cancel()
             return
         }

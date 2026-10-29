@@ -30,6 +30,13 @@ private final class Once: @unchecked Sendable {
     }
 }
 
+private final class TimeoutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
+}
+
 /// A phone-side bulk connection driven by hand: raw bytes, no framing beyond the hello.
 final class RawBulkClient: @unchecked Sendable {
     let nw: NWConnection
@@ -89,23 +96,26 @@ final class RawBulkClient: @unchecked Sendable {
 
     /// True once the server has closed the connection, within `timeout`.
     func closedByServer(timeout: Duration = .seconds(3)) async -> Bool {
-        let result = await withTaskGroup(of: Bool.self) { group in
+        let timedOut = TimeoutFlag()
+        return await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 while true {
-                    guard let d = await self.receive() else { return true }
+                    guard let d = await self.receive() else { return !timedOut.isSet }
                     if d.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
                 }
             }
             group.addTask {
                 try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return true }
+                // The group waits for every child: cancelling unblocks the pending receive.
+                timedOut.set()
+                self.nw.cancel()
                 return false
             }
             let first = await group.next() ?? false
             group.cancelAll()
             return first
         }
-        if !result { nw.cancel() }  // unblocks the pending receive
-        return result
     }
 
     func close() { nw.cancel() }
@@ -306,6 +316,65 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
         let ended: Bool
         do { ended = try await pipe.receive(maximum: 1024) == nil } catch { ended = true }
         #expect(ended)
+    }
+
+    @Test func changingAllowRevokesOutstandingTokens() async throws {
+        let (server, port, log) = try await startBulk()
+        defer { server.stop() }
+        let token = server.issue(role: .phoneSends, context: "t1")
+        let phone = try testIdentity("phone").fingerprint
+        server.allow(peerFingerprint: nil)
+        server.allow(peerFingerprint: phone)
+
+        let client = try await RawBulkClient.connect(port: port)
+        try await client.hello(token: token, role: .phoneSends)
+        #expect(await client.closedByServer())
+        #expect(log.links.isEmpty)
+    }
+
+    @Test func ninthPendingConnectionIsRefused() async throws {
+        let (server, port, log) = try await startBulk()
+        defer { server.stop() }
+        // Eight connections that finished TLS and sent no hello yet: the cap.
+        var waiting: [RawBulkClient] = []
+        for _ in 0..<8 { waiting.append(try await RawBulkClient.connect(port: port)) }
+
+        let token = server.issue(role: .phoneSends, context: "t9")
+        if let ninth = try? await RawBulkClient.connect(port: port) {
+            try? await ninth.hello(token: token, role: .phoneSends)
+            #expect(await ninth.closedByServer())
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(log.links.isEmpty)
+
+        // Once the waiting ones go away, connections are accepted again.
+        for c in waiting { c.close() }
+        var delivered = false
+        for attempt in 0..<20 where !delivered {
+            try await Task.sleep(for: .milliseconds(50))
+            guard let c = try? await RawBulkClient.connect(port: port) else { continue }
+            defer { c.close() }
+            try await c.hello(token: server.issue(role: .phoneSends, context: "again\(attempt)"), role: .phoneSends)
+            delivered = await eventually(timeout: .milliseconds(500)) { log.links.count == 1 }
+        }
+        #expect(delivered)
+    }
+
+    @Test func listenerRetryAfterFailureRestoresThePort() async throws {
+        let (server, _, _) = try await startBulk()
+        defer { server.stop() }
+        server.simulateListenerFailureForTesting()
+        #expect(server.port == nil)
+        #expect(await eventually { server.port != nil })
+    }
+
+    @Test func stopDuringListenerRetryStaysStopped() async throws {
+        let (server, _, _) = try await startBulk()
+        server.simulateListenerFailureForTesting()
+        server.stop()
+        // The retry fires after 250 ms; give it time to (wrongly) come back.
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(server.port == nil)
     }
 
     @Test func wakeClosesLinksAndListensAgain() async throws {

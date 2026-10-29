@@ -25,6 +25,10 @@ class BulkSocket internal constructor(private val socket: SSLSocket) : BulkStrea
     override val input: InputStream = BufferedInputStream(socket.inputStream, BULK_BUFFER_BYTES)
     override val output: OutputStream = BufferedOutputStream(socket.outputStream, BULK_BUFFER_BYTES)
 
+    /**
+     * Aborts: closes the socket at once and **discards any bytes still buffered in [output]**.
+     * On the success path, call `output.flush()` before closing.
+     */
     override fun close() {
         runCatching { socket.close() }
     }
