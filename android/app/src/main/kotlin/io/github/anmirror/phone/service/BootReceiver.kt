@@ -11,6 +11,13 @@ import kotlinx.coroutines.launch
 /** Whether to bring the connection service up at boot (or after an app update). */
 object BootDecision {
     fun shouldStartService(pairedCount: Int): Boolean = pairedCount > 0
+
+    /**
+     * Stop the service on `NotPaired` only when the store confirms no Mac. An unreadable store
+     * (Keystore busy or reset while locked) is not "no Mac".
+     */
+    fun shouldSelfStop(pairingUnderWay: Boolean, confirmedEmpty: Boolean): Boolean =
+        !pairingUnderWay && confirmedEmpty
 }
 
 /**

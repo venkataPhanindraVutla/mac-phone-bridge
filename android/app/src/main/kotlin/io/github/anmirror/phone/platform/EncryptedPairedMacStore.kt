@@ -9,12 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
 import java.io.FileNotFoundException
-import java.security.GeneralSecurityException
-import java.security.ProviderException
 
 /**
  * The paired Macs as one JSON list, encrypted as a single blob with [cipher] and written
@@ -23,10 +18,9 @@ import java.security.ProviderException
 class EncryptedPairedMacStore(
     private val file: AtomicFile,
     private val cipher: KeystoreCipher,
+    private val onUnreadable: (causeClass: String) -> Unit = {},
 ) : PairedMacStore {
     private val lock = Mutex()
-    private val json = Json { ignoreUnknownKeys = true }
-    private val serializer = ListSerializer(PairedMac.serializer())
 
     override suspend fun all(): List<PairedMac> = lock.withLock { load() }
 
@@ -38,35 +32,38 @@ class EncryptedPairedMacStore(
 
     override suspend fun remove(id: String) = lock.withLock { store(load().filter { it.id != id }) }
 
-    private suspend fun load(): List<PairedMac> = withContext(Dispatchers.IO) {
+    private suspend fun read(): StoreRead = withContext(Dispatchers.IO) {
         val blob = try {
             file.readFully()
         } catch (e: FileNotFoundException) {
-            return@withContext emptyList()
+            null
         }
-        try {
-            json.decodeFromString(serializer, cipher.decrypt(blob).decodeToString())
-        } catch (e: GeneralSecurityException) {
-            unreadable(e)
-        } catch (e: ProviderException) {
-            // Keystore failures often surface as ProviderException (e.g. KeyStoreException).
-            unreadable(e)
-        } catch (e: SerializationException) {
-            unreadable(e)
+        PairedMacsBlob.decode(blob, cipher::decrypt)
+    }
+
+    /** 0.1's meaning: unreadable reads as none, but is recorded. Writers must not use this. */
+    private suspend fun load(): List<PairedMac> = when (val r = read()) {
+        is StoreRead.Macs -> r.macs
+        is StoreRead.Unreadable -> {
+            Log.w(TAG, "paired Macs unreadable (${r.causeClass}); treating as none")
+            onUnreadable(r.causeClass)
+            emptyList()
         }
     }
 
-    /**
-     * The Keystore key is gone (data restored elsewhere, Keystore reset) or the blob is damaged:
-     * the pairings cannot be read. Treated as none; the next save replaces the file.
-     */
-    private fun unreadable(e: Exception): List<PairedMac> {
-        Log.w(TAG, "paired Macs unreadable (${e.javaClass.simpleName}); treating as none")
-        return emptyList()
+    /** True only when the file is absent or decodes to no Macs, never for an unreadable store. */
+    suspend fun confirmedEmpty(): Boolean = lock.withLock {
+        when (val r = read()) {
+            is StoreRead.Macs -> r.macs.isEmpty()
+            is StoreRead.Unreadable -> {
+                onUnreadable(r.causeClass)
+                false
+            }
+        }
     }
 
     private suspend fun store(macs: List<PairedMac>) = withContext(Dispatchers.IO) {
-        val blob = cipher.encrypt(json.encodeToString(serializer, macs).encodeToByteArray())
+        val blob = cipher.encrypt(PairedMacsBlob.encode(macs))
         val out = file.startWrite()
         try {
             out.write(blob)

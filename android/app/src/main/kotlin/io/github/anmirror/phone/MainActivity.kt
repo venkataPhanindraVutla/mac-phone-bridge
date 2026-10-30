@@ -24,7 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.anmirror.phone.remote.TrackpadActivity
-import io.github.anmirror.phone.service.BootDecision
+import io.github.anmirror.phone.diag.KeepAliveEvent
+import io.github.anmirror.phone.service.ServiceProbe
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
 import io.github.anmirror.phone.ui.HomeScreen
@@ -57,10 +58,15 @@ class MainActivity : ComponentActivity() {
         graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
-        // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
-        // when a start from the background was refused).
+        // Bring the service up whenever a Mac is paired. The `running` flag is not trusted: it
+        // goes stale when the system kills the service. Starting a running service only re-runs
+        // onStartCommand, which is harmless.
         graph.scope.launch {
-            if (!ConnectionService.running && BootDecision.shouldStartService(graph.store.all().size)) {
+            graph.keepAliveLog.record(
+                KeepAliveEvent.APP_OPEN,
+                "flag=${ConnectionService.running} probe=${ServiceProbe.connectionServiceRunning(this@MainActivity)}",
+            )
+            if (!graph.noMacPaired()) {
                 runOnUiThread { ConnectionService.start(this@MainActivity) }
             }
         }

@@ -58,6 +58,8 @@ import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
+import io.github.anmirror.phone.diag.KeepAliveEvent
+import io.github.anmirror.phone.diag.KeepAliveLog
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
 import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.MediaStoreDownloads
@@ -140,9 +142,19 @@ class AppGraph private constructor(context: Context) {
         override fun keyManagers() = real.keyManagers()
     }
 
-    val store = ObservablePairedMacStore(
-        EncryptedPairedMacStore(AtomicFile(File(app.filesDir, "paired-macs.bin")), KeystoreCipher()),
+    /** Content-free events for diagnosing a vanished service (`filesDir/keepalive-events.log`). */
+    val keepAliveLog = KeepAliveLog(File(app.filesDir, "keepalive-events.log"))
+
+    private val encryptedStore = EncryptedPairedMacStore(
+        AtomicFile(File(app.filesDir, "paired-macs.bin")),
+        KeystoreCipher(),
+        onUnreadable = { keepAliveLog.record(KeepAliveEvent.STORE_UNREADABLE, it) },
     )
+
+    val store = ObservablePairedMacStore(encryptedStore)
+
+    /** True only when the store confirms no Mac is paired; an unreadable store is not "none". */
+    suspend fun noMacPaired(): Boolean = encryptedStore.confirmedEmpty()
 
     private val connector = TlsConnector(identity)
 
@@ -942,11 +954,23 @@ class AppGraph private constructor(context: Context) {
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     /** Queues a listener event; they run one at a time, in the order the listener saw them. */
+    /** `exit=<ApplicationExitInfo.reason>` of the previous process, on API 30+. */
+    private fun lastExitDetail(): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return ""
+        return try {
+            val am = app.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            am.getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.let { "exit=${it.reason}" } ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     fun postNotifyEvent(event: suspend () -> Unit) {
         notifyEvents.trySend(event)
     }
 
     init {
+        keepAliveLog.record(KeepAliveEvent.PROCESS_START, lastExitDetail())
         scope.launch {
             for (event in notifyEvents) {
                 try {

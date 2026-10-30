@@ -36,6 +36,7 @@ import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
+import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.answerInvoke
 import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
@@ -112,6 +113,9 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class ConnectionService : LifecycleService() {
     private lateinit var graph: AppGraph
+
+    /** The wait-then-kick after a `NotPaired` the store did not confirm; one per episode. */
+    private var notPairedJob: Job? = null
     private lateinit var network: NetworkWatcher
     private var lastText: String? = null
     private lateinit var ring: RingController
@@ -123,6 +127,7 @@ class ConnectionService : LifecycleService() {
         super.onCreate()
         running = true
         graph = AppGraph.get(this)
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_CREATE)
         createChannel()
         goForeground(getString(R.string.state_looking_unnamed))
         network = NetworkWatcher(this) { graph.manager.kick() }
@@ -164,11 +169,13 @@ class ConnectionService : LifecycleService() {
         // Every start must be followed by startForeground, also a sticky restart.
         goForeground(lastText ?: getString(R.string.state_looking_unnamed))
         Log.i(TAG, "service: start (restart=${intent == null})")
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_START, "restart=${intent == null}")
         return START_STICKY
     }
 
     override fun onDestroy() {
         running = false
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_DESTROY)
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
@@ -1000,16 +1007,24 @@ class ConnectionService : LifecycleService() {
 
     private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?, pairing: Boolean) {
         Log.i(TAG, "state: ${state.describe()}")
+        graph.keepAliveLog.record(KeepAliveEvent.STATE, state.javaClass.simpleName)
         if (state == PhoneConnectionState.NotPaired) {
             // Started at Confirm, before the pairing saves the Mac: wait for it to finish.
             if (pairing) return
             // The manager starts in NotPaired before it reads the store; only stop once the store
             // agrees no Mac is paired.
-            lifecycleScope.launch {
-                if (graph.store.all().isEmpty()) {
+            notPairedJob?.cancel()
+            notPairedJob = lifecycleScope.launch {
+                if (BootDecision.shouldSelfStop(pairingUnderWay = false, confirmedEmpty = graph.noMacPaired())) {
+                    graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
                     Log.i(TAG, "service: no Mac paired, stopping")
                     ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf()
+                } else {
+                    // Unreadable store (Keystore busy or reset): keep running and look again.
+                    graph.keepAliveLog.record(KeepAliveEvent.STATE, "notpaired-unreadable")
+                    delay(UNREADABLE_RETRY_MS)
+                    graph.manager.kick()
                 }
             }
             return
@@ -1079,6 +1094,9 @@ class ConnectionService : LifecycleService() {
     }
 
     companion object {
+        /** How long an unreadable store waits before the manager reads it again. */
+        private const val UNREADABLE_RETRY_MS = 30_000L
+
         const val CHANNEL_ID = "connection"
         private val FILES_TYPES = listOf(
             MessageType.FILES_ENDPOINT, MessageType.FILES_OFFER, MessageType.FILES_ACCEPT, MessageType.FILES_REJECT,
