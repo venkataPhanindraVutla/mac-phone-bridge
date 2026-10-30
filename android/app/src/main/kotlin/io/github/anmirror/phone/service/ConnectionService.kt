@@ -30,12 +30,14 @@ import androidx.lifecycle.lifecycleScope
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
+import io.github.anmirror.phone.BackgroundState
 import io.github.anmirror.phone.BuildConfig
 import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.PairingState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.TAG
+import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.answerInvoke
 import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
@@ -99,6 +101,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -112,7 +115,12 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class ConnectionService : LifecycleService() {
     private lateinit var graph: AppGraph
+
+    /** The wait-then-kick after a `NotPaired` the store did not confirm; one per episode. */
+    private var notPairedJob: Job? = null
     private lateinit var network: NetworkWatcher
+    private lateinit var screenOn: ScreenOnKicker
+    private lateinit var watchdog: KeepAliveWatchdog
     private var lastText: String? = null
     private lateinit var ring: RingController
     private var lastNotifyEnabled: Boolean? = null
@@ -123,14 +131,37 @@ class ConnectionService : LifecycleService() {
         super.onCreate()
         running = true
         graph = AppGraph.get(this)
-        createChannel()
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_CREATE)
+        createChannel(this)
         goForeground(getString(R.string.state_looking_unnamed))
-        network = NetworkWatcher(this) { graph.manager.kick() }
+        ReconnectNotice.clear(this)
+        watchdog = KeepAliveWatchdog(this)
+        watchdog.schedule()
+        network = NetworkWatcher(this) { kind ->
+            graph.keepAliveLog.record(KeepAliveEvent.NETWORK, kind)
+            graph.manager.kick()
+        }
         network.start()
+        // A connected session pings at once, a disconnected one dials at once.
+        screenOn = ScreenOnKicker(this) {
+            graph.keepAliveLog.record(KeepAliveEvent.SCREEN_ON)
+            graph.manager.kick()
+            // Catches an exemption revoked in Settings while the app stays closed and the session open.
+            graph.refreshBackgroundExempt()
+        }
+        screenOn.start()
         graph.manager.start()
-        // Phone status goes out only while the Mac shares status.v1.
+        graph.refreshBackgroundExempt()
+        // Phone status goes out only while the Mac shares status.v1. A change in the battery
+        // exemption is a new status, so the Mac's "may disconnect when locked" line follows it
+        // without a reconnect. The publisher collects the source anew on each connect: re-reading
+        // the exemption there makes a session's first status current.
+        val exempt = graph.backgroundExempt.onStart { graph.refreshBackgroundExempt() }
         StatusPublisher(
-            source = AndroidStatusSource(this),
+            source = combine(AndroidStatusSource(this), exempt) { s, e ->
+                // Restricted means "not exempt" (BackgroundState.restricted); the maker step is not readable.
+                s.copy(backgroundRestricted = BackgroundState(exempt = e, maker = graph.maker, makerStepDone = false).restricted)
+            },
             connected = graph.manager.state.map { it is Connected && "status.v1" in it.shared },
             send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
         ).launchIn(lifecycleScope)
@@ -164,11 +195,13 @@ class ConnectionService : LifecycleService() {
         // Every start must be followed by startForeground, also a sticky restart.
         goForeground(lastText ?: getString(R.string.state_looking_unnamed))
         Log.i(TAG, "service: start (restart=${intent == null})")
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_START, "restart=${intent == null}")
         return START_STICKY
     }
 
     override fun onDestroy() {
         running = false
+        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_DESTROY)
         _ringing.value = false
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
@@ -187,6 +220,7 @@ class ConnectionService : LifecycleService() {
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
         network.stop()
+        screenOn.stop()
         graph.manager.stop()
         // The collector never sees Stopped once cancelled: end the session here (getAndSet: exactly one of us does).
         sessionWatch?.cancel()
@@ -1000,21 +1034,44 @@ class ConnectionService : LifecycleService() {
 
     private fun onState(state: PhoneConnectionState, macs: List<PairedMac>?, pairing: Boolean) {
         Log.i(TAG, "state: ${state.describe()}")
+        graph.keepAliveLog.record(KeepAliveEvent.STATE, state.javaClass.simpleName)
         if (state == PhoneConnectionState.NotPaired) {
             // Started at Confirm, before the pairing saves the Mac: wait for it to finish.
             if (pairing) return
             // The manager starts in NotPaired before it reads the store; only stop once the store
             // agrees no Mac is paired.
-            lifecycleScope.launch {
-                if (graph.store.all().isEmpty()) {
-                    Log.i(TAG, "service: no Mac paired, stopping")
-                    ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+            notPairedJob?.cancel()
+            notPairedJob = lifecycleScope.launch {
+                watchNotPaired(
+                    intervalMs = UNREADABLE_RETRY_MS,
+                    read = { graph.readPairings() },
+                    pairingUnderWay = { graph.pairing.state.value.isUnderWay() },
+                    stillNotPaired = { graph.manager.state.value == PhoneConnectionState.NotPaired },
+                    kick = { graph.manager.kick() },
+                    onUnreadable = { graph.keepAliveLog.record(KeepAliveEvent.STATE, "notpaired-unreadable") },
+                    onSelfStop = {
+                        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
+                        watchdog.cancel()
+                        ReconnectNotice.clear(this@ConnectionService)
+                        Log.i(TAG, "service: no Mac paired, stopping")
+                        ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    },
+                )
             }
             return
         }
+        // Any other state ends the wait-and-kick loop.
+        notPairedJob?.cancel()
+        notPairedJob = null
         if (state == PhoneConnectionState.Stopped) return
+        // A new session (also one without status.v1): the exemption may have changed in Settings
+        // while the app was closed.
+        if (state is Connected) {
+            graph.refreshBackgroundExempt()
+            // A new episode: "Tap to reconnect" may be posted again after the next disconnect (K6).
+            ReconnectNotice.gate(this).onConnected()
+        }
         val name = state.macOrNull?.name ?: macs?.maxByOrNull { it.lastConnectedAt }?.name
         val text = when {
             state.copyNamesMac() && name != null -> getString(state.messageRes(), name)
@@ -1027,15 +1084,6 @@ class ConnectionService : LifecycleService() {
             lastText = text
             update(text)
         }
-    }
-
-    private fun createChannel() {
-        val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
-            .setName(getString(R.string.channel_connection))
-            .setDescription(getString(R.string.channel_connection_description))
-            .setShowBadge(false)
-            .build()
-        NotificationManagerCompat.from(this).createNotificationChannel(channel)
     }
 
     private fun notification(text: String): Notification {
@@ -1079,7 +1127,21 @@ class ConnectionService : LifecycleService() {
     }
 
     companion object {
+        /** How long an unreadable store waits before the manager reads it again. */
+        private const val UNREADABLE_RETRY_MS = 30_000L
+
         const val CHANNEL_ID = "connection"
+
+        /** The `connection` channel: the service notification and [ReconnectNotice]. Creating it again is a no-op. */
+        fun createChannel(context: Context) {
+            val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+                .setName(context.getString(R.string.channel_connection))
+                .setDescription(context.getString(R.string.channel_connection_description))
+                .setShowBadge(false)
+                .build()
+            NotificationManagerCompat.from(context).createNotificationChannel(channel)
+        }
+
         private val FILES_TYPES = listOf(
             MessageType.FILES_ENDPOINT, MessageType.FILES_OFFER, MessageType.FILES_ACCEPT, MessageType.FILES_REJECT,
             MessageType.FILES_PROGRESS, MessageType.FILES_COMPLETE, MessageType.FILES_RECEIVED, MessageType.FILES_CANCEL,

@@ -30,7 +30,7 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
-        "proximity.v1", "input.v1",
+        "proximity.v1", "input.v1", "liveness.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300

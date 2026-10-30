@@ -24,14 +24,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.anmirror.phone.remote.TrackpadActivity
+import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.service.BootDecision
+import io.github.anmirror.phone.service.ServiceProbe
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
 import io.github.anmirror.phone.ui.HomeScreen
+import io.github.anmirror.phone.ui.KeepConnectedScreen
 import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var graph: AppGraph
@@ -54,13 +59,20 @@ class MainActivity : ComponentActivity() {
         graph.refreshDndAccess()
         graph.refreshProximityGranted()
         graph.refreshProximityAdapter()
+        // Back from the exemption dialog or Settings; the Mac hears of a change through the status.
+        graph.refreshBackgroundExempt()
         graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
-        // Bring the service up if a Mac is paired and it isn't running (after a force stop, or
-        // when a start from the background was refused).
+        // Bring the service up whenever a Mac is paired. The `running` flag is not trusted: it
+        // goes stale when the system kills the service. Starting a running service only re-runs
+        // onStartCommand, which is harmless.
         graph.scope.launch {
-            if (!ConnectionService.running && BootDecision.shouldStartService(graph.store.all().size)) {
+            graph.keepAliveLog.record(
+                KeepAliveEvent.APP_OPEN,
+                "flag=${ConnectionService.running} probe=${ServiceProbe.connectionServiceRunning(this@MainActivity)}",
+            )
+            if (BootDecision.shouldStart(confirmedEmpty = graph.noMacPaired())) {
                 runOnUiThread { ConnectionService.start(this@MainActivity) }
             }
         }
@@ -78,7 +90,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Main, Scan }
+private enum class Screen { Main, Scan, KeepConnected }
+
+/** The store could not be read just now; nothing was forgotten. */
+private suspend fun forgetFailed(context: android.content.Context) = withContext(Dispatchers.Main) {
+    android.widget.Toast.makeText(context, R.string.forget_failed, android.widget.Toast.LENGTH_LONG).show()
+}
 
 @Composable
 private fun AppRoot(graph: AppGraph) {
@@ -108,6 +125,9 @@ private fun AppRoot(graph: AppGraph) {
     val browseOn by graph.browseOn.collectAsStateWithLifecycle()
     val allFilesAccess by graph.allFilesAccess.collectAsStateWithLifecycle()
     val pickedFolders by graph.pickedFolders.folders.collectAsStateWithLifecycle()
+    val backgroundExempt by graph.backgroundExempt.collectAsStateWithLifecycle()
+    val makerStepDone by graph.makerStepDone.collectAsStateWithLifecycle()
+    val background = BackgroundState(backgroundExempt, graph.maker, makerStepDone)
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
 
@@ -123,6 +143,14 @@ private fun AppRoot(graph: AppGraph) {
                     BackHandler { screen = Screen.Main }
                     ScanScreen(onCode = graph.pairing::pair, onBack = { screen = Screen.Main })
                 }
+                screen == Screen.KeepConnected -> KeepConnectedScreen(
+                    state = background,
+                    onDone = {
+                        if (background.maker != null) graph.setMakerStepDone()
+                        screen = Screen.Main
+                    },
+                    onNotNow = { screen = Screen.Main },
+                )
                 macs == null -> Unit // the store is loading; a blank frame, no flash of onboarding
                 macs.orEmpty().isEmpty() -> OnboardingScreen(onPair = { screen = Screen.Scan })
                 else -> {
@@ -133,6 +161,8 @@ private fun AppRoot(graph: AppGraph) {
                         ringing = ringing,
                         onStopRing = { ConnectionService.stopRing(context) },
                         onRetry = graph.manager::kick,
+                        keepPrompt = background.showsPrompt,
+                        onKeepFix = { screen = Screen.KeepConnected },
                         notifyOn = notifyOn,
                         notifyAccess = notifyAccess,
                         onNotifyToggle = graph::setNotifyOn,
@@ -176,10 +206,15 @@ private fun AppRoot(graph: AppGraph) {
                         // The grant and the folder's name come from the provider: off the main thread.
                         onFolderPicked = { uri -> graph.launchQuietly("browse: add folder") { graph.pickedFolders.add(uri) } },
                         onRemoveFolder = { folder -> graph.launchQuietly("browse: remove folder") { graph.pickedFolders.remove(folder.root.id) } },
-                        onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
+                        onForget = { graph.scope.launch { if (!graph.manager.forget(mac.id)) forgetFailed(context) } },
                         onPairAgain = {
-                            graph.scope.launch { graph.manager.forget(mac.id) }
-                            screen = Screen.Scan
+                            graph.scope.launch {
+                                if (graph.manager.forget(mac.id)) {
+                                    withContext(Dispatchers.Main) { screen = Screen.Scan }
+                                } else {
+                                    forgetFailed(context)
+                                }
+                            }
                         },
                     )
                 }
@@ -189,8 +224,10 @@ private fun AppRoot(graph: AppGraph) {
                 onConfirm = graph.pairing::confirm,
                 onCancel = graph.pairing::cancel,
                 onDone = {
+                    // Continue after a new pairing goes through the keep-connected step if it is left.
+                    val paired = p is PairingState.Paired
                     graph.pairing.dismiss()
-                    screen = Screen.Main
+                    screen = if (paired && background.showsPrompt) Screen.KeepConnected else Screen.Main
                 },
                 onRetry = {
                     graph.pairing.dismiss()

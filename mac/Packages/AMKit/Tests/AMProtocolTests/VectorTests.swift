@@ -295,6 +295,32 @@ private struct URIFile: Decodable {
     #expect(try m.serializedData() == env.payload)
 }
 
+@Test func pingFromMacVectorDecodes() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "ping_from_mac" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .system)
+    #expect(env.id == 4)
+    #expect(env.replyTo == 0)
+    #expect(env.type == MessageType.ping.rawValue)
+    #expect(env.payload.isEmpty)
+}
+
+@Test func statusBackgroundRestrictedVectorDecodes() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "status_update_background_restricted" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .status)
+    #expect(env.id == 6)
+    #expect(env.type == MessageType.statusUpdate.rawValue)
+    let s = try AMStatusUpdate(serializedBytes: env.payload)
+    #expect(s.backgroundRestricted)
+    #expect(s.batteryPercent == 40)
+    #expect(s.signalLevel == 2)
+    #expect(s.network == .wifi)
+    #expect(try s.serializedData() == env.payload)
+}
+
 @Test func inputMoveVectorDecodesFloats() throws {
     let file: FramingFile = load("framing.json")
     let v = try #require(file.vectors.first { $0.name == "input_move" })

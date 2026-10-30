@@ -20,4 +20,6 @@ message StatusUpdate {
   bool charging = 2;
   int32 signal_level = 3;  // 0..4, or -1 for unknown / no service. Always set; proto3 omits 0 on the wire and it decodes as 0.
   NetworkKind network = 4;
+  // true: not exempt from battery optimisation, so the phone may disconnect while locked. Absent (false) from older phones.
+  bool background_restricted = 5;
 }

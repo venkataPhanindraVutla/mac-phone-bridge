@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- "Allow in the background": Android's battery-optimisation exemption dialog, opened only from the
+         keep-connected screen after pairing and the home row's Fix, never at launch. A normal permission,
+         accepted by F-Droid. Google Play restricts it: a future play flavor should drop it and open
+         ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS instead, or justify it to Google. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Find my phone: vibrate while ringing, and (user-granted special access) lift Do Not Disturb's Total silence. -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -151,6 +158,16 @@
         <!-- The proximity beacon's wall-clock alarm (RTC_WAKEUP, inexact); only this app's PendingIntent reaches it. -->
         <receiver
             android:name=".service.ProximityAlarmReceiver"
+            android:exported="false" />
+
+        <!-- The keep-alive watchdog's alarm (ELAPSED_REALTIME_WAKEUP, inexact, every 15 min); only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.KeepAliveWatchdogReceiver"
+            android:exported="false" />
+
+        <!-- "Tap to reconnect" was dismissed: not posted again until the phone connects (deleteIntent). -->
+        <receiver
+            android:name=".service.ReconnectNoticeDismissReceiver"
             android:exported="false" />
 
         <receiver

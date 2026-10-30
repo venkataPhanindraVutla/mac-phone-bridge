@@ -2498,6 +2498,17 @@
           }
         }
       }
+    },
+    "Phone may disconnect when locked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone may disconnect when locked"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -187,6 +187,33 @@ class VectorTest {
     }
 
     @Test
+    fun pingFromMacVectorDecodes() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "ping_from_mac" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_SYSTEM, env.channel)
+        assertEquals(4L, env.id)
+        assertEquals(0L, env.replyTo)
+        assertEquals(MessageType.PING, env.type)
+        assertTrue(env.payload.isEmpty)
+    }
+
+    @Test
+    fun statusBackgroundRestrictedVectorDecodes() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }
+            .first { it.str("name") == "status_update_background_restricted" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_STATUS, env.channel)
+        assertEquals(6L, env.id)
+        assertEquals(MessageType.STATUS_UPDATE, env.type)
+        val s = io.github.anmirror.protocol.v1.StatusUpdate.parseFrom(env.payload)
+        assertTrue(s.backgroundRestricted)
+        assertEquals(40, s.batteryPercent)
+        assertEquals(2, s.signalLevel)
+        assertEquals(io.github.anmirror.protocol.v1.NetworkKind.NETWORK_KIND_WIFI, s.network)
+        assertEquals(env.payload, s.toByteString())
+    }
+
+    @Test
     fun inputMoveVectorDecodesFloats() {
         val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "input_move" }
         val env = envelopeFrom(v.getValue("envelope").jsonObject)

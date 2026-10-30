@@ -22,6 +22,7 @@ import androidx.core.content.edit
 import io.github.anmirror.connection.BulkConnector
 import io.github.anmirror.connection.BulkStream
 import io.github.anmirror.connection.ConnectionManager
+import io.github.anmirror.connection.LIVENESS_CAPABILITY
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.connection.PROTOCOL_VERSION
 import io.github.anmirror.connection.PairedMac
@@ -57,8 +58,14 @@ import io.github.anmirror.feature.proximity.ProximityBeacon
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
+import io.github.anmirror.phone.platform.AndroidKeepAliveTuner
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
+import io.github.anmirror.phone.platform.Battery
+import io.github.anmirror.phone.diag.KeepAliveEvent
+import io.github.anmirror.phone.diag.KeepAliveLog
+import io.github.anmirror.phone.diag.recordSessionEnd
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
+import io.github.anmirror.phone.platform.StoreRead
 import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.MediaStoreDownloads
 import io.github.anmirror.phone.platform.SharedFile
@@ -106,6 +113,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -140,11 +148,57 @@ class AppGraph private constructor(context: Context) {
         override fun keyManagers() = real.keyManagers()
     }
 
-    val store = ObservablePairedMacStore(
-        EncryptedPairedMacStore(AtomicFile(File(app.filesDir, "paired-macs.bin")), KeystoreCipher()),
+    /** Content-free events for diagnosing a vanished service (`filesDir/keepalive-events.log`). */
+    val keepAliveLog = KeepAliveLog(File(app.filesDir, "keepalive-events.log"))
+
+    private val encryptedStore = EncryptedPairedMacStore(
+        AtomicFile(File(app.filesDir, "paired-macs.bin")),
+        KeystoreCipher(),
+        onUnreadable = { keepAliveLog.record(KeepAliveEvent.STORE_UNREADABLE, it) },
     )
 
-    private val connector = TlsConnector(identity)
+    /** An unreadable store reads as none for the manager, and as unknown (null) for the UI. */
+    val store = ObservablePairedMacStore(encryptedStore, encryptedStore::readStore)
+
+    /** True only when the store confirms no Mac is paired; an unreadable store is not "none". */
+    suspend fun noMacPaired(): Boolean = encryptedStore.confirmedEmpty()
+
+    /** The store as read now; [StoreRead.Unreadable] is reported to the event log. */
+    suspend fun readPairings(): StoreRead = encryptedStore.readStore()
+
+    /** The maker whose own battery setting the keep-connected screen points at; null for most phones. */
+    val maker: Maker? = MakerGuidance.makerOf(Build.MANUFACTURER)
+
+    private val _backgroundExempt = MutableStateFlow(Battery.isExempt(app))
+
+    /**
+     * Whether Android exempts this app from battery optimisation. Re-read on every app resume, at
+     * service start and on every session open; the Mac is told the opposite as
+     * `background_restricted`.
+     */
+    val backgroundExempt: StateFlow<Boolean> = _backgroundExempt.asStateFlow()
+
+    fun refreshBackgroundExempt() {
+        val now = Battery.isExempt(app)
+        if (_backgroundExempt.getAndUpdate { now } != now) keepAliveLog.record(KeepAliveEvent.EXEMPT, now.toString())
+    }
+
+    private val keepPrefs = app.getSharedPreferences("keepalive", Context.MODE_PRIVATE)
+    private val _makerStepDone = MutableStateFlow(keepPrefs.getBoolean(KEY_MAKER_STEP_DONE, false))
+
+    /** The user tapped Done on the keep-connected screen of a phone with a [maker] step (the phone can't read that setting). */
+    val makerStepDone: StateFlow<Boolean> = _makerStepDone.asStateFlow()
+
+    fun setMakerStepDone() {
+        keepPrefs.edit { putBoolean(KEY_MAKER_STEP_DONE, true) }
+        _makerStepDone.value = true
+    }
+
+    /** SPEC 7's TCP keepalive timings on every dialed socket; a phone that cannot set them keeps the system's. */
+    private val connector = TlsConnector(
+        identity,
+        tuner = AndroidKeepAliveTuner(onFallback = { keepAliveLog.record(KeepAliveEvent.SOCKET_TUNE, it) }),
+    )
 
     val manager = ConnectionManager(
         scope = scope,
@@ -153,6 +207,8 @@ class AppGraph private constructor(context: Context) {
         connector = connector,
         hello = ::hello,
         log = { message, e -> Log.e(TAG, "connection: $message", e) },
+        elapsedMs = SystemClock::elapsedRealtime,
+        onSessionEnd = keepAliveLog::recordSessionEnd,
     )
 
     val pairing = PairingController(
@@ -941,12 +997,25 @@ class AppGraph private constructor(context: Context) {
 
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
+    /** `exit=<ApplicationExitInfo.reason>` of the previous process, on API 30+. */
+    private fun lastExitDetail(): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return ""
+        return try {
+            val am = app.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            am.getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.let { "exit=${it.reason}" } ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     /** Queues a listener event; they run one at a time, in the order the listener saw them. */
     fun postNotifyEvent(event: suspend () -> Unit) {
         notifyEvents.trySend(event)
     }
 
     init {
+        keepAliveLog.record(KeepAliveEvent.PROCESS_START, lastExitDetail())
+        keepAliveLog.record(KeepAliveEvent.EXEMPT, _backgroundExempt.value.toString())
         scope.launch {
             for (event in notifyEvents) {
                 try {
@@ -988,7 +1057,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", LIVENESS_CAPABILITY)
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
@@ -1000,6 +1069,7 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_DND_ON = "sync_with_mac"
         private const val KEY_PROXIMITY_ON = "lock_when_away"
         private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
+        private const val KEY_MAKER_STEP_DONE = "maker_step_done"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
@@ -1016,23 +1086,36 @@ class AppGraph private constructor(context: Context) {
     }
 }
 
-/** A [PairedMacStore] that also publishes the list, so the UI can show it. */
-class ObservablePairedMacStore(private val inner: PairedMacStore) : PairedMacStore {
+/**
+ * A [PairedMacStore] that also publishes the list, so the UI can show it. With [read], a store
+ * that cannot be read just now publishes null (the UI's blank frame, not onboarding) while
+ * [all] still returns none; one that is lost for good publishes an empty list.
+ */
+class ObservablePairedMacStore(
+    private val inner: PairedMacStore,
+    private val read: (suspend () -> StoreRead)? = null,
+) : PairedMacStore {
     private val _macs = MutableStateFlow<List<PairedMac>?>(null)
 
-    /** Null until first read. */
+    /** Null until first read, and while the store cannot be read. */
     val macs: StateFlow<List<PairedMac>?> = _macs.asStateFlow()
 
-    override suspend fun all(): List<PairedMac> = inner.all().also { _macs.value = it }
+    override suspend fun all(): List<PairedMac> {
+        val r = read ?: return inner.all().also { _macs.value = it }
+        return when (val got = r()) {
+            is StoreRead.Macs -> got.macs.also { _macs.value = it }
+            is StoreRead.Unreadable -> emptyList<PairedMac>().also { _macs.value = if (got.permanent) it else null }
+        }
+    }
 
     override suspend fun save(mac: PairedMac) {
         inner.save(mac)
-        _macs.value = inner.all()
+        all()
     }
 
     override suspend fun remove(id: String) {
         inner.remove(id)
-        _macs.value = inner.all()
+        all()
     }
 }
 

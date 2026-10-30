@@ -51,6 +51,7 @@
     <string name="state_incompatible">Update Android Mirroring on both devices.</string>
     <string name="state_stopped">Not running.</string>
     <string name="home_retry">Try now</string>
+    <string name="forget_failed">Could not forget this Mac right now. Try again in a moment.</string>
     <string name="home_pair_again">Pair again</string>
     <string name="home_pair_again_title">Pair again with your Mac?</string>
     <string name="home_pair_again_body">This phone forgets %1$s. Then scan the new code your Mac shows.</string>
@@ -200,4 +201,28 @@
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>
     <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>
+    <string name="reconnect_title">Android Mirroring stopped</string>
+    <string name="reconnect_text">Tap to reconnect to your Mac.</string>
+
+    <!-- Keep connected when locked: the battery exemption step after pairing, and the home row while it is left. -->
+    <string name="keep_title">Stay connected when the phone is locked</string>
+    <string name="keep_body">To save battery, Android may stop Android Mirroring while the screen is off. Your Mac then can\'t ring the phone or show its notifications.</string>
+    <string name="keep_allow">Allow in the background</string>
+    <string name="keep_maker_intro">On this phone, also turn this on:</string>
+    <string name="keep_open_settings">Open app settings</string>
+    <string name="keep_done">Done</string>
+    <string name="keep_not_now">Not now</string>
+    <string name="keep_row_title">May disconnect when locked</string>
+    <string name="keep_row_line">Allow Android Mirroring to run in the background.</string>
+    <string name="keep_row_fix">Fix</string>
+    <!-- Neither the exemption dialog nor any Settings page could be opened on this phone. -->
+    <string name="keep_settings_unavailable">Settings couldn\'t be opened on this phone.</string>
+    <!-- The maker's own battery setting, by Build.MANUFACTURER. Only the vivo path has been seen on a real phone. -->
+    <string name="keep_maker_vivo">Settings › Battery › Background power consumption management › Android Mirroring › Allow</string>
+    <!-- Some vivo builds have it under App info instead (the Open app settings button). -->
+    <string name="keep_maker_vivo_fallback">If it isn\'t there: App info › Battery › Unrestricted</string>
+    <string name="keep_maker_xiaomi">Settings › Apps › Manage apps › Android Mirroring › Autostart on, and Battery saver › No restrictions</string>
+    <string name="keep_maker_oppo">Settings › Apps › App management › Android Mirroring › Battery usage › Allow background activity</string>
+    <string name="keep_maker_samsung">Settings › Battery › Background usage limits › Never sleeping apps › add Android Mirroring</string>
+    <string name="keep_maker_huawei">Settings › Battery › App launch › Android Mirroring › Manage manually, with Run in background on</string>
 </resources>

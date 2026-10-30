@@ -9,6 +9,8 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.security.GeneralSecurityException
+import java.security.ProviderException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -39,10 +41,14 @@ fun interface MacConnector {
  * Each host gets [connectTimeoutMs] for the TCP connect and the same again for the TLS
  * handshake. A host that fails for any reason (refused, timeout, wrong certificate,
  * not TLS 1.3) is skipped and its socket closed.
+ *
+ * [tuner] runs on every dialed socket (control and bulk) right after the TCP connect. A tuner
+ * that throws is logged by exception class only; the dial goes on.
  */
 class TlsConnector(
     private val identity: TlsIdentity,
     private val connectTimeoutMs: Int = 3000,
+    private val tuner: SocketTuner = TcpKeepAlive.BASIC,
 ) : MacConnector {
 
     override suspend fun connect(hosts: List<String>, port: Int, pinnedFpHex: String): ControlChannel {
@@ -58,8 +64,8 @@ class TlsConnector(
             } catch (e: IOException) {
                 causes += e
                 // Our Mac answered and turned us away. Keep trying the other hosts; report the
-                // refusal only if none works. (A timeout after the pin matched is not a refusal.)
-                if (pinMatched.get() && e !is SocketTimeoutException) refused = true
+                // refusal only if none works.
+                if (isRefusalByPeer(e, pinMatched.get())) refused = true
             }
         }
         throw UnreachableException(hosts, causes, refusedByPeer = refused)
@@ -95,6 +101,9 @@ class TlsConnector(
                 try {
                     raw.tcpNoDelay = true
                     raw.connect(InetSocketAddress(host, port), connectTimeoutMs)
+                    runCatching { tuner.tune(raw) }.onFailure { e ->
+                        System.err.println("TlsConnector: socket tuning failed: ${e.javaClass.simpleName}")
+                    }
                     raw.soTimeout = connectTimeoutMs
                     ssl = context.socketFactory.createSocket(raw, host, port, true) as SSLSocket
                     ssl.enabledProtocols = arrayOf("TLSv1.3")
@@ -117,4 +126,22 @@ class TlsConnector(
             watchdog.cancel()
         }
     }
+}
+
+/**
+ * Whether a failed dial looks like the pinned Mac refusing this phone's certificate: the pin
+ * matched, then the handshake failed. Not a refusal: a timeout, or a failure of this phone's
+ * own key while signing (a busy or reset Keystore). That shows up as a security exception in
+ * the cause chain (JSSE) or as BoringSSL's `PRIVATE_KEY_OPERATION_FAILED` (Conscrypt, which
+ * drops the cause); it is transient, so the dial backs off like an unreachable Mac.
+ */
+internal fun isRefusalByPeer(e: IOException, pinMatched: Boolean): Boolean {
+    if (!pinMatched || e is SocketTimeoutException) return false
+    var c: Throwable? = e
+    while (c != null) {
+        if (c is GeneralSecurityException || c is ProviderException) return false
+        if (c.message?.contains("PRIVATE_KEY_OPERATION_FAILED") == true) return false
+        c = c.cause?.takeIf { it !== c }
+    }
+    return true
 }

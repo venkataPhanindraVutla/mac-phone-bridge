@@ -12,13 +12,19 @@ import Security
 public enum TLSParameters {
     private static let verifyQueue = DispatchQueue(label: "io.github.anmirror.tls-verify")
 
+    /// TCP keepalive on every control and bulk socket (SPEC 1): seconds idle before the first
+    /// probe, seconds between probes, and probes before the connection fails. Defence in depth
+    /// only: a frozen app's kernel still answers probes, so SPEC 7's pings do the real work.
+    static let keepaliveIdleSeconds = 60
+    static let keepaliveIntervalSeconds = 10
+    static let keepaliveProbeCount = 3
+
     /// The Mac side: TLS server that requires a client certificate.
     public static func server(identity: TLSIdentity,
                               acceptPeer: @escaping @Sendable (Data) -> Bool) -> NWParameters {
         let tls = makeTLSOptions(identity: identity, acceptPeer: acceptPeer)
         sec_protocol_options_set_peer_authentication_required(tls.securityProtocolOptions, true)
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
+        let tcp = makeTCPOptions()
         let params = NWParameters(tls: tls, tcp: tcp)
         // Lets `MacServer.handleWake()` rebind the same port right after closing it.
         params.allowLocalEndpointReuse = true
@@ -30,8 +36,7 @@ public enum TLSParameters {
     public static func client(identity: TLSIdentity, connectTimeoutSeconds: Int = 3,
                               acceptPeer: @escaping @Sendable (Data) -> Bool) -> NWParameters {
         let tls = makeTLSOptions(identity: identity, acceptPeer: acceptPeer)
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
+        let tcp = makeTCPOptions()
         tcp.connectionTimeout = connectTimeoutSeconds
         return NWParameters(tls: tls, tcp: tcp)
     }
@@ -42,6 +47,16 @@ public enum TLSParameters {
               let leaf = chain.first
         else { return nil }
         return PairingCrypto.fingerprint(certificateDER: SecCertificateCopyData(leaf) as Data)
+    }
+
+    private static func makeTCPOptions() -> NWProtocolTCP.Options {
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = keepaliveIdleSeconds
+        tcp.keepaliveInterval = keepaliveIntervalSeconds
+        tcp.keepaliveCount = keepaliveProbeCount
+        return tcp
     }
 
     private static func makeTLSOptions(identity: TLSIdentity,

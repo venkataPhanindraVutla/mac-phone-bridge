@@ -39,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -65,6 +66,8 @@ fun HomeScreen(
     ringing: Boolean,
     onStopRing: () -> Unit,
     onRetry: () -> Unit,
+    keepPrompt: Boolean,
+    onKeepFix: () -> Unit,
     notifyOn: Boolean,
     notifyAccess: Boolean,
     onNotifyToggle: (Boolean) -> Unit,
@@ -148,6 +151,7 @@ fun HomeScreen(
         } else if (state !is PhoneConnectionState.Connected) {
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
+        if (keepPrompt) KeepConnectedRow(onFix = onKeepFix)
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
         MediaRow(on = mediaControlOn, access = notifyAccess, onToggle = onMediaControlToggle)
         DndRow(on = dndSyncOn, access = dndAccess, mac = macDnd, onToggle = onDndSyncToggle)
@@ -205,6 +209,34 @@ fun HomeScreen(
                 TextButton(onClick = { confirmForget = false }) { Text(stringResource(R.string.pair_cancel)) }
             },
         )
+    }
+}
+
+/**
+ * "May disconnect when locked": shown while the battery exemption or the maker's step is left
+ * ([io.github.anmirror.phone.BackgroundState.showsPrompt]). Fix opens the keep-connected screen.
+ */
+@Composable
+private fun KeepConnectedRow(onFix: () -> Unit) {
+    val title = stringResource(R.string.keep_row_title)
+    val line = stringResource(R.string.keep_row_line)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        // TalkBack reads the title and the line as one.
+        Column(
+            modifier = Modifier.weight(1f).clearAndSetSemantics {
+                heading()
+                contentDescription = "$title. $line"
+            },
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(line, style = MaterialTheme.typography.bodyMedium)
+        }
+        OutlinedButton(onClick = onFix) { Text(stringResource(R.string.keep_row_fix)) }
     }
 }
 

@@ -8,7 +8,7 @@
 //   EVENT code <6 digits>
 //   EVENT paired <phone-id>
 //   EVENT connected <phone-id> shared=<a,b>
-//   EVENT status battery=<n> charging=<true|false> signal=<n> network=<kind>
+//   EVENT status battery=<n> charging=<true|false> signal=<n> network=<kind> restricted=<true|false>
 //   EVENT ring-state ringing=<true|false> silent=<true|false>
 //   EVENT notify-posted key=<key> title=<title> text=<text> alert=<true|false>
 //   EVENT files-received bytes=<n> sha256=<hex> mbps=<x>   (--files: a file from the phone, phone to Mac rate)
@@ -23,6 +23,9 @@
 // are saved into <dir>, and each one received is sent straight back.
 // With --media-toggle it advertises media.v1 and runs the media model with no Now Playing: on the
 // first active media.state it sends TOGGLE, prints the round trip, then sends a second TOGGLE.
+// With --liveness it advertises liveness.v1 (SPEC 7): when the phone lists it too, the Mac pings
+// every 30 s (or --ping-interval-ms) and drops the phone at the third consecutive silent interval.
+// --silence-ms <n> replaces the 75 s silence rule for phones without liveness.v1 (sim speed).
 
 import AMProtocol
 import ConnectionCore
@@ -37,7 +40,7 @@ setvbuf(stdout, nil, _IOLBF, 0)
 let usage = """
     usage: am-mac-sim --identity <p12> --state-dir <dir> [--port <n|0>] [--password <pw>]
                       [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--echo-notify] [--no-bonjour]
-                      [--files <dir>] [--media-toggle]
+                      [--files <dir>] [--media-toggle] [--liveness] [--ping-interval-ms <n>] [--silence-ms <n>]
     """
 
 struct Options {
@@ -52,6 +55,9 @@ struct Options {
     var bonjour = true
     var filesDir: String?
     var mediaToggle = false
+    var liveness = false
+    var pingIntervalMs: Int?
+    var silenceMs: Int?
 }
 
 func fail(_ message: String) -> Never {
@@ -81,6 +87,13 @@ func parse(_ args: [String]) -> Options {
         case "--no-bonjour": o.bonjour = false
         case "--files": o.filesDir = value(arg)
         case "--media-toggle": o.mediaToggle = true
+        case "--liveness": o.liveness = true
+        case "--ping-interval-ms":
+            guard let ms = Int(value(arg)), ms > 0 else { fail("--ping-interval-ms must be a positive integer") }
+            o.pingIntervalMs = ms
+        case "--silence-ms":
+            guard let ms = Int(value(arg)), ms > 0 else { fail("--silence-ms must be a positive integer") }
+            o.silenceMs = ms
         case "-h", "--help":
             print(usage)
             exit(0)
@@ -204,6 +217,7 @@ var capabilities: Set<String> = ["status.v1", "find.v1"]
 if options.echoNotify { capabilities.insert("notify.v1") }
 if options.filesDir != nil { capabilities.insert("files.v1") }
 if options.mediaToggle { capabilities.insert("media.v1") }
+if options.liveness { capabilities.insert(Liveness.capability) }
 
 let server = MacServer(
     identity: identityProvider,
@@ -212,7 +226,9 @@ let server = MacServer(
     macName: options.name,
     appVersion: "0.1.0-sim",
     capabilities: capabilities,
-    advertise: options.bonjour
+    advertise: options.bonjour,
+    silenceTimeout: options.silenceMs.map { .milliseconds($0) } ?? .seconds(75),
+    pingInterval: options.pingIntervalMs.map { .milliseconds($0) } ?? Liveness.defaultInterval
 )
 
 // MARK: files (--files)
@@ -377,7 +393,7 @@ server.onMessage = { envelope in
     case MessageType.statusUpdate.rawValue:
         guard let s = try? AMStatusUpdate(serializedBytes: envelope.payload) else { return }
         emit("EVENT status battery=\(s.batteryPercent) charging=\(s.charging) "
-            + "signal=\(s.signalLevel) network=\(networkName(s.network))")
+            + "signal=\(s.signalLevel) network=\(networkName(s.network)) restricted=\(s.backgroundRestricted)")
     case MessageType.findState.rawValue:
         guard let r = try? AMRingState(serializedBytes: envelope.payload) else { return }
         emit("EVENT ring-state ringing=\(r.ringing) silent=\(r.mayBeSilent)")

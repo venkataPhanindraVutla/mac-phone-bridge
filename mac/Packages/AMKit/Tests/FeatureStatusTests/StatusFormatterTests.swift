@@ -36,3 +36,23 @@ import Testing
     model.reset()
     #expect(model.status == nil)
 }
+
+@Test func backgroundNoteOnlyWhenRestricted() {
+    let restricted = PhoneStatus(batteryPercent: 82, charging: false, signalLevel: 3, network: .wifi,
+                                 backgroundRestricted: true)
+    let exempt = PhoneStatus(batteryPercent: 82, charging: false, signalLevel: 3, network: .wifi)
+    #expect(StatusFormatter.backgroundNote(restricted) == "Phone may disconnect when locked")
+    #expect(StatusFormatter.backgroundNote(exempt) == nil)
+    #expect(exempt.backgroundRestricted == false)
+}
+
+@MainActor @Test func applyReadsBackgroundRestricted() {
+    let model = PhoneStatusModel()
+    var u = AMStatusUpdate()
+    u.batteryPercent = 55; u.network = .wifi; u.backgroundRestricted = true
+    model.apply(u)
+    #expect(model.status?.backgroundRestricted == true)
+    u.backgroundRestricted = false
+    model.apply(u)
+    #expect(model.status?.backgroundRestricted == false)
+}

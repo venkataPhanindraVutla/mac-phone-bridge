@@ -82,7 +82,7 @@ Each feature lists the user outcome, required behavior, setup level, and accepta
 
 ### F-02 Phone status in the Mac menu bar *(Basic)*
 - **Outcome:** see the phone's battery level and charging state, signal strength, Wi-Fi/mobile data, and connection state from the menu bar.
-- **Acceptance:** values update within 30 s of a change. "Connected/disconnected" updates immediately when the connection closes (app quit, Mac sleep/wake, phone app stopped); within 75 s when the phone vanishes (Wi-Fi off, out of range). *(Builder's call for 0.1; faster detection of a vanished phone is tracked for 0.9.)*
+- **Acceptance:** values update within 30 s of a change. "Connected/disconnected" updates immediately when the connection closes (app quit, phone app stopped, and Mac sleep/wake with phones older than the 0.1 keep-alive patch; a newer phone stays connected across the Mac's sleep); within 2 minutes when the phone vanishes (75 s with phones older than the 0.1 keep-alive patch). *(Builder's call for 0.1; faster detection of a vanished phone is tracked for 0.9.)*
 
 ### F-03 Notifications on the Mac, with actions *(Basic)*
 - **Outcome:** phone notifications appear as native Mac notifications.
