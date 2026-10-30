@@ -20,7 +20,7 @@ android {
         targetSdk = 36
         versionCode = 50001
         // Server.java refuses to start unless the client passes exactly this (BuildConfig.VERSION_NAME).
-        versionName = "5.0.1-am1"
+        versionName = libs.versions.helperVersion.get()
     }
 
     buildTypes {
@@ -44,16 +44,19 @@ android {
     }
 
     testOptions {
-        unitTests.all {
-            // Shared scrcpy wire fixtures, also used by the Mac tests.
-            it.systemProperty("anmirror.vectors", rootProject.file("../protocol/vectors").absolutePath)
+        unitTests.all { test ->
+            // Shared scrcpy wire fixtures, also used by the Mac tests. Declared as an input so that
+            // editing them re-runs the cross-check; the path is passed outside the cache key.
+            val vectors = rootProject.file("../protocol/vectors")
+            test.inputs.dir(vectors).withPropertyName("scrcpyVectors").withPathSensitivity(PathSensitivity.RELATIVE)
+            test.jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Danmirror.vectors=${vectors.absolutePath}") })
         }
     }
 }
 
 configurations.configureEach {
-    // AGP's built-in Kotlin adds kotlin-stdlib to every module. The helper is pure Java, like
-    // upstream's jar, and must not carry it.
+    // Upstream's sources are pure Java. AGP 9's built-in Kotlin would add kotlin-stdlib (upstream's
+    // own release asset carries it), which the server never uses; leaving it out keeps the jar small.
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
 }
 

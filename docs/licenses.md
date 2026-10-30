@@ -3,23 +3,34 @@
 Android Mirroring is licensed under the Apache License, Version 2.0 (`LICENSE`). This file lists every
 third-party component the apps ship or build from, with its licence. Attribution lines are in `NOTICE`.
 
+**Licence texts.** The full texts, each headed by the components that use it and their copyright lines, ship
+inside the Android app as `assets/licenses/` (source: `android/app/src/main/assets/licenses/`): `NOTICE`,
+`Apache-2.0.txt`, `BSD-3-Clause.txt`, `MIT.txt`, `ISC.txt`, `LGPL-2.1.txt`, `LGPL-3.0.txt`, `GPL-3.0.txt` and
+`BoringSSL.txt` (ruling R41). The same files are attached to each GitHub release. `LicenseAssetsTest` (app unit
+tests) checks that they are there, that the bundled NOTICE is this repository's NOTICE, and that NOTICE names
+every module on the release runtime classpath.
+
 How this list was made (milestone 0.5, 2026-10-30):
 
 - **Android:** `./gradlew :core:adb:dependencies --configuration releaseRuntimeClasspath` and
   `./gradlew :app:dependencies --configuration ossReleaseRuntimeClasspath`, licences from each artifact's POM.
   `:helper` has no runtime dependencies.
 - **Mac:** `mac/Packages/AMKit/Package.resolved`.
+- libadb-android's and spake2-android's own sources (tag 3.1.1 and 2.2.1, with the `spake2-c` submodule) were read
+  for their `SPDX-License-Identifier` lines and file headers; POMs alone miss the per-file licences.
+- Copyright holders without years (AndroidX, Kotlin, ZXing, Guava, JSpecify) are as their projects' headers name them.
 - Rule: anything that is not Apache-2.0, MIT, BSD or ISC compatible goes to the project's controller before it ships.
-  The only such component is `spake2-android` (LGPL-3.0), shipped as described below.
+  The only such component is `spake2-android` (LGPL-3.0, with an LGPL-2.1-or-later file in its native code),
+  shipped as described below.
 
 ## Components
 
 | Component | Version | Where it is used | Licence | Source |
 |---|---|---|---|---|
 | scrcpy-server (vendored source, two patches) | 5.0.1 (built as 5.0.1-am1) | Android: `:helper`, shipped as `assets/anmirror-helper.jar` (Full mode) | Apache-2.0 | https://github.com/Genymobile/scrcpy (tag v5.0.1, see `android/helper/UPSTREAM.md`) |
-| libadb-android | 3.1.1 | Android: `:core:adb` (Full mode ADB client) | GPL-3.0-or-later OR Apache-2.0; **used under Apache-2.0** | https://github.com/MuntashirAkon/libadb-android (JitPack) |
-| spake2-android (transitive, via libadb-android) | 2.2.1 | Android: `:core:adb` (ADB pairing); prebuilt `libspake2.so` for arm64-v8a, armeabi-v7a, x86, x86_64 | **LGPL-3.0**, used unmodified as a separate library (see below) | https://github.com/MuntashirAkon/spake2-java |
-| conscrypt-android | 2.5.3 | Android: `:core:adb` (TLS for ADB); prebuilt `libconscrypt_jni.so` (four ABIs) with BoringSSL | Apache-2.0; bundled BoringSSL: OpenSSL / SSLeay and ISC licences | https://github.com/google/conscrypt, https://boringssl.googlesource.com/boringssl |
+| libadb-android | 3.1.1 | Android: `:core:adb` (Full mode ADB client) | GPL-3.0-or-later OR Apache-2.0 (**used under Apache-2.0**), with parts under BSD-3-Clause (`AdbConnection`, `AdbProtocol`, `AdbStream`: Copyright 2013 Cameron Gutman; `AdbAuthenticationFailedException`: Copyright 2020 Sam Palmer) and MIT (`PRNGFixes`: Copyright 2013 Google Inc.) | https://github.com/MuntashirAkon/libadb-android (JitPack; tag 3.1.1, `COPYING` and `LICENSES/`) |
+| spake2-android (transitive, via libadb-android) | 2.2.1 | Android: `:core:adb` (ADB pairing); prebuilt `libspake2.so` for arm64-v8a, armeabi-v7a, x86, x86_64 | **LGPL-3.0**, used unmodified as a separate library (see below). `libspake2.so` also contains ISC (`spake2.c`, `ed25519.h`: Copyright 2020 Google Inc., 2021 Muntashir Al-Islam), MIT (`curve25519_32.h`: Copyright 2015-2020 the fiat-crypto authors), Apache-2.0 (`spake2.h`) and LGPL-2.1-or-later (`sha512.c`, from glibc: Copyright 2007-2015 Free Software Foundation, Inc.) parts | https://github.com/MuntashirAkon/spake2-java (tag 2.2.1), native code https://github.com/MuntashirAkon/spake2-c |
+| conscrypt-android | 2.5.3 | Android: `:core:adb` (TLS for ADB); prebuilt `libconscrypt_jni.so` (four ABIs) with BoringSSL | Apache-2.0; bundled BoringSSL: OpenSSL License, original SSLeay License, ISC and MIT (`BoringSSL.txt`, BoringSSL's LICENSE at tag 0.20240913.0, from Conscrypt 2.5.3's period; the exact BoringSSL revision inside 2.5.3 is not published in the AAR) | https://github.com/google/conscrypt, https://boringssl.googlesource.com/boringssl |
 | Bouncy Castle `bcpkix-jdk18on`, `bcutil-jdk18on`, `bcprov-jdk18on` | 1.86 | Android: `:core:adb` (ADB key and certificate) | Bouncy Castle Licence (MIT) | https://www.bouncycastle.org/licence.html |
 | AndroidX (activity, annotation, annotation-experimental, arch core, autofill, collection, concurrent-futures, core, core-ktx, core-viewtree, customview-poolingcontainer, emoji2, graphics-path, interpolator, lifecycle, navigationevent, profileinstaller, savedstate, startup, tracing, versionedparcelable, window) | per `:app:dependencies` (core 1.18.0, activity 1.12.4, lifecycle 2.10.0, annotation 1.9.1) | Android: app; `androidx.annotation` also via libadb-android and spake2-android | Apache-2.0 | https://developer.android.com/jetpack/androidx |
 | Jetpack Compose (runtime, ui, foundation, animation, material3, material-ripple) | BOM 2026.09.00 (1.12.1) | Android: app UI | Apache-2.0 | https://developer.android.com/jetpack/compose |
@@ -33,7 +44,7 @@ How this list was made (milestone 0.5, 2026-10-30):
 | Guava `listenablefuture` | 1.0 | Android: transitive (AndroidX) | Apache-2.0 | https://github.com/google/guava |
 | JSpecify | 1.0.0 | Android: transitive (AndroidX) | Apache-2.0 | https://github.com/jspecify/jspecify |
 | swift-protobuf | 1.39.0 | Mac: AMKit | Apache-2.0 | https://github.com/apple/swift-protobuf |
-| swift-crypto | 5.0.3 | Mac: AMKit | Apache-2.0; vendored BoringSSL: OpenSSL / SSLeay and ISC licences | https://github.com/apple/swift-crypto |
+| swift-crypto | 5.0.3 | Mac: AMKit | Apache-2.0; its vendored BoringSSL files are under Apache-2.0 too (BoringSSL was relicensed) | https://github.com/apple/swift-crypto |
 | swift-certificates | 1.21.1 | Mac: AMKit | Apache-2.0 | https://github.com/apple/swift-certificates |
 | swift-asn1 | 1.7.3 | Mac: AMKit (via swift-certificates) | Apache-2.0 | https://github.com/apple/swift-asn1 |
 | Gson (tests only, not shipped) | 2.13.2 | Android: `:helper` unit tests | Apache-2.0 | https://github.com/google/gson |
@@ -46,183 +57,18 @@ not a copy of scrcpy code.
 
 `libadb-android` depends on `spake2-android` 2.2.1 for Wireless debugging pairing (SPAKE2). It is licensed under the
 GNU Lesser General Public License, version 3.0, and ships prebuilt `libspake2.so` libraries plus a small Java
-wrapper. Android Mirroring uses it **unmodified, as a separate library**: it stays its own AAR dependency, its
-native code stays its own shared library, and nothing of ours is linked into it. Anyone may replace it with
-another build of `spake2-android` (from the source below) by changing the dependency and rebuilding the app.
-The rest of Android Mirroring stays under the Apache License, Version 2.0.
+wrapper (`Spake2Context`, `Spake2Role`). Android Mirroring uses it **unmodified, as a separate library**: it stays its
+own AAR dependency, its native code stays its own shared library, and nothing of ours is linked into it. Anyone may
+replace it with another build of `spake2-android` (from the source below) by changing the dependency and rebuilding
+the app. The rest of Android Mirroring stays under the Apache License, Version 2.0.
 
-- Source: https://github.com/MuntashirAkon/spake2-java (version 2.2.1)
-- The LGPL-3.0 adds permissions to the GNU General Public License, version 3: https://www.gnu.org/licenses/gpl-3.0.txt
-
-The LGPL-3.0 text, verbatim:
-
-```text
-		   GNU LESSER GENERAL PUBLIC LICENSE
-                       Version 3, 29 June 2007
-
- Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/>
- Everyone is permitted to copy and distribute verbatim copies
- of this license document, but changing it is not allowed.
-
-
-  This version of the GNU Lesser General Public License incorporates
-the terms and conditions of version 3 of the GNU General Public
-License, supplemented by the additional permissions listed below.
-
-  0. Additional Definitions. 
-
-  As used herein, "this License" refers to version 3 of the GNU Lesser
-General Public License, and the "GNU GPL" refers to version 3 of the GNU
-General Public License.
-
-  "The Library" refers to a covered work governed by this License,
-other than an Application or a Combined Work as defined below.
-
-  An "Application" is any work that makes use of an interface provided
-by the Library, but which is not otherwise based on the Library.
-Defining a subclass of a class defined by the Library is deemed a mode
-of using an interface provided by the Library.
-
-  A "Combined Work" is a work produced by combining or linking an
-Application with the Library.  The particular version of the Library
-with which the Combined Work was made is also called the "Linked
-Version".
-
-  The "Minimal Corresponding Source" for a Combined Work means the
-Corresponding Source for the Combined Work, excluding any source code
-for portions of the Combined Work that, considered in isolation, are
-based on the Application, and not on the Linked Version.
-
-  The "Corresponding Application Code" for a Combined Work means the
-object code and/or source code for the Application, including any data
-and utility programs needed for reproducing the Combined Work from the
-Application, but excluding the System Libraries of the Combined Work.
-
-  1. Exception to Section 3 of the GNU GPL.
-
-  You may convey a covered work under sections 3 and 4 of this License
-without being bound by section 3 of the GNU GPL.
-
-  2. Conveying Modified Versions.
-
-  If you modify a copy of the Library, and, in your modifications, a
-facility refers to a function or data to be supplied by an Application
-that uses the facility (other than as an argument passed when the
-facility is invoked), then you may convey a copy of the modified
-version:
-
-   a) under this License, provided that you make a good faith effort to
-   ensure that, in the event an Application does not supply the
-   function or data, the facility still operates, and performs
-   whatever part of its purpose remains meaningful, or
-
-   b) under the GNU GPL, with none of the additional permissions of
-   this License applicable to that copy.
-
-  3. Object Code Incorporating Material from Library Header Files.
-
-  The object code form of an Application may incorporate material from
-a header file that is part of the Library.  You may convey such object
-code under terms of your choice, provided that, if the incorporated
-material is not limited to numerical parameters, data structure
-layouts and accessors, or small macros, inline functions and templates
-(ten or fewer lines in length), you do both of the following:
-
-   a) Give prominent notice with each copy of the object code that the
-   Library is used in it and that the Library and its use are
-   covered by this License.
-
-   b) Accompany the object code with a copy of the GNU GPL and this license
-   document.
-
-  4. Combined Works.
-
-  You may convey a Combined Work under terms of your choice that,
-taken together, effectively do not restrict modification of the
-portions of the Library contained in the Combined Work and reverse
-engineering for debugging such modifications, if you also do each of
-the following:
-
-   a) Give prominent notice with each copy of the Combined Work that
-   the Library is used in it and that the Library and its use are
-   covered by this License.
-
-   b) Accompany the Combined Work with a copy of the GNU GPL and this license
-   document.
-
-   c) For a Combined Work that displays copyright notices during
-   execution, include the copyright notice for the Library among
-   these notices, as well as a reference directing the user to the
-   copies of the GNU GPL and this license document.
-
-   d) Do one of the following:
-
-       0) Convey the Minimal Corresponding Source under the terms of this
-       License, and the Corresponding Application Code in a form
-       suitable for, and under terms that permit, the user to
-       recombine or relink the Application with a modified version of
-       the Linked Version to produce a modified Combined Work, in the
-       manner specified by section 6 of the GNU GPL for conveying
-       Corresponding Source.
-
-       1) Use a suitable shared library mechanism for linking with the
-       Library.  A suitable mechanism is one that (a) uses at run time
-       a copy of the Library already present on the user's computer
-       system, and (b) will operate properly with a modified version
-       of the Library that is interface-compatible with the Linked
-       Version. 
-
-   e) Provide Installation Information, but only if you would otherwise
-   be required to provide such information under section 6 of the
-   GNU GPL, and only to the extent that such information is
-   necessary to install and execute a modified version of the
-   Combined Work produced by recombining or relinking the
-   Application with a modified version of the Linked Version. (If
-   you use option 4d0, the Installation Information must accompany
-   the Minimal Corresponding Source and Corresponding Application
-   Code. If you use option 4d1, you must provide the Installation
-   Information in the manner specified by section 6 of the GNU GPL
-   for conveying Corresponding Source.)
-
-  5. Combined Libraries.
-
-  You may place library facilities that are a work based on the
-Library side by side in a single library together with other library
-facilities that are not Applications and are not covered by this
-License, and convey such a combined library under terms of your
-choice, if you do both of the following:
-
-   a) Accompany the combined library with a copy of the same work based
-   on the Library, uncombined with any other library facilities,
-   conveyed under the terms of this License.
-
-   b) Give prominent notice with the combined library that part of it
-   is a work based on the Library, and explaining where to find the
-   accompanying uncombined form of the same work.
-
-  6. Revised Versions of the GNU Lesser General Public License.
-
-  The Free Software Foundation may publish revised and/or new versions
-of the GNU Lesser General Public License from time to time. Such new
-versions will be similar in spirit to the present version, but may
-differ in detail to address new problems or concerns.
-
-  Each version is given a distinguishing version number. If the
-Library as you received it specifies that a certain numbered version
-of the GNU Lesser General Public License "or any later version"
-applies to it, you have the option of following the terms and
-conditions either of that published version or of any later version
-published by the Free Software Foundation. If the Library as you
-received it does not specify a version number of the GNU Lesser
-General Public License, you may choose any version of the GNU Lesser
-General Public License ever published by the Free Software Foundation.
-
-  If the Library as you received it specifies that a proxy can decide
-whether future versions of the GNU Lesser General Public License shall
-apply, that proxy's public statement of acceptance of any version is
-permanent authorization for you to choose that version for the
-Library.
-```
+- Source: https://github.com/MuntashirAkon/spake2-java (tag 2.2.1); the native code is the `spake2-c` submodule,
+  https://github.com/MuntashirAkon/spake2-c.
+- `libspake2.so` is built from `spake2-c/spake2.c` (ISC, from BoringSSL), `ed25519.h` (ISC) with
+  `curve25519_32.h` (MIT, fiat-crypto), `sha512.c` (LGPL-2.1-or-later, from the GNU C Library) and `spake2_jni.cpp`
+  (the repository's LGPL-3.0). Each text is in `assets/licenses/`.
+- LGPL-3.0 §4(b) asks for the GNU GPL v3 text as well as the LGPL's: both are bundled (`GPL-3.0.txt`, `LGPL-3.0.txt`;
+  the LGPL-3.0 text is spake2-java's own `LICENSE`).
 
 ## Follow-ups
 
@@ -233,3 +79,11 @@ Library.
   ship prebuilt `.so` files for four ABIs. F-Droid would need them built from source too (or a Kotlin SPAKE2
   behind `AdbClient`, the plan's fallback).
 - The helper itself is no binary of ours: Gradle builds it from the vendored source in `android/helper`.
+- **Reproducible helper builds.** `BuildConfig.HELPER_SHA256` depends on the toolchain (AGP, D8, compileSdk). The app
+  only compares against its own build's value, so this is about reproducible builds (F-Droid): pin AGP/D8/compileSdk
+  for `:helper` and check that two clean builds give the same jar.
+- **In-app licences screen** (0.9): show `assets/licenses/` in the app. Until then the texts ship as assets and with
+  each GitHub release.
+- **GitHub releases:** attach `android/app/src/main/assets/licenses/*` to each release (release checklist).
+- **`core/transfer` test vectors** are passed as a system-property path, not a declared input, so editing the
+  file-name vectors doesn't re-run its tests (the review's note on Task 2; `:helper` is fixed).

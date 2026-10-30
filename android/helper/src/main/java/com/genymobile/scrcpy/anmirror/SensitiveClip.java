@@ -1,6 +1,7 @@
 package com.genymobile.scrcpy.anmirror;
 
 import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.util.Ln;
 
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
@@ -40,7 +41,8 @@ public final class SensitiveClip {
             PersistableBundle extras = description.getExtras();
             return extras != null && extras.getBoolean(EXTRA_IS_SENSITIVE, false);
         } catch (RuntimeException e) {
-            // If the description can't be read, don't risk sending a secret.
+            // If the description can't be read, don't risk sending a secret. Debug only, no content.
+            Ln.d("Clip description unreadable; not synced");
             return true;
         }
     }

@@ -7,12 +7,15 @@
     "Scroll: hscroll and vscroll are the encoder's input; on the wire they are i16 = clamp(v / 16, -1, 1) x 32768, truncated toward zero (not rounded), clamped to -32768..32767. The server reads i16 / 32768 x 16 (32767 = 16.0), so 0.1 arrives as 204 / 2048 = 0.099609375.",
     "Touch pressure is read as u16 / 65536 (65535 = 1.0); the server's ControlMessage holds both as floats.",
     "Text and clipboard strings: u32 byte length, then UTF-8.",
-    "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; a session packet sets bit 63 and carries the width and height."
+    "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; a session packet sets bit 63 and carries the width and height.",
+    "Session packets: bit 0 of the first u32 (bit 32 of the u64) is the server's client-resize flag, set only with new_display, which we never pass. A parser tells session packets apart by bit 63 alone.",
+    "Device CLIPBOARD text from the helper is at most device_clipboard_text_max_bytes; the server truncates longer clips at a UTF-8 boundary (DeviceMessageWriter)."
   ],
   "limits": {
     "verified": true,
     "inject_text_max_bytes": 300,
     "set_clipboard_text_max_bytes": 262130,
+    "device_clipboard_text_max_bytes": 262139,
     "device_name_bytes": 64
   },
   "control": [

@@ -11,13 +11,18 @@ plugins {
 // against BuildConfig.HELPER_SHA256.
 val helperApk = rootProject.layout.projectDirectory.file("helper/build/outputs/apk/release/helper-release-unsigned.apk")
 val helperAssets = layout.buildDirectory.dir("generated/helperAssets")
-val copyHelper = tasks.register<Copy>("copyHelper") {
+val helperJarFile = helperAssets.map { it.file("anmirror-helper.jar") }
+val copyHelper = tasks.register("copyHelper") {
+    description = "Copies :helper's unsigned release APK into the app's assets as anmirror-helper.jar."
     dependsOn(":helper:assembleRelease")
-    from(helperApk)
-    into(helperAssets)
-    rename { "anmirror-helper.jar" }
+    // A declared input file that is missing fails this task with a clear message (a Copy would be NO-SOURCE).
+    inputs.file(helperApk).withPropertyName("helperApk").withPathSensitivity(PathSensitivity.NONE)
+    outputs.file(helperJarFile).withPropertyName("helperJar")
+    val from = helperApk.asFile
+    val to = helperJarFile.get().asFile
+    doLast { from.copyTo(to, overwrite = true) }
 }
-val helperJar = copyHelper.map { it.destinationDir.resolve("anmirror-helper.jar") }
+val helperJar = copyHelper.map { helperJarFile.get().asFile }
 
 android {
     namespace = "io.github.anmirror.phone"
@@ -34,7 +39,8 @@ android {
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "HELPER_VERSION", "\"5.0.1-am1\"")
+        // 5.0.1-am1: the helper's own versionName, from the same catalog entry.
+        buildConfigField("String", "HELPER_VERSION", "\"${libs.versions.helperVersion.get()}\"")
     }
 
     // One flavor today (GitHub and F-Droid). A later `play` flavor can drop Play-restricted
@@ -90,6 +96,40 @@ androidComponents {
 
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
     dependsOn(copyHelper)
+}
+
+// LicenseAssetsTest: the bundled licence texts and NOTICE (assets/licenses) against the repository NOTICE
+// and the release runtime classpath, so a new dependency can't ship without its NOTICE line.
+tasks.withType<Test>().configureEach {
+    val notice = rootProject.file("../NOTICE")
+    val licenses = file("src/main/assets/licenses")
+    inputs.file(notice).withPropertyName("notice").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir(licenses).withPropertyName("licenses").withPathSensitivity(PathSensitivity.RELATIVE)
+    val modules = configurations.named("ossReleaseRuntimeClasspath")
+        .flatMap { it.incoming.resolutionResult.rootComponent }
+        .map { root ->
+            val seen = mutableSetOf<org.gradle.api.artifacts.component.ComponentIdentifier>()
+            val out = sortedSetOf<String>()
+            val queue = ArrayDeque(listOf(root))
+            while (queue.isNotEmpty()) {
+                for (dep in queue.removeFirst().dependencies) {
+                    val selected = (dep as? org.gradle.api.artifacts.result.ResolvedDependencyResult)?.selected ?: continue
+                    if (!seen.add(selected.id)) continue
+                    (selected.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier)
+                        ?.let { out += "${it.group}:${it.module}" }
+                    queue += selected
+                }
+            }
+            out.joinToString(",")
+        }
+    inputs.property("runtimeModules", modules)
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+        listOf(
+            "-Danmirror.notice=${notice.absolutePath}",
+            "-Danmirror.licenses=${licenses.absolutePath}",
+            "-Danmirror.runtimeModules=${modules.get()}",
+        )
+    })
 }
 
 dependencies {

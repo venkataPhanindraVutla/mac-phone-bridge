@@ -191,6 +191,7 @@ public class ScrcpyFixturesTest {
         JsonObject limits = load().getAsJsonObject("limits");
         Assert.assertEquals(ControlMessageReader.INJECT_TEXT_MAX_LENGTH, limits.get("inject_text_max_bytes").getAsInt());
         Assert.assertEquals(ControlMessageReader.CLIPBOARD_TEXT_MAX_LENGTH, limits.get("set_clipboard_text_max_bytes").getAsInt());
+        Assert.assertEquals(DeviceMessageWriter.CLIPBOARD_TEXT_MAX_LENGTH, limits.get("device_clipboard_text_max_bytes").getAsInt());
         Assert.assertEquals(privateStatic(DesktopConnection.class, "DEVICE_NAME_FIELD_LENGTH"),
                 (long) limits.get("device_name_bytes").getAsInt());
     }

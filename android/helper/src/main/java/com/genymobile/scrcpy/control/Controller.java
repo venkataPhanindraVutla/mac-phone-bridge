@@ -1,3 +1,4 @@
+// Modified by Android Mirroring: patch P2 (sensitive clips), see android/helper/UPSTREAM.md
 package com.genymobile.scrcpy.control;
 
 import com.genymobile.scrcpy.AndroidVersions;

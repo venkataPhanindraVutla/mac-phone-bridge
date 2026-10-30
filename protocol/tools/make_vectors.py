@@ -579,6 +579,7 @@ SC_RESET_VIDEO = 17
 SC_DEVICE_CLIPBOARD, SC_DEVICE_ACK_CLIPBOARD, SC_DEVICE_UHID_OUTPUT = 0, 1, 2
 SC_INJECT_TEXT_MAX = 300
 SC_CLIPBOARD_TEXT_MAX = 262_130          # 1 << 18 (the control message limit) minus 14
+SC_DEVICE_CLIPBOARD_TEXT_MAX = 262_139   # helper -> Mac CLIPBOARD: 1 << 18 minus 5 (DeviceMessageWriter)
 SC_DEVICE_NAME_BYTES = 64
 SC_POINTER_GENERIC_FINGER = -2
 SC_CODEC_IDS = {"h264": 0x68323634, "h265": 0x68323635, "opus": 0x6F707573, "aac": 0x00616163}
@@ -632,7 +633,7 @@ def sc_control(f: dict) -> bytes:
 def sc_device(f: dict) -> bytes:
     t = f["type"]
     if t == SC_DEVICE_CLIPBOARD:
-        return bytes([t]) + sc_string(f["text"], SC_CLIPBOARD_TEXT_MAX)
+        return bytes([t]) + sc_string(f["text"], SC_DEVICE_CLIPBOARD_TEXT_MAX)
     if t == SC_DEVICE_ACK_CLIPBOARD:
         return bytes([t]) + struct.pack(">Q", f["sequence"])
     if t == SC_DEVICE_UHID_OUTPUT:
@@ -750,9 +751,14 @@ def build_scrcpy() -> dict:
             "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is "
             "u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; "
             "a session packet sets bit 63 and carries the width and height.",
+            "Session packets: bit 0 of the first u32 (bit 32 of the u64) is the server's client-resize flag, set only "
+            "with new_display, which we never pass. A parser tells session packets apart by bit 63 alone.",
+            "Device CLIPBOARD text from the helper is at most device_clipboard_text_max_bytes; the server truncates "
+            "longer clips at a UTF-8 boundary (DeviceMessageWriter).",
         ],
         "limits": {"verified": True, "inject_text_max_bytes": SC_INJECT_TEXT_MAX,
                    "set_clipboard_text_max_bytes": SC_CLIPBOARD_TEXT_MAX,
+                   "device_clipboard_text_max_bytes": SC_DEVICE_CLIPBOARD_TEXT_MAX,
                    "device_name_bytes": SC_DEVICE_NAME_BYTES},
         "control": [entry(n, src, f, sc_control(f)) for n, src, f in control],
         "device": [entry(n, src, f, sc_device(f)) for n, src, f in device],

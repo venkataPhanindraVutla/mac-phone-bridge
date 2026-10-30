@@ -29,7 +29,9 @@ field and method signature are the same, apart from the patch classes below and 
 
 ## Patches
 
-Each patched upstream line ends with a `// anmirror P1` or `// anmirror P2` comment.
+Each patched upstream file starts with a `// Modified by Android Mirroring: patch Pn …` line (Apache-2.0 §4(b)),
+and each patched line ends with a `// anmirror P1` or `// anmirror P2` comment. The line numbers below include
+that header line.
 
 ### P1: peer check on the local socket
 
@@ -39,8 +41,9 @@ app on the phone could race the client's connect and receive the screen or injec
 
 - New: `src/main/java/com/genymobile/scrcpy/anmirror/PeerCheck.java` (`isAllowed(int uid)` and `accept(LocalServerSocket)`).
 - `src/main/java/com/genymobile/scrcpy/device/DesktopConnection.java`:
-  - line 3: `import com.genymobile.scrcpy.anmirror.PeerCheck;`
-  - lines 68, 76 and 84: `localServerSocket.accept()` becomes `PeerCheck.accept(localServerSocket)` for the video,
+  - line 1: the modification notice.
+  - line 4: `import com.genymobile.scrcpy.anmirror.PeerCheck;`
+  - lines 69, 77 and 85: `localServerSocket.accept()` becomes `PeerCheck.accept(localServerSocket)` for the video,
     audio and control sockets.
 
 ### P2: sensitive clips are not autosynced
@@ -48,11 +51,12 @@ app on the phone could race the client's connect and receive the screen or injec
 With `clipboard_autosync=true`, a clip whose description has `android.content.extra.IS_SENSITIVE = true`
 (`ClipDescription.EXTRA_IS_SENSITIVE`, Android 13; it is read on Android 7+, where the extras exist) is not sent to
 the computer. If the description can't be read, the clip is not sent. An explicit GET_CLIPBOARD from the computer
-is unchanged.
+is unchanged. The unreadable case logs one debug line, with no content.
 
 - New: `src/main/java/com/genymobile/scrcpy/anmirror/SensitiveClip.java` (`isPrimaryClipSensitive()`).
-- `src/main/java/com/genymobile/scrcpy/control/Controller.java`, line 154 (in the clipboard listener, before
-  `Device.getClipboardText()`): `if (com.genymobile.scrcpy.anmirror.SensitiveClip.isPrimaryClipSensitive()) return;`
+- `src/main/java/com/genymobile/scrcpy/control/Controller.java`: line 1, the modification notice; line 155 (in the
+  clipboard listener, before `Device.getClipboardText()`):
+  `if (com.genymobile.scrcpy.anmirror.SensitiveClip.isPrimaryClipSensitive()) return;`
 
 ## Our tests
 
@@ -63,4 +67,5 @@ is unchanged.
 ## Updating
 
 Copy the new tag's `server/src/` over `src/` (keeping `anmirror/`), re-apply P1 and P2 at the marked lines,
-update this file, `versionName`, and `HELPER_VERSION` in `app/build.gradle.kts`.
+update this file and `helperVersion` in `gradle/libs.versions.toml` (it feeds both `versionName` here and the app's
+`BuildConfig.HELPER_VERSION`).

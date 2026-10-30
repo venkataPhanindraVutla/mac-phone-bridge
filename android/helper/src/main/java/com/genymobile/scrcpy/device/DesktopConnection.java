@@ -1,6 +1,7 @@
+// Modified by Android Mirroring: patch P1 (peer check), see android/helper/UPSTREAM.md
 package com.genymobile.scrcpy.device;
 
-import com.genymobile.scrcpy.anmirror.PeerCheck;
+import com.genymobile.scrcpy.anmirror.PeerCheck; // anmirror P1
 import com.genymobile.scrcpy.control.ControlChannel;
 import com.genymobile.scrcpy.util.IO;
 import com.genymobile.scrcpy.util.StringUtils;
