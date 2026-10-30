@@ -4,7 +4,7 @@ import Foundation
 public struct RateWindow: Sendable {
     public let limit: Int
     public let span: TimeInterval
-    /// Times of the frames still in the window, oldest first.
+    /// Times of the frames still in the window, oldest first, in monotonic seconds.
     private var times: [TimeInterval] = []
     private var head = 0
 
@@ -14,8 +14,8 @@ public struct RateWindow: Sendable {
     }
 
     /// Whether a frame at `at` fits; one that fits is counted.
-    public mutating func admit(at: Date) -> Bool {
-        let t = at.timeIntervalSinceReferenceDate
+    /// `at` is monotonic seconds (`ProcessInfo.systemUptime`).
+    public mutating func admit(at t: TimeInterval) -> Bool {
         expire(before: t)
         guard times.count - head < limit else { return false }
         times.append(t)
@@ -23,8 +23,7 @@ public struct RateWindow: Sendable {
     }
 
     /// Counts a frame that acts whatever the window holds (button-up, laser-off).
-    public mutating func record(at: Date) {
-        let t = at.timeIntervalSinceReferenceDate
+    public mutating func record(at t: TimeInterval) {
         expire(before: t)
         times.append(t)
     }

@@ -545,6 +545,8 @@ final class AppModel {
         guard on != allowPointerControl else { return }
         allowPointerControl = on
         UserDefaults.standard.set(on, forKey: Self.pointerControlKey)
+        // Off takes effect now, before anything is awaited: nothing stays held, the laser goes.
+        if !on { input.disable() }
         Task { [weak self] in
             guard let self else { return }
             await self.input.setEnabled(self.allowPointerControl)
@@ -654,6 +656,8 @@ final class AppModel {
     /// Transfers end here, not through the session's work queue (it never drains while the app
     /// terminates), so a receive under way leaves no part file behind.
     func shutdown() {
+        // A button the phone holds is let go, and the laser hidden, before the process ends.
+        input.shutdown()
         let hadPhone = server.activePhone != nil
         server.stop()
         transfers.shutdown()

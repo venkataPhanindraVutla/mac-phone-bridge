@@ -208,7 +208,7 @@ private final class Trusted: AccessibilityTrust {
 
 /// Not actor-bound: the model's `now` reads it.
 private final class Ticker {
-    var date = Date(timeIntervalSince1970: 1_000_000)
+    var uptime: TimeInterval = 1_000
 }
 
 @MainActor @Test func thousandMovesApplyInOrder() async {
@@ -220,8 +220,8 @@ private final class Ticker {
         poster: poster, laser: NoLaser(), trust: Trusted(), enabled: true, naturalScrolling: { true },
         send: { _, _ in },
         now: {
-            ticker.date += 0.005
-            return ticker.date
+            ticker.uptime += 0.005
+            return ticker.uptime
         })
     r.queue.register(input)
     r.queue.handle(.connected(phone("P1"), shared: ["input.v1"]))

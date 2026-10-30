@@ -1,6 +1,7 @@
 import AMProtocol
 import AppKit
 import CoreGraphics
+import Foundation
 
 /// Posts pointer, scroll and key events. Coordinates are CG global: top-left origin of the
 /// primary screen, y down.
@@ -24,6 +25,9 @@ public protocol EventPoster: AnyObject {
 @MainActor
 public final class CGEventPoster: EventPoster {
     private let source: CGEventSource?
+    private var phases = ScrollPhases()
+    /// Bumped on every scroll, so only the last one's timer ends the gesture.
+    private var scrollGeneration = 0
 
     public init() {
         source = CGEventSource(stateID: .hidSystemState)
@@ -51,7 +55,11 @@ public final class CGEventPoster: EventPoster {
         case .right?: (type, button) = (.rightMouseDragged, .right)
         default: (type, button) = (.mouseMoved, .left)
         }
+        let from = location()
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p, mouseButton: button)
+        // Apps that track relative motion (drag handles, games) read the deltas, not the position.
+        event?.setDoubleValueField(.mouseEventDeltaX, value: Double(p.x - from.x))
+        event?.setDoubleValueField(.mouseEventDeltaY, value: Double(p.y - from.y))
         if holding != nil { event?.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount)) }
         event?.post(tap: .cghidEventTap)
     }
@@ -68,10 +76,27 @@ public final class CGEventPoster: EventPoster {
         event?.post(tap: .cghidEventTap)
     }
 
+    /// A trackpad-like gesture: began, then changed, and a zero-delta ended once scrolls pause
+    /// for `ScrollPhases.gap`.
     public func scroll(pixelsX: Int32, pixelsY: Int32) {
+        let phase = phases.next(at: ProcessInfo.processInfo.systemUptime)
+        postScroll(pixelsX: pixelsX, pixelsY: pixelsY, phase: phase.cgValue)
+        scrollGeneration += 1
+        let generation = scrollGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(ScrollPhases.gap))
+            guard let self, generation == self.scrollGeneration,
+                  self.phases.endDue(at: ProcessInfo.processInfo.systemUptime) else { return }
+            self.phases.end()
+            self.postScroll(pixelsX: 0, pixelsY: 0, phase: ScrollPhases.endedValue)
+        }
+    }
+
+    private func postScroll(pixelsX: Int32, pixelsY: Int32, phase: Int64) {
         let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                             wheel1: pixelsY, wheel2: pixelsX, wheel3: 0)
         event?.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        event?.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
         event?.post(tap: .cghidEventTap)
     }
 

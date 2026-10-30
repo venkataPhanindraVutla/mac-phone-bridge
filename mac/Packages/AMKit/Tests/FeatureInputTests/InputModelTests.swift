@@ -76,12 +76,14 @@ private final class Rig {
     let poster = FakePoster()
     let laser = FakeLaser()
     let trust: FakeTrust
-    let clock = Box(Date(timeIntervalSince1970: 1_000_000))
+    /// Seconds of a monotonic clock, as `ProcessInfo.systemUptime` gives.
+    let clock = Box<TimeInterval>(1_000)
     let natural = Box(true)
     var availabilities: [AMFeatureAvailability] = []
     var model: InputModel!
 
-    init(enabled: Bool = true, trusted: Bool = true) {
+    init(enabled: Bool = true, trusted: Bool = true,
+         sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(3600)) }) {
         trust = FakeTrust(trusted)
         let clock = clock
         let natural = natural
@@ -92,8 +94,8 @@ private final class Rig {
                 if type == .inputAvailability, let a = message as? AMFeatureAvailability { self?.availabilities.append(a) }
             },
             now: { clock.value })
-        // The loops never fire by themselves: the tests call tick() and recheckTrust().
-        model.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+        // By default the loops never fire by themselves: the tests call tick() and recheckTrust().
+        model.sleep = sleep
     }
 
     func connect(shared: Set<String> = ["input.v1"]) async {
@@ -340,6 +342,8 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     await r.laserFrame(true)
     await r.move(10, 0)
     await r.laserFrame(false)
+    // Already off: not hidden again.
+    await r.laserFrame(false)
     await r.move(10, 0)
     #expect(r.laser.shown == [CGPoint(x: 100, y: 100), CGPoint(x: 110, y: 100)])
     #expect(r.laser.hides == 1)
@@ -468,8 +472,19 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     #expect(abs(last.x - 102.5) < 0.001)
     #expect(abs(last.y - 97) < 0.001)
 
-    // A pause, and the real mouse moved meanwhile: the next move starts from the cursor.
-    r.advance(0.2)
+}
+
+@MainActor @Test func physicalMouseMoveIsRespected() async {
+    let r = Rig()
+    await r.connect()
+    await r.move(10, 0)
+    await r.move(10, 0)
+    // The real cursor lagging one post behind still counts as ours.
+    r.poster.cursor = CGPoint(x: 110, y: 100)
+    await r.move(0.5, 0)
+    #expect(r.poster.moves.last == CGPoint(x: 120.5, y: 100))
+
+    // The user's own mouse moved, mid-stream and with no pause: it wins.
     r.poster.cursor = CGPoint(x: 500, y: 500)
     await r.move(0.5, 0)
     #expect(r.poster.moves.last == CGPoint(x: 500.5, y: 500))
@@ -512,6 +527,93 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     r.advance(0.1)
     await r.button(.left, down: true)
     #expect(r.poster.calls.last == .button(.left, down: true, CGPoint(x: 160, y: 100), count: 1))
+}
+
+@MainActor @Test func switchingOffReleasesAtOnce() async {
+    let r = Rig()
+    await r.connect()
+    await r.button(.left, down: true)
+    await r.laserFrame(true)
+    // Synchronous: released before anything is awaited.
+    r.model.disable()
+    #expect(r.poster.ups == 1)
+    #expect(!r.laser.visible)
+    #expect(!r.model.enabled)
+    #expect(r.availabilities.last?.enabled == true)
+    // The setting's own call then only reports it, once.
+    await r.model.setEnabled(false)
+    #expect(reason(r.availabilities.last) == .offByUser)
+    let count = r.availabilities.count
+    await r.model.setEnabled(false)
+    #expect(r.availabilities.count == count)
+    #expect(r.poster.ups == 1)
+}
+
+@MainActor @Test func shutdownReleasesHeldButtonAndHidesLaser() async {
+    let r = Rig()
+    await r.connect()
+    await r.button(.right, down: true)
+    await r.laserFrame(true)
+    r.model.shutdown()
+    #expect(r.poster.calls.last == .button(.right, down: false, CGPoint(x: 100, y: 100), count: 1))
+    #expect(!r.laser.visible)
+}
+
+@MainActor @Test func clickWhileHeldReleasesFirst() async {
+    let r = Rig()
+    await r.connect()
+    await r.button(.left, down: true)
+    await r.move(5, 0)
+    await r.click(.right, count: 1)
+    let p = CGPoint(x: 105, y: 100)
+    #expect(Array(r.poster.calls.suffix(3)) == [
+        .button(.left, down: false, p, count: 1),
+        .button(.right, down: true, p, count: 1),
+        .button(.right, down: false, p, count: 1),
+    ])
+    // Nothing is held now: moves are plain, and the phone's late up posts nothing.
+    await r.button(.left, down: false)
+    await r.move(1, 0)
+    #expect(r.poster.ups == 2)
+    #expect(r.poster.calls.last == .move(CGPoint(x: 106, y: 100), nil, 0))
+}
+
+@MainActor @Test func slowScrollAccumulates() async {
+    let r = Rig()
+    await r.connect()
+    for _ in 0..<10 { await r.scroll(0.3, -0.3) }
+    let xs = r.poster.calls.compactMap { if case let .scroll(x, _) = $0 { x } else { nil } }
+    let ys = r.poster.calls.compactMap { if case let .scroll(_, y) = $0 { y } else { nil } }
+    #expect(xs.reduce(0, +) == 3)
+    #expect(ys.reduce(0, +) == -3)
+    #expect(xs.count < 10)
+}
+
+/// Waits up to about 2 s for `condition`.
+@MainActor private func eventually(_ condition: () -> Bool) async -> Bool {
+    for _ in 0..<400 {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return condition()
+}
+
+@MainActor @Test func releaseLoopFiresOnItsOwn() async {
+    let r = Rig(sleep: { _ in try await Task.sleep(for: .milliseconds(2)) })
+    await r.connect()
+    await r.button(.left, down: true)
+    r.advance(5)
+    #expect(await eventually { r.poster.ups == 1 })
+    #expect(await eventually { !r.model.isTicking })
+}
+
+@MainActor @Test func trustLoopFiresOnItsOwn() async {
+    let r = Rig(sleep: { _ in try await Task.sleep(for: .milliseconds(2)) })
+    await r.connect()
+    #expect(r.availabilities.last?.enabled == true)
+    r.trust.trusted = false
+    #expect(await eventually { reason(r.availabilities.last) == .needsPermission })
+    #expect(!r.model.trusted)
 }
 
 @MainActor @Test func accessibilityRevokedStopsInjectionAndReports() async {
@@ -570,7 +672,8 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     for _ in 0..<240 { await fresh.laserFrame(false) }
     await fresh.move(1, 0)
     #expect(fresh.poster.moves.isEmpty)
-    #expect(fresh.laser.hides == 240)
+    // Already off, so the dot is never touched.
+    #expect(fresh.laser.hides == 0)
 }
 
 // MARK: system settings
@@ -583,8 +686,7 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
         defaults.set(false, forKey: InputModel.naturalScrollingKey)
         let off = InputModel.naturalScrolling(defaults)
         defaults.set(true, forKey: InputModel.naturalScrollingKey)
-        return [off, InputModel.naturalScrolling(defaults), InputModel.naturalScrolling()]
+        return [off, InputModel.naturalScrolling(defaults)]
     }.value
-    #expect(values.prefix(2) == [false, true])
-    #expect(values.count == 3)
+    #expect(values == [false, true])
 }

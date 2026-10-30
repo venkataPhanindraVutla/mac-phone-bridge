@@ -15,7 +15,7 @@ import SwiftProtobuf
 ///
 /// Safety net, whatever the phone does:
 /// - a held button is released, and the laser hidden, 5 s after the last frame (`tick()`), and at
-///   once on disconnect, on switch-off and when Accessibility is revoked;
+///   once on disconnect, on switch-off, on quit and when Accessibility is revoked;
 /// - an up for a button this Mac isn't holding posts nothing.
 ///
 /// Accessibility is asked for (with the system prompt) only in `setEnabled(true)`; it is checked
@@ -29,8 +29,9 @@ public final class InputModel: SessionFeature {
     nonisolated public static let naturalScrollingKey = "com.apple.swipescrolldirection"
     /// How close (in points) a press must be to the last release to continue its click sequence.
     nonisolated static let multiClickDistance: CGFloat = 5
-    /// While moves are this recent, the next one starts from the last point posted.
-    nonisolated static let streamGrace: TimeInterval = 0.1
+    /// How far (in points) the real cursor may be from one of the last two points posted and
+    /// still count as ours: it may keep only whole points, or lag one post behind.
+    nonisolated static let ownCursorSlack: CGFloat = 1
 
     public let messagePrefixes = ["input."]
 
@@ -52,7 +53,8 @@ public final class InputModel: SessionFeature {
     @ObservationIgnored private let trust: any AccessibilityTrust
     @ObservationIgnored private let naturalScrolling: () -> Bool
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
-    @ObservationIgnored private let now: () -> Date
+    /// Monotonic seconds, so a wall-clock step can't hold a button or freeze the rate window.
+    @ObservationIgnored private let now: () -> TimeInterval
     @ObservationIgnored private let releaseAfter: TimeInterval
     @ObservationIgnored private let doubleClickInterval: TimeInterval
     /// The phone in session, while it shares `input.v1`.
@@ -60,12 +62,14 @@ public final class InputModel: SessionFeature {
     /// The button this Mac holds down, and the click state of its press.
     @ObservationIgnored private var held: (button: AMMouseButton, count: Int)?
     @ObservationIgnored private var laserOn = false
-    @ObservationIgnored private var lastFrameAt: Date?
+    @ObservationIgnored private var lastFrameAt: TimeInterval?
     @ObservationIgnored private var rate = RateWindow()
-    /// The last point posted, fractions kept, and when.
-    @ObservationIgnored private var pointer: (point: CGPoint, at: Date)?
+    /// The last point posted, fractions kept, and the one before it.
+    @ObservationIgnored private var posted: (last: CGPoint, previous: CGPoint?)?
+    /// What scrolls have left over after rounding to whole pixels, so slow scrolls add up.
+    @ObservationIgnored private var scrollResidual: (x: Float, y: Float) = (0, 0)
     /// The last release (up or click), to count a following press as its double or triple.
-    @ObservationIgnored private var lastRelease: (button: AMMouseButton, at: Date, point: CGPoint, count: Int)?
+    @ObservationIgnored private var lastRelease: (button: AMMouseButton, at: TimeInterval, point: CGPoint, count: Int)?
     @ObservationIgnored private var dropped = 0
     @ObservationIgnored private var lastSentAvailability: AMFeatureAvailability?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
@@ -78,7 +82,8 @@ public final class InputModel: SessionFeature {
     public init(poster: any EventPoster, laser: any LaserOverlay, trust: any AccessibilityTrust, enabled: Bool,
                 naturalScrolling: @escaping () -> Bool,
                 send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
-                now: @escaping () -> Date = Date.init, releaseAfter: TimeInterval = 5,
+                now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                releaseAfter: TimeInterval = 5,
                 doubleClickInterval: TimeInterval = 0.5) {
         self.poster = poster
         self.laser = laser
@@ -145,7 +150,7 @@ public final class InputModel: SessionFeature {
             if m.on {
                 laserOn = true
                 laser.show(at: current())
-            } else {
+            } else if laserOn {
                 laserOn = false
                 laser.hide()
             }
@@ -164,17 +169,33 @@ public final class InputModel: SessionFeature {
 
     /// The setting. Turning it on is the only place that asks for Accessibility with the system
     /// prompt; turning it off lets go of anything held.
+    ///
+    /// Sends the availability even when the setting already matches, so a `disable()` made
+    /// first is reported.
     public func setEnabled(_ on: Bool) async {
-        guard on != enabled else { return }
-        enabled = on
-        Self.log.notice("pointer control \(on ? "on" : "off", privacy: .public)")
-        if on {
+        if !on {
+            disable()
+        } else if !enabled {
+            enabled = true
+            Self.log.notice("pointer control on")
             trusted = trust.isTrusted(prompt: true)
-        } else {
-            releaseAll()
+            updateLoops()
         }
-        updateLoops()
         await sendAvailability()
+    }
+
+    /// Switches off at once, without waiting: nothing held stays held, the laser goes, and no
+    /// frame acts from here on. `setEnabled(false)` reports it to the phone.
+    public func disable() {
+        guard enabled else { return }
+        enabled = false
+        Self.log.notice("pointer control off")
+        releaseAll()
+    }
+
+    /// App quit: lets go of anything held and hides the laser.
+    public func shutdown() {
+        releaseAll()
     }
 
     /// Checks Accessibility again without a prompt (app activation, Settings, the 2 s loop).
@@ -191,7 +212,7 @@ public final class InputModel: SessionFeature {
     /// Releases a held button and hides the laser once no frame has come for `releaseAfter`.
     /// A 1 s timer calls it while either is on.
     public func tick() {
-        guard held != nil || laserOn, let last = lastFrameAt, now().timeIntervalSince(last) >= releaseAfter else { return }
+        guard held != nil || laserOn, let last = lastFrameAt, now() - last >= releaseAfter else { return }
         if held != nil { Self.log.notice("released held button after silence") }
         releaseAll()
     }
@@ -213,13 +234,17 @@ public final class InputModel: SessionFeature {
         return true
     }
 
-    /// Where the pointer is. While moves stream in, or while the real cursor hasn't left the
-    /// last point posted, that point, so fractions of a point add up across moves.
+    /// Where the pointer is: the last point posted, fractions kept, while the real cursor is
+    /// still at it or at the one before (so fractions of a point add up across moves); else the
+    /// real cursor, so the user's own mouse wins.
     private func current() -> CGPoint {
         let real = poster.location()
-        guard let last = pointer else { return real }
-        if now().timeIntervalSince(last.at) < Self.streamGrace { return last.point }
-        if abs(real.x - last.point.x) < 1, abs(real.y - last.point.y) < 1 { return last.point }
+        guard let posted else { return real }
+        func near(_ p: CGPoint) -> Bool {
+            abs(real.x - p.x) <= Self.ownCursorSlack && abs(real.y - p.y) <= Self.ownCursorSlack
+        }
+        if near(posted.last) { return posted.last }
+        if let previous = posted.previous, near(previous) { return posted.last }
         return real
     }
 
@@ -228,7 +253,7 @@ public final class InputModel: SessionFeature {
         let from = current()
         let to = PointerMath.clamp(CGPoint(x: from.x + CGFloat(dx), y: from.y + CGFloat(dy)), to: poster.screens())
         poster.move(to: to, holding: held?.button, clickCount: held?.count ?? 0)
-        pointer = (to, now())
+        posted = (to, posted?.last)
         if laserOn { laser.show(at: to) }
     }
 
@@ -253,6 +278,11 @@ public final class InputModel: SessionFeature {
     private func click(_ b: AMMouseButton, count: Int) {
         guard b == .left || b == .right else { return }
         let p = current()
+        // A click while a button is held: let go of the held one first.
+        if held != nil {
+            release(at: p, byPhone: false)
+            updateLoops()
+        }
         let n = min(max(count, 1), 3)
         poster.button(b, down: true, at: p, clickCount: n)
         poster.button(b, down: false, at: p, clickCount: n)
@@ -262,8 +292,12 @@ public final class InputModel: SessionFeature {
     private func scroll(dx: Float, dy: Float) {
         guard dx.isFinite, dy.isFinite else { return }
         let sign: Float = naturalScrolling() ? 1 : -1
-        let x = Self.pixels(dx * sign)
-        let y = Self.pixels(dy * sign)
+        let wantX = scrollResidual.x + dx * sign
+        let wantY = scrollResidual.y + dy * sign
+        let x = Self.pixels(wantX)
+        let y = Self.pixels(wantY)
+        // Whatever rounding leaves goes with the next scroll; a huge one is not carried.
+        scrollResidual = (abs(wantX) < 10_000 ? wantX - Float(x) : 0, abs(wantY) < 10_000 ? wantY - Float(y) : 0)
         guard x != 0 || y != 0 else { return }
         poster.scroll(pixelsX: x, pixelsY: y)
     }
@@ -272,7 +306,7 @@ public final class InputModel: SessionFeature {
     /// soon enough and close enough (a double-tap-and-hold drags with 2); else 1.
     private func pressCount(_ b: AMMouseButton, at p: CGPoint) -> Int {
         guard let last = lastRelease, last.button == b,
-              now().timeIntervalSince(last.at) <= doubleClickInterval,
+              now() - last.at <= doubleClickInterval,
               abs(last.point.x - p.x) <= Self.multiClickDistance, abs(last.point.y - p.y) <= Self.multiClickDistance
         else { return 1 }
         return min(last.count + 1, 3)
@@ -308,7 +342,8 @@ public final class InputModel: SessionFeature {
         phoneID = nil
         lastFrameAt = nil
         rate = RateWindow()
-        pointer = nil
+        posted = nil
+        scrollResidual = (0, 0)
         lastRelease = nil
         dropped = 0
         lastSentAvailability = nil
