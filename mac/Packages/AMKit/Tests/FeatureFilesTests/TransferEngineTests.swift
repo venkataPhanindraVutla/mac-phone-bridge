@@ -57,7 +57,7 @@ final class Rig {
     var gate: Gate?
     private(set) var engine: TransferEngine!
 
-    init(timing: TransferTiming = .fast) {
+    init(timing: TransferTiming = .fast, parts: UserDefaults? = nil) {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-files-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         destination = .folder(dir)
@@ -78,7 +78,8 @@ final class Rig {
             newID: {
                 n += 1
                 return "m\(n)"
-            })
+            },
+            partsStore: parts)
         engine.onFinished = { [weak self] item, offer, url in self?.finished.append((item, offer, url)) }
     }
 
@@ -1049,4 +1050,78 @@ private func item(_ id: String, _ direction: TransferItem.Direction, _ state: Tr
     let split = SendableFiles.split(urls)
     #expect(split.files.map(\.lastPathComponent) == ["a.txt"])
     #expect(split.skipped == 3)
+}
+
+// MARK: final wave: quit and crash partials (item 1)
+
+@MainActor @Test func shutdownRemovesPartials() async throws {
+    let store = TemporaryDefaults(); defer { store.remove() }
+    let r = Rig(parts: store.defaults); defer { r.cleanUp() }
+    await r.connect()
+    let phone = try await r.startReceive(r.offer("t1", size: 10_000))
+    try await phone.send(randomBytes(3000))
+    try await until("partial") { r.item("t1")?.done == 3000 }
+    #expect(r.files().count == 1, "the hidden part is there")
+    #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey)?.count == 1)
+    let revokes = r.bulk.revokeAllCount
+    // Quitting: no session event will drain; the part goes here and now.
+    r.engine.shutdown()
+    #expect(r.files().isEmpty)
+    #expect(r.item("t1")?.state == .failed(.interrupted))
+    #expect(r.bulk.revokeAllCount == revokes + 1)
+    #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey) == nil)
+}
+
+@MainActor @Test func leftoverPartsFromACrashAreRemovedAtLaunch() async throws {
+    let store = TemporaryDefaults(); defer { store.remove() }
+    let r = Rig(parts: store.defaults); defer { r.cleanUp() }
+    await r.connect()
+    let phone = try await r.startReceive(r.offer("t1", size: 10_000))
+    try await phone.send(randomBytes(1000))
+    try await until("partial") { r.item("t1")?.done == 1000 }
+    let parts = try #require(store.defaults.stringArray(forKey: TransferEngine.openPartsKey))
+    #expect(parts.count == 1)
+    #expect(parts.first.map { ($0 as NSString).lastPathComponent } == r.files().first)
+    // The process dies here (nothing ends the transfer); the next launch makes a new engine.
+    _ = TransferEngine(bulk: FakeBulk(), send: { _, _ in }, destination: { _ in .refuse(.io) }, partsStore: store.defaults)
+    #expect(r.files().isEmpty, "the crash's part is gone")
+    #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey) == nil)
+
+    // A finished receive leaves nothing listed.
+    let other = Rig(parts: store.defaults); defer { other.cleanUp() }
+    await other.connect()
+    let bytes = randomBytes(500)
+    let pipe = try await other.startReceive(other.offer("t2", name: "a.bin", size: 500))
+    try await pipe.send(bytes)
+    await other.complete("t2", sha(bytes))
+    try await until("done") { other.item("t2")?.state == .done(other.dir.appendingPathComponent("a.bin")) }
+    #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey) == nil)
+}
+
+@MainActor @Test func launchSweepIgnoresPathsThatAreNotParts() throws {
+    let store = TemporaryDefaults(); defer { store.remove() }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-sweep-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let part = dir.appendingPathComponent(".\(UUID().uuidString).part")
+    let lower = dir.appendingPathComponent(".\(UUID().uuidString.lowercased()).part")
+    let notes = dir.appendingPathComponent("notes.txt")
+    let short = dir.appendingPathComponent(".abc.part")
+    let visible = dir.appendingPathComponent("\(UUID().uuidString).part")
+    let folder = dir.appendingPathComponent(".\(UUID().uuidString).part", isDirectory: true)
+    for url in [part, lower, notes, short, visible] { try Data("x".utf8).write(to: url) }
+    try FileManager.default.createDirectory(at: folder.appendingPathComponent("inside"), withIntermediateDirectories: true)
+    let relative = ".\(UUID().uuidString).part"
+    store.defaults.set([part.path, lower.path, notes.path, short.path, visible.path, folder.path, relative],
+                       forKey: TransferEngine.openPartsKey)
+    TransferEngine.removeLeftoverParts(store.defaults)
+    let fm = FileManager.default
+    #expect(!fm.fileExists(atPath: part.path))
+    #expect(!fm.fileExists(atPath: lower.path))
+    // Not a part name, or not a file: left alone.
+    #expect(fm.fileExists(atPath: notes.path))
+    #expect(fm.fileExists(atPath: short.path))
+    #expect(fm.fileExists(atPath: visible.path))
+    #expect(fm.fileExists(atPath: folder.appendingPathComponent("inside").path))
+    #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey) == nil)
 }

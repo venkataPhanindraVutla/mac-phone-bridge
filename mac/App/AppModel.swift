@@ -200,7 +200,9 @@ final class AppModel {
                       !shared.isDisjoint(with: TransferEngine.bulkCapabilities) else { return }
                 try? await server.send(type, message, channel: .files)
             },
-            destination: { Self.destination(for: $0, screenshots: screenshots) }
+            destination: { Self.destination(for: $0, screenshots: screenshots) },
+            // Part files a crash or force quit left in Downloads or Desktop go at launch.
+            partsStore: .standard
         )
         self.transfers = transfers
         let browse = BrowseModel(
@@ -539,9 +541,12 @@ final class AppModel {
 
     /// App quit: tell the phone (`system.goodbye SHUTDOWN`) and close. The goodbye is queued on
     /// the connection's own queue; a short pause lets it reach the wire before the process ends.
+    /// Transfers end here, not through the session's work queue (it never drains while the app
+    /// terminates), so a receive under way leaves no part file behind.
     func shutdown() {
         let hadPhone = server.activePhone != nil
         server.stop()
+        transfers.shutdown()
         bulk.stop()
         if hadPhone { Thread.sleep(forTimeInterval: 0.25) }
     }

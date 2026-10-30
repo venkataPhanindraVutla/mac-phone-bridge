@@ -58,7 +58,7 @@ public final class TransferEngine: SessionFeature {
     static let keptFinished = 20
     /// Any of these makes the Mac announce its bulk port; `files.*` messages serve all four.
     public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1"]
-    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "transfer")
+    private nonisolated static let log = Logger(subsystem: "io.github.anmirror.mac", category: "transfer")
 
     @ObservationIgnored private let bulk: any BulkGrants
     @ObservationIgnored private let destination: @MainActor (AMTransferOffer) -> IncomingDestination
@@ -66,6 +66,9 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored private let timing: TransferTiming
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
+    /// Where the paths of live part files are kept (`openPartsKey`), so a crash or a force quit
+    /// leaves none behind for good: the next launch deletes them. Nil keeps nothing.
+    @ObservationIgnored private let partsStore: UserDefaults?
 
     @ObservationIgnored private var isConnected = false
     /// The phone in session, while connected.
@@ -87,16 +90,21 @@ public final class TransferEngine: SessionFeature {
     /// The bulk port told to the phone in session; nil until it has been.
     @ObservationIgnored private var announcedPort: UInt16?
 
+    /// With `partsStore`, part files a previous run left (it crashed or was force quit mid-receive)
+    /// are deleted here, at launch.
     public init(bulk: any BulkGrants,
                 send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
                 destination: @escaping @MainActor (AMTransferOffer) -> IncomingDestination,
                 freeBytes: @escaping (URL) -> Int64? = FreeSpace.available,
-                timing: TransferTiming = .init(), newID: @escaping () -> String = { UUID().uuidString }) {
+                timing: TransferTiming = .init(), newID: @escaping () -> String = { UUID().uuidString },
+                partsStore: UserDefaults? = nil) {
         self.bulk = bulk
         self.destination = destination
         self.freeBytes = freeBytes
         self.timing = timing
         self.newID = newID
+        self.partsStore = partsStore
+        if let partsStore { Self.removeLeftoverParts(partsStore) }
         // One sender, so messages leave in the order they were queued.
         let (stream, continuation) = AsyncStream.makeStream(of: Outgoing.self)
         outbox = continuation
@@ -136,6 +144,12 @@ public final class TransferEngine: SessionFeature {
         var endpoint = AMBulkEndpoint()
         endpoint.port = UInt32(port)
         post(.filesEndpoint, endpoint)
+    }
+
+    /// The app quits: everything `disconnected()` does, now. The session's work queue never
+    /// drains during termination, so without this a receive under way would leave its part file.
+    public func shutdown() {
+        disconnected()
     }
 
     /// Every transfer that has not ended fails `INTERRUPTED`; nothing is sent.
@@ -455,6 +469,7 @@ public final class TransferEngine: SessionFeature {
             return
         }
         job.part = part
+        rememberPart(part)
         job.item.state = .active
         job.started = .now
         job.meter.touch()
@@ -541,6 +556,7 @@ public final class TransferEngine: SessionFeature {
             }
             let url = folder.appendingPathComponent(name)
             try fm.moveItem(at: part, to: url)
+            forgetPart(part)
             return url
         case let .file(url):
             if fm.fileExists(atPath: url.path) {
@@ -548,6 +564,7 @@ public final class TransferEngine: SessionFeature {
             } else {
                 try fm.moveItem(at: part, to: url)
             }
+            forgetPart(part)
             return url
         case .refuse, nil:
             throw Stop.io
@@ -611,7 +628,10 @@ public final class TransferEngine: SessionFeature {
         job.worker?.cancel()
         job.pipe?.close()
         bulk.revoke(context: job.item.id)
-        if let part = job.part { try? FileManager.default.removeItem(at: part) }
+        if let part = job.part {
+            try? FileManager.default.removeItem(at: part)
+            forgetPart(part)
+        }
         job.item.state = state
 
         let id = job.item.id
@@ -684,6 +704,48 @@ public final class TransferEngine: SessionFeature {
 
     private func publish() {
         transfers = jobs.map(\.item) + finished
+    }
+
+    // MARK: part files a crash leaves
+
+    /// The `partsStore` key: absolute paths of the part files being written now.
+    public nonisolated static let openPartsKey = "openParts"
+
+    private func rememberPart(_ part: URL) {
+        guard let partsStore else { return }
+        var paths = partsStore.stringArray(forKey: Self.openPartsKey) ?? []
+        paths.append(part.path)
+        partsStore.set(paths, forKey: Self.openPartsKey)
+    }
+
+    private func forgetPart(_ part: URL) {
+        guard let partsStore, var paths = partsStore.stringArray(forKey: Self.openPartsKey) else { return }
+        paths.removeAll { $0 == part.path }
+        if paths.isEmpty {
+            partsStore.removeObject(forKey: Self.openPartsKey)
+        } else {
+            partsStore.set(paths, forKey: Self.openPartsKey)
+        }
+    }
+
+    /// Deletes the part files `defaults` still lists (a previous run ended mid-receive), then
+    /// clears the list. Only absolute paths whose name is `.<uuid>.part` are touched, and only a
+    /// file (`unlink`): the folders they are in (Downloads, Desktop) are never listed.
+    public nonisolated static func removeLeftoverParts(_ defaults: UserDefaults) {
+        let paths = defaults.stringArray(forKey: openPartsKey) ?? []
+        defaults.removeObject(forKey: openPartsKey)
+        var removed = 0
+        for path in paths where isPartPath(path) {
+            if unlink(path) == 0 { removed += 1 }
+        }
+        if !paths.isEmpty { log.info("removed \(removed, privacy: .public) of \(paths.count, privacy: .public) leftover parts") }
+    }
+
+    /// An absolute path whose last component is `.<36 hex digits and dashes>.part`.
+    nonisolated static func isPartPath(_ path: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let name = (path as NSString).lastPathComponent
+        return name.wholeMatch(of: /\.[0-9A-Fa-f-]{36}\.part/) != nil
     }
 
     private func live(_ id: String, _ direction: TransferItem.Direction) -> Job? {
