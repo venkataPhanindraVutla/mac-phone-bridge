@@ -6,12 +6,10 @@
 
 ### What's in 0.4
 
-- **Music controller:** the track, artist and artwork from the phone's media player show in the Mac menu, in the Phone window's Now Playing tab (with Position and Volume sliders) and in Control Center. Play or Pause, Previous, Next and volume work from the menu. The Mac's media keys and AirPods taps are meant to work too, but macOS may not send them to a menu-bar app that plays no audio (unverified: owner check b). Needs notification access on the phone.
-- **Do Not Disturb and Focus sync:** Focus on the Mac turns on Do Not Disturb on the phone, and the phone's Do Not Disturb turns on a Focus on the Mac. Phone to Mac needs two Shortcuts you make once (see "Focus sync" below). On Android 15 and later, the phone's Do Not Disturb from the Mac is an app "mode" that only the app can switch off: turning Focus off on the Mac does not clear a Do Not Disturb you turned on by hand on the phone (unverified on a device: owner check c). Below Android 15 it does.
-
-Whether the ad-hoc signed Contributor build can read Focus status is unverified (owner check d).
+- **Music controller:** the track, artist and artwork from the phone's media player show in the Mac menu and in the Phone window's Now Playing tab (with Position and Volume sliders), and are meant to show in Control Center (unverified: owner check b). Play or Pause, Previous, Next and volume are meant to work from the menu (unverified). The Mac's media keys and AirPods taps are meant to work too, but macOS may not send them to a menu-bar app that plays no audio (unverified: owner check b). Needs notification access on the phone.
+- **Do Not Disturb and Focus sync:** Focus on the Mac turns on Do Not Disturb on the phone, and the phone's Do Not Disturb turns on a Focus on the Mac. Phone to Mac needs two Shortcuts you make once (see "Focus sync" below). Whether the ad-hoc signed Contributor build can read Focus status is unverified (owner check d), and on Android 15 and later turning Focus off on the Mac is expected to leave a Do Not Disturb you turned on by hand on the phone (unverified: owner check c).
 - **Auto-lock when you walk away:** the phone sends a small Bluetooth beacon, and the Mac locks when it stays away. It never unlocks the Mac, and it is deliberately conservative: it does not lock while a video, call or browser keeps the screen awake, and it needs the phone to have connected to the Mac over Wi-Fi in the last 30 minutes. No location permission. Unverified on a real lock and over a full day (owner check e).
-- **Trackpad and presentation remote:** the phone moves the Mac's pointer, clicks, right-clicks, scrolls and drags, and its Remote tab has Previous, Next, a laser dot and optional volume-key slide changes. Needs the Accessibility permission, asked for only when you turn the setting on. Ad-hoc builds lose that grant on every rebuild.
+- **Trackpad and presentation remote:** the phone moves the Mac's pointer, clicks, right-clicks, scrolls and drags, and its Remote tab has Previous, Next, a laser dot and optional volume-key slide changes. Needs the Accessibility permission, asked for only when you turn the setting on. Ad-hoc builds are expected to lose that grant on every rebuild (unverified: owner check f).
 - Still no SMS or MMS access, no account and no cloud. The new Android permission is `BLUETOOTH_ADVERTISE` (older Android uses the legacy Bluetooth permissions); there is no location permission.
 - Known limits: see [0.4 results](docs/milestones/0.4-results.md#known-limitations-in-04).
 
@@ -158,6 +156,8 @@ Focus on the Mac and Do Not Disturb on the phone can follow each other. Any Focu
 5. Come back here and click Check Again.
 
 "Here" is the Focus section of the Mac app's Settings.
+
+On Android 15 and later, the phone's Do Not Disturb from the Mac is an app "mode" that only the app can switch off, so turning Focus off on the Mac is expected to leave a Do Not Disturb you turned on by hand on the phone (unverified on a device: owner check c). Below Android 15 it is meant to clear it.
 
 Whether the ad-hoc signed Contributor build can read Focus status is not yet confirmed (owner check). If it can't, Settings says "This build of Android Mirroring can't read Focus status." and only the phone-to-Mac direction works.
 
