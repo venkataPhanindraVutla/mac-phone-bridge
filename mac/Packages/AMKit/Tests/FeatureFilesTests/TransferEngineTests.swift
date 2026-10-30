@@ -1,4 +1,5 @@
 import AMProtocol
+import AMTestSupport
 import ConnectionCore
 import CryptoKit
 import Foundation
@@ -8,205 +9,7 @@ import Testing
 
 // MARK: test doubles
 
-/// Records every `BulkGrants` call, in order.
-@MainActor
-final class FakeBulk: BulkGrants {
-    var port: UInt16? = 4242
-    var calls: [String] = []
-    var allowed: [Data?] = []
-    var issued: [(role: AMBulkRole, context: String, token: Data)] = []
-    var revoked: [String] = []
-    var revokeAllCount = 0
-
-    func allow(peerFingerprint: Data?) {
-        calls.append("allow")
-        allowed.append(peerFingerprint)
-    }
-
-    func issue(role: AMBulkRole, context: String) -> Data {
-        calls.append("issue")
-        let token = Data("token-\(issued.count)".utf8)
-        issued.append((role, context, token))
-        return token
-    }
-
-    func revoke(context: String) { revoked.append(context) }
-
-    func revokeAll() {
-        calls.append("revokeAll")
-        revokeAllCount += 1
-    }
-}
-
-/// One direction of an in-memory byte pipe.
-private final class ByteQueue: @unchecked Sendable {
-    private let lock = NSLock()
-    private var buffer = Data()
-    private var ended = false
-    private var aborted = false
-    private var waiter: CheckedContinuation<Data?, Error>?
-
-    struct Closed: Error {}
-
-    func push(_ data: Data) {
-        lock.lock()
-        buffer.append(data)
-        let w = waiter
-        waiter = nil
-        let head = w == nil ? nil : take(Int.max)
-        lock.unlock()
-        if let w { w.resume(returning: head) }
-    }
-
-    /// The writer is done: the reader gets the rest, then nil.
-    func end() {
-        lock.lock()
-        ended = true
-        let w = waiter
-        waiter = nil
-        let head = w == nil ? nil : (buffer.isEmpty ? nil : take(Int.max))
-        lock.unlock()
-        w?.resume(returning: head)
-    }
-
-    /// The reader closed its end: a pending read throws.
-    func abort() {
-        lock.lock()
-        aborted = true
-        let w = waiter
-        waiter = nil
-        lock.unlock()
-        w?.resume(throwing: Closed())
-    }
-
-    func pop(_ maximum: Int) async throws -> Data? {
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Data?, Error>) in
-            lock.lock()
-            if aborted {
-                lock.unlock()
-                c.resume(throwing: Closed())
-            } else if !buffer.isEmpty {
-                let head = take(maximum)
-                lock.unlock()
-                c.resume(returning: head)
-            } else if ended {
-                lock.unlock()
-                c.resume(returning: nil)
-            } else {
-                waiter = c
-                lock.unlock()
-            }
-        }
-    }
-
-    /// Caller holds the lock.
-    private func take(_ maximum: Int) -> Data {
-        let head = Data(buffer.prefix(maximum))
-        buffer = Data(buffer.dropFirst(head.count))
-        return head
-    }
-}
-
-/// One end of an in-memory bulk connection.
-final class MemoryPipe: BulkPipe, @unchecked Sendable {
-    private let inbox: ByteQueue
-    private let outbox: ByteQueue
-    private let lock = NSLock()
-    private var closedFlag = false
-    private var sent: UInt64 = 0
-
-    fileprivate init(inbox: ByteQueue, outbox: ByteQueue) {
-        self.inbox = inbox
-        self.outbox = outbox
-    }
-
-    /// (Mac end, phone end).
-    static func pair() -> (MemoryPipe, MemoryPipe) {
-        let toMac = ByteQueue(), toPhone = ByteQueue()
-        return (MemoryPipe(inbox: toMac, outbox: toPhone), MemoryPipe(inbox: toPhone, outbox: toMac))
-    }
-
-    var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closedFlag }
-    var bytesSent: UInt64 { lock.lock(); defer { lock.unlock() }; return sent }
-
-    func receive(maximum: Int) async throws -> Data? {
-        try await inbox.pop(maximum)
-    }
-
-    func send(_ data: Data) async throws {
-        let closed = lock.withLock {
-            if !closedFlag { sent += UInt64(data.count) }
-            return closedFlag
-        }
-        if closed { throw ByteQueue.Closed() }
-        outbox.push(data)
-    }
-
-    func close() {
-        lock.lock()
-        let was = closedFlag
-        closedFlag = true
-        lock.unlock()
-        guard !was else { return }
-        inbox.abort()
-        outbox.end()
-    }
-}
-
-/// Every message the engine sent, in order.
-@MainActor
-final class SentLog {
-    var all: [(type: MessageType, message: any SwiftProtobuf.Message)] = []
-    var types: [MessageType] { all.map(\.type) }
-
-    func of<M: SwiftProtobuf.Message>(_ type: MessageType, _: M.Type) -> [M] {
-        all.filter { $0.type == type }.compactMap { $0.message as? M }
-    }
-}
-
-private struct Waited: Error {}
-
-/// Polls `condition` on the main actor until it holds, or fails after `timeout`.
-@MainActor
-func until(_ what: String = "condition", timeout: Duration = .seconds(5),
-           _ condition: @MainActor () -> Bool) async throws {
-    let deadline = ContinuousClock.now + timeout
-    while !condition() {
-        if ContinuousClock.now >= deadline {
-            Issue.record("timed out waiting for \(what)")
-            throw Waited()
-        }
-        try await Task.sleep(for: .milliseconds(2))
-    }
-}
-
-/// Reads exactly `count` bytes from `pipe` (or fails the test after 5 s).
-func readAll(_ pipe: MemoryPipe, _ count: Int) async throws -> Data {
-    var out = Data()
-    while out.count < count {
-        let chunk = try await withThrowingTaskGroup(of: Data?.self) { group in
-            group.addTask { try await pipe.receive(maximum: 1 << 20) }
-            group.addTask {
-                try await Task.sleep(for: .seconds(5))
-                pipe.close()
-                return nil
-            }
-            let first = try await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        guard let chunk else { break }
-        out.append(chunk)
-    }
-    return out
-}
-
-func randomBytes(_ count: Int) -> Data {
-    var g = SystemRandomNumberGenerator()
-    return Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &g) })
-}
-
-func sha(_ d: Data) -> Data { Data(SHA256.hash(data: d)) }
+// FakeBulk, MemoryPipe, SentLog, until, readAll, randomBytes, sha and phoneHex are in AMTestSupport.
 
 func envelope<M: SwiftProtobuf.Message>(_ type: MessageType, _ message: M) -> AMEnvelope {
     var e = AMEnvelope()
@@ -215,8 +18,6 @@ func envelope<M: SwiftProtobuf.Message>(_ type: MessageType, _ message: M) -> AM
     e.payload = (try? message.serializedData()) ?? Data()
     return e
 }
-
-let phoneHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
 extension TransferTiming {
     static let fast = TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .seconds(5),
@@ -882,6 +683,10 @@ final class Rig {
     var c = AMTransferCancel(); c.transferID = ids[0]
     await r.deliver(.filesCancel, c)
     #expect(r.item(ids[0])?.state == .cancelled)
+    try await until("t1's cancel and one offer") {
+        r.sent.of(.filesCancel, AMTransferCancel.self).count == 1 && r.sent.of(.filesOffer, AMTransferOffer.self).count == 1
+    }
+    // Absence: the phone's cancel is not answered, and the cancelled queued one is never offered.
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.sent.of(.filesCancel, AMTransferCancel.self).count == 1)
     #expect(r.sent.of(.filesOffer, AMTransferOffer.self).count == 1)
@@ -893,15 +698,6 @@ final class Rig {
     let (mac, _) = MemoryPipe.pair()
     r.engine.link(mac, grant: BulkGrant(role: .phoneSends, context: "nobody"))
     #expect(mac.isClosed)
-}
-
-extension Data {
-    init(hexString: String) {
-        var out = Data()
-        var it = hexString.makeIterator()
-        while let a = it.next(), let b = it.next() { out.append(UInt8(String([a, b]), radix: 16)!) }
-        self = out
-    }
 }
 
 // MARK: fix round 1
@@ -919,9 +715,11 @@ extension Data {
     let queued = r.engine.send(files: [try r.write(randomBytes(10), as: "b.txt"), try r.write(randomBytes(10), as: "c.txt")])
     r.engine.disconnected()
     await r.connect()
+    try await until("both failed, the first issued") {
+        queued.allSatisfy { r.item($0)?.state == .failed(.interrupted) } && r.bulk.issued.map(\.context) == [queued[0]]
+    }
+    // Absence: only the first was ever offered (and that offer, still in the outbox, was dropped as stale).
     try await Task.sleep(for: .milliseconds(50))
-    #expect(queued.allSatisfy { r.item($0)?.state == .failed(.interrupted) })
-    // Only the first was ever offered (and that offer, still in the outbox, was dropped as stale).
     #expect(r.bulk.issued.map(\.context) == [queued[0]])
     #expect(!r.sent.of(.filesOffer, AMTransferOffer.self).contains { $0.transferID == queued[1] })
 }
@@ -960,7 +758,8 @@ extension Data {
     r.engine.disconnected()
     await r.connect()
     gate.open()
-    try await until("second endpoint") { r.sent.types.filter { $0 == .filesEndpoint }.count == 2 }
+    try await until("second endpoint") { r.sent.types == [.filesEndpoint, .filesEndpoint] }
+    // Absence: the old session's accept never goes.
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.sent.types == [.filesEndpoint, .filesEndpoint])
 }
@@ -1089,13 +888,18 @@ extension Data {
     await r.connect(shared: ["notify.v1"])
     r.bulk.port = 5003
     r.engine.bulkPortChanged()
+    try await until("still two") { r.sent.types.count == 2 }
+    // Absence: nothing more goes.
     try await Task.sleep(for: .milliseconds(30))
     #expect(r.sent.types.count == 2)
 
     // A reconnect announces the port at connect, and only once.
     await r.connect(shared: ["photos.v1"])
     r.engine.bulkPortChanged()
-    try await until("reconnect endpoint") { r.sent.types.count == 3 }
+    try await until("reconnect endpoint") {
+        r.sent.of(.filesEndpoint, AMBulkEndpoint.self).map(\.port) == [5000, 5001, 5003]
+    }
+    // Absence: announced once only.
     try await Task.sleep(for: .milliseconds(30))
     #expect(r.sent.of(.filesEndpoint, AMBulkEndpoint.self).map(\.port) == [5000, 5001, 5003])
 }

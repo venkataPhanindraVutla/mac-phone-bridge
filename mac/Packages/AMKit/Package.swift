@@ -98,6 +98,12 @@ let package = Package(
         ),
         // Foundation only: the sandboxed extensions link it too.
         .target(name: "FileProviderShared"),
+        // Test doubles and helpers shared by the test targets. No product exports it, so the app
+        // and the extensions can never link it; only test targets depend on it.
+        .target(
+            name: "AMTestSupport",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
@@ -111,7 +117,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ConnectionCoreTests",
-            dependencies: ["ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+            dependencies: ["ConnectionCore", "AMTestSupport", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .testTarget(name: "FeatureStatusTests", dependencies: ["FeatureStatus"]),
         .testTarget(name: "FeatureFindTests", dependencies: ["FeatureFind", "AMProtocol"]),
@@ -130,7 +136,7 @@ let package = Package(
         .testTarget(
             name: "FeatureFilesTests",
             dependencies: [
-                "FeatureFiles", "AMProtocol", "ConnectionCore",
+                "FeatureFiles", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
@@ -155,14 +161,14 @@ let package = Package(
         .testTarget(
             name: "FeaturePhotosTests",
             dependencies: [
-                "FeaturePhotos", "FeatureFiles", "AMProtocol", "ConnectionCore",
+                "FeaturePhotos", "FeatureFiles", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
         .testTarget(
             name: "FeatureBrowseTests",
             dependencies: [
-                "FeatureBrowse", "FeatureFiles", "AMProtocol", "ConnectionCore",
+                "FeatureBrowse", "FeatureFiles", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),

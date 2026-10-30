@@ -1,4 +1,5 @@
 import AMProtocol
+@_exported import AMTestSupport
 import Foundation
 import Network
 @testable import ConnectionCore
@@ -40,16 +41,8 @@ struct TestError: Error, CustomStringConvertible {
     init(_ d: String) { description = d }
 }
 
+// `Data(hexString:)` and `eventually` are in AMTestSupport.
 extension Data {
-    init(hexString: String) {
-        var out = Data()
-        var it = hexString.makeIterator()
-        while let a = it.next(), let b = it.next() {
-            out.append(UInt8(String([a, b]), radix: 16)!)
-        }
-        self = out
-    }
-
     var hex: String { map { String(format: "%02x", $0) }.joined() }
 }
 
@@ -100,15 +93,4 @@ actor Inbox {
         }
         return ended
     }
-}
-
-/// Polls `condition` on the main actor until it holds or `timeout` passes.
-@MainActor
-func eventually(timeout: Duration = .seconds(3), _ condition: @MainActor () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return condition()
 }

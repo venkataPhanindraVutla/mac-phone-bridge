@@ -1,4 +1,5 @@
 import AMProtocol
+import AMTestSupport
 import ConnectionCore
 import FeatureFiles
 import Foundation
@@ -543,10 +544,10 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
         let e = entry("f\(i)"), file = r.dir.appendingPathComponent("f\(i)")
         tasks.append(Task { await r.model.download(e, to: file) })
     }
-    try await until("eight reads") { r.reads.count == 8 }
+    try await until("the first eight reads") { r.reads.map(\.path) == (0..<8).map { "f\($0)" } }
+    // Absence: at most eight outstanding.
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.reads.count == 8, "at most eight outstanding")
-    #expect(r.reads.map(\.path) == (0..<8).map { "f\($0)" })
 
     // The tenth is cancelled while it waits: it never asks the phone.
     tasks[9].cancel()
@@ -555,8 +556,8 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     // One ends: the ninth goes out.
     await r.answer(r.reads[0].requestID, .io)
     #expect(await tasks[0].value == .failure(.browse(.io)))
-    try await until("ninth read") { r.reads.count == 9 }
-    #expect(r.reads.last?.path == "f8")
+    try await until("ninth read") { r.reads.count == 9 && r.reads.last?.path == "f8" }
+    // Absence: the cancelled one never goes.
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.reads.count == 9, "the cancelled one never went")
     #expect(!r.reads.contains { $0.path == "f9" })
@@ -624,8 +625,8 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     let bytes = Data(repeating: 1, count: 64)
     try await phoneSends(r, r.reads[0], bytes)
     #expect(await tasks[0].value == .success(r.dir.appendingPathComponent("f0")))
-    try await until("ninth read") { r.reads.count == 9 }
-    #expect(r.reads.last?.path == "f8")
+    try await until("ninth read") { r.reads.count == 9 && r.reads.last?.path == "f8" }
+    // Absence: one slot freed, one read sent.
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.reads.count == 9, "one slot freed, one read sent")
     r.disconnect()

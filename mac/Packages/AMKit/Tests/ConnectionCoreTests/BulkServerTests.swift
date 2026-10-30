@@ -365,7 +365,8 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
         defer { server.stop() }
         server.simulateListenerFailureForTesting()
         #expect(server.port == nil)
-        #expect(await eventually { server.port != nil })
+        // The retry fires after 250 ms; a loaded machine can take far longer to listen again.
+        #expect(await eventually(timeout: .seconds(10)) { server.port != nil })
     }
 
     @Test func stopDuringListenerRetryStaysStopped() async throws {

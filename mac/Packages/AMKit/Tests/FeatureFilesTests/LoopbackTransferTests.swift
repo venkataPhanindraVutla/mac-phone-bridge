@@ -1,4 +1,5 @@
 import AMProtocol
+import AMTestSupport
 import ConnectionCore
 import Foundation
 import Network
