@@ -10,6 +10,7 @@ import FeatureContacts
 import FeatureFiles
 import FeatureFind
 import FeatureFocus
+import FeatureInput
 import FeatureMedia
 import FeatureNotify
 import FeaturePhotos
@@ -29,7 +30,7 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
-        "proximity.v1",
+        "proximity.v1", "input.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -57,6 +58,8 @@ final class AppModel {
     /// Locks this Mac when the chosen phone is away ("Auto-Lock" in Settings). Runs whether or not
     /// the phone is connected.
     let proximity: ProximityModel
+    /// The phone as trackpad and remote ("Trackpad and Remote" in Settings).
+    let input: InputModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -96,6 +99,7 @@ final class AppModel {
     @ObservationIgnored private static let callsKey = "showPhoneCalls"
     @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
     @ObservationIgnored private static let syncFocusKey = "syncFocus"
+    @ObservationIgnored private static let pointerControlKey = "allowPointerControl"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
     }
@@ -104,6 +108,9 @@ final class AppModel {
     }
     private static var savedSyncFocus: Bool {
         UserDefaults.standard.object(forKey: syncFocusKey) as? Bool ?? false
+    }
+    private static var savedAllowPointerControl: Bool {
+        UserDefaults.standard.object(forKey: pointerControlKey) as? Bool ?? false
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
@@ -292,6 +299,18 @@ final class AppModel {
             defaults: .standard
         )
         self.proximity = proximity
+        let input = InputModel(
+            poster: CGEventPoster(), laser: LaserOverlayPanel(), trust: SystemAccessibilityTrust(),
+            enabled: Self.savedAllowPointerControl,
+            naturalScrolling: { InputModel.naturalScrolling() },
+            send: { type, message in
+                // Only a phone that shares input.v1 gets input messages.
+                guard server.activePhone?.shared.contains("input.v1") == true else { return }
+                try? await server.send(type, message, channel: .input)
+            },
+            doubleClickInterval: NSEvent.doubleClickInterval
+        )
+        self.input = input
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
@@ -301,6 +320,7 @@ final class AppModel {
         notifyWork.register(media)
         notifyWork.register(focus)
         notifyWork.register(proximity)
+        notifyWork.register(input)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -336,7 +356,7 @@ final class AppModel {
             #endif
             await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
         }
-        // The user may allow notifications or Focus status in System Settings and come back.
+        // The user may allow notifications, Focus status or Accessibility in System Settings and come back.
         // Delivered on the main queue, so the main-actor work runs under assumeIsolated.
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -344,6 +364,7 @@ final class AppModel {
             MainActor.assumeIsolated {
                 if model.authorized == false { Task { await model.refreshAuthorization() } }
                 Task { await focus.refreshAuthorization() }
+                Task { await input.recheckTrust() }
             }
         }
         refreshPhones()
@@ -512,6 +533,21 @@ final class AppModel {
         Task { [weak self] in
             guard let self else { return }
             await self.focus.setEnabled(self.syncFocus)
+        }
+    }
+
+    /// The "Allow <phone> to control the pointer" switch in Settings (default off), as last
+    /// clicked. Turning it on asks for Accessibility, and only then.
+    private(set) var allowPointerControl: Bool = AppModel.savedAllowPointerControl
+
+    /// Each click applies the latest value when its task runs, so the last click wins.
+    func setAllowPointerControl(_ on: Bool) {
+        guard on != allowPointerControl else { return }
+        allowPointerControl = on
+        UserDefaults.standard.set(on, forKey: Self.pointerControlKey)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.input.setEnabled(self.allowPointerControl)
         }
     }
 

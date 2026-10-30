@@ -2432,6 +2432,50 @@
           }
         }
       }
+    },
+    "Trackpad and Remote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trackpad and Remote"
+          }
+        }
+      }
+    },
+    "Allow %@ to control the pointer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow %@ to control the pointer"
+          }
+        }
+      }
+    },
+    "Allow Android Mirroring in System Settings › Privacy & Security › Accessibility.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Android Mirroring in System Settings › Privacy & Security › Accessibility."
+          }
+        }
+      }
+    },
+    "Open Accessibility settings in System Settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Accessibility settings in System Settings"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

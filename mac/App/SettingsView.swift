@@ -1,5 +1,6 @@
 import AppKit
 import ConnectionCore
+import FeatureInput
 import FeatureNotify
 import FeatureScreenshots
 import ServiceManagement
@@ -40,6 +41,27 @@ struct SettingsView: View {
                 }
                 FocusSettings(model: model, phoneName: phone.name)
                 AutoLockSettings(proximity: model.proximity, phone: phone)
+                Section("Trackpad and Remote") {
+                    Toggle("Allow \(phone.name) to control the pointer", isOn: Binding(
+                        get: { model.allowPointerControl },
+                        set: { model.setAllowPointerControl($0) }
+                    ))
+                    .accessibilityLabel(Text("Allow \(phone.name) to control the pointer"))
+                    if model.allowPointerControl, !model.input.trusted {
+                        Text("Allow Android Mirroring in System Settings › Privacy & Security › Accessibility.")
+                            .foregroundStyle(.secondary)
+                        Button("Open System Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .accessibilityLabel(Text("Open Accessibility settings in System Settings"))
+                    }
+                }
+                .onAppear {
+                    let input = model.input
+                    Task { await input.recheckTrust() }
+                }
                 Section("Screenshots") {
                     Picker("Save phone screenshots to", selection: Binding(
                         get: { model.screenshotDestination },
