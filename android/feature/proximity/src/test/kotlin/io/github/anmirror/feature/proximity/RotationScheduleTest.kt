@@ -40,9 +40,23 @@ class RotationScheduleTest {
 
     @Test fun nextWakeIsTheEarlierOfRotationAndRetry() {
         val now = boundary + 100_000L
-        assertEquals(boundary + 901_000L, RotationSchedule.nextWake(now, retries = emptyList()))
-        assertEquals(now + 5_000L, RotationSchedule.nextWake(now, retries = listOf(now + 60_000L, now + 5_000L)))
-        assertEquals(boundary + 901_000L, RotationSchedule.nextWake(now, retries = listOf(boundary + 2_000_000L)))
+        assertEquals(boundary + 901_000L, RotationSchedule.nextWake(now, prompts = emptyList()).atMs)
+        assertEquals(now + 5_000L, RotationSchedule.nextWake(now, prompts = listOf(now + 60_000L, now + 5_000L)).atMs)
+        assertEquals(boundary + 901_000L, RotationSchedule.nextWake(now, prompts = listOf(boundary + 2_000_000L)).atMs)
+    }
+
+    @Test fun retryWakeUsesNearExactAlarm() {
+        // A wake before the rotation (a retry, a data deadline) can't take a 10-minute window.
+        val now = boundary + 100_000L
+        assertEquals(Wake(now + 5_000L, WakeKind.PROMPT), RotationSchedule.nextWake(now, prompts = listOf(now + 5_000L)))
+    }
+
+    @Test fun rotationWakeUsesWindow() {
+        // The rotation has the epoch's slack: even 601 s late it is well inside 899 s.
+        val now = boundary + 100_000L
+        assertEquals(Wake(boundary + 901_000L, WakeKind.ROTATION), RotationSchedule.nextWake(now, prompts = emptyList()))
+        assertEquals(Wake(boundary + 901_000L, WakeKind.ROTATION), RotationSchedule.nextWake(now, prompts = listOf(boundary + 901_000L)))
+        assertEquals(Wake(boundary + 901_000L, WakeKind.ROTATION), RotationSchedule.nextWake(now, prompts = listOf(boundary + 950_000L)))
     }
 
     @Test fun retryBackoff() {

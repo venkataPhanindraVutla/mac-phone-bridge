@@ -22,6 +22,9 @@ sealed interface AdvertiserEvent {
     /** The controller took the set: it is on the air. */
     data object Started : AdvertiserEvent
 
+    /** New data is on the air (`onAdvertisingDataSet` with success). */
+    data object DataSet : AdvertiserEvent
+
     /** The start, or new data, failed with an `AdvertisingSetCallback` code. */
     data class Failed(val code: Int) : AdvertiserEvent
 
@@ -31,7 +34,7 @@ sealed interface AdvertiserEvent {
 
 /** One advertising set. */
 interface AdvertisingSlot {
-    /** Replaces the service data in place: the controller slot is kept (ruling R30). */
+    /** Replaces the service data in place, once started: the controller slot is kept (ruling R30). */
     fun setData(serviceData: ByteArray)
 
     /** Stops the set; harmless when it never started. */
@@ -116,13 +119,12 @@ class AndroidBleAdvertiser(context: Context) : BleAdvertiser {
         override fun stop() = Unit
     }
 
-    /** A set and its callback; data given before the controller took the set is applied once it has. */
+    /** A set and its callback. */
     private inner class Slot(
         private val advertiser: BluetoothLeAdvertiser,
         private val events: (AdvertiserEvent) -> Unit,
     ) : AdvertisingSlot {
         private var set: AdvertisingSet? = null
-        private var pending: ByteArray? = null
         private var stopped = false
 
         val callback = object : AdvertisingSetCallback() {
@@ -131,16 +133,12 @@ class AndroidBleAdvertiser(context: Context) : BleAdvertiser {
                     report(AdvertiserEvent.Failed(status))
                     return
                 }
-                val newer = synchronized(this@Slot) {
-                    set = advertisingSet
-                    pending.also { pending = null }
-                }
+                synchronized(this@Slot) { set = advertisingSet }
                 report(AdvertiserEvent.Started)
-                newer?.let(::setData)
             }
 
             override fun onAdvertisingDataSet(advertisingSet: AdvertisingSet?, status: Int) {
-                if (status != ADVERTISE_SUCCESS) report(AdvertiserEvent.Failed(status))
+                report(if (status == ADVERTISE_SUCCESS) AdvertiserEvent.DataSet else AdvertiserEvent.Failed(status))
             }
 
             override fun onAdvertisingSetStopped(advertisingSet: AdvertisingSet?) {
@@ -157,10 +155,12 @@ class AndroidBleAdvertiser(context: Context) : BleAdvertiser {
         override fun setData(serviceData: ByteArray) {
             val target = synchronized(this) {
                 if (stopped) return
-                set ?: run {
-                    pending = serviceData
-                    return
-                }
+                set
+            }
+            if (target == null) {
+                // The beacon only rotates started sets; a set not yet started can't take new data.
+                report(AdvertiserEvent.Failed(AdvertisingSetCallback.ADVERTISE_FAILED_INTERNAL_ERROR))
+                return
             }
             if (!mayAdvertise()) {
                 report(AdvertiserEvent.Failed(AdvertisingSetCallback.ADVERTISE_FAILED_INTERNAL_ERROR))

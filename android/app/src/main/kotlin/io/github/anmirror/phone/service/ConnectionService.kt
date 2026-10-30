@@ -776,8 +776,8 @@ class ConnectionService : LifecycleService() {
     private var proximityReceiver: BroadcastReceiver? = null
 
     /**
-     * While the switch is on: the adapter's state (Bluetooth off stops the beacon, on starts it
-     * again), and the moments the epoch may have moved without the alarm (ruling R29): the clock or
+     * While the switch is on: the adapter's state (Bluetooth off stops the beacon, on starts every
+     * set afresh), and the moments the epoch may have moved without the alarm (ruling R29): the clock or
      * time zone set, the screen coming on, Doze starting or ending (the alarm is then set again,
      * allowed while idle).
      */
@@ -786,7 +786,14 @@ class ConnectionService : LifecycleService() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
-                    BluetoothAdapter.ACTION_STATE_CHANGED -> graph.refreshProximityAdapter()
+                    BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                        // Marked here, not through the adapter's state flow: a quick off and on can
+                        // pass without the flow showing it, and the stack may have dropped the sets.
+                        val on = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) == BluetoothAdapter.STATE_ON
+                        if (!on) graph.proximityBeacon.markAdapterNotReady()
+                        graph.refreshProximityAdapter()
+                        if (on) graph.proximityBeacon.refresh()
+                    }
                     else -> graph.proximityBeacon.onClockCheck()
                 }
             }
