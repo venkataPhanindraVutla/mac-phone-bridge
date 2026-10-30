@@ -53,6 +53,8 @@ import io.github.anmirror.phone.copyNamesMac
 import io.github.anmirror.phone.dndRowLines
 import io.github.anmirror.phone.forgetBodyRes
 import io.github.anmirror.phone.messageRes
+import io.github.anmirror.phone.proximityRowLine
+import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.protocol.v1.DndAvailability
 
 /** The paired Mac, the connection state from ConnectionManager, and Forget this Mac. */
@@ -72,6 +74,11 @@ fun HomeScreen(
     dndAccess: Boolean,
     macDnd: DndAvailability?,
     onDndSyncToggle: (Boolean) -> Unit,
+    proximityOn: Boolean,
+    proximityGranted: Boolean,
+    proximityAdapter: AdvertiserState,
+    onProximityToggle: (Boolean) -> Unit,
+    onProximityPermissionResult: () -> Unit,
     contactsOn: Boolean,
     contactsGranted: Boolean,
     onContactsToggle: (Boolean) -> Unit,
@@ -140,6 +147,10 @@ fun HomeScreen(
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
         MediaRow(on = mediaControlOn, access = notifyAccess, onToggle = onMediaControlToggle)
         DndRow(on = dndSyncOn, access = dndAccess, mac = macDnd, onToggle = onDndSyncToggle)
+        ProximityRow(
+            on = proximityOn, granted = proximityGranted, adapter = proximityAdapter,
+            onToggle = onProximityToggle, onPermissionResult = onProximityPermissionResult,
+        )
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         ClipboardRow(on = clipboardOn, onToggle = onClipboardToggle)
@@ -336,6 +347,58 @@ private fun DndRow(on: Boolean, access: Boolean, mac: DndAvailability?, onToggle
             OutlinedButton(onClick = openAccess, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.home_find_allow))
             }
+        }
+    }
+}
+
+/**
+ * "Let your Mac lock when you walk away": off by default. Nearby devices (BLUETOOTH_ADVERTISE,
+ * API 31+) is asked for only when the switch is turned on; if refused, the way back is the app's
+ * page in Settings. With the permission, the note says when Bluetooth is off or can't advertise.
+ */
+@Composable
+private fun ProximityRow(
+    on: Boolean,
+    granted: Boolean,
+    adapter: AdvertiserState,
+    onToggle: (Boolean) -> Unit,
+    onPermissionResult: () -> Unit,
+) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_proximity_title)
+    val (chain, _) = rememberPermissionChain(proximityPermissions(), onDone = onPermissionResult)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked) chain.start()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        proximityRowLine(on, granted, adapter)?.let { line ->
+            Text(stringResource(line), style = MaterialTheme.typography.bodyMedium)
+        }
+        if (on && !granted) {
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_proximity_allow)) }
         }
     }
 }

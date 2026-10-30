@@ -78,6 +78,12 @@
     <string name="home_dnd_mac_to_phone">Your Mac\'s Focus turns on Do Not Disturb here.</string>
     <string name="home_dnd_needs_shortcuts">Install the two Shortcuts on your Mac to let your phone turn on Focus.</string>
     <string name="home_dnd_mac_off">Turn on Focus sync in your Mac\'s settings.</string>
+    <!-- Home: the phone's Bluetooth beacon for the Mac's auto-lock (F-15). -->
+    <string name="home_proximity_title">Let your Mac lock when you walk away</string>
+    <string name="home_proximity_needs_permission">Android Mirroring needs the Nearby devices permission to do this. Allow it in Settings.</string>
+    <string name="home_proximity_allow">Allow Nearby devices</string>
+    <string name="home_proximity_bluetooth_off">Turn on Bluetooth to use this.</string>
+    <string name="home_proximity_unsupported">This phone can\'t advertise over Bluetooth.</string>
     <!-- Home: calls on the Mac -->
     <string name="home_calls_title">Calls on your Mac</string>
     <string name="home_calls_needs_permission">Android Mirroring needs access to your phone\'s call state to do this. Allow it in Settings.</string>

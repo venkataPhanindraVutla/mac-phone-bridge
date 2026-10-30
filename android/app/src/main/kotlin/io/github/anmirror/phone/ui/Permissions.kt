@@ -47,6 +47,13 @@ fun callsPermissions(): List<String> = buildList {
 }
 
 /**
+ * "Let your Mac lock when you walk away": BLUETOOTH_ADVERTISE (Nearby devices) on API 31+. Up to
+ * 30 advertising needs only BLUETOOTH and BLUETOOTH_ADMIN, granted at install; never location.
+ */
+fun proximityPermissions(): List<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) listOf(Manifest.permission.BLUETOOTH_ADVERTISE) else emptyList()
+
+/**
  * "Send screenshots to your Mac": new screenshots can only be found with access to all photos,
  * READ_MEDIA_IMAGES (API 33+), or READ_EXTERNAL_STORAGE (up to 32). On API 34+ the system dialog
  * also offers "Select photos"; asking for READ_MEDIA_VISUAL_USER_SELECTED in the same request makes

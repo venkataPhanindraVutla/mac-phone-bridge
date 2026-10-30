@@ -1,5 +1,6 @@
 package io.github.anmirror.phone
 
+import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.protocol.v1.AvailabilityReason
 import io.github.anmirror.protocol.v1.DndAvailability
 import io.github.anmirror.protocol.v1.FeatureAvailability
@@ -27,6 +28,18 @@ fun dndAvailability(userOn: Boolean, policyAccess: Boolean): DndAvailability = D
     .setSends(featureAvailability(granted = true, userOn = userOn))
     .setApplies(featureAvailability(granted = policyAccess, userOn = userOn))
     .build()
+
+/**
+ * The phone's `proximity.availability` (SPEC 22): whether it advertises. The switch comes first,
+ * then BLUETOOTH_ADVERTISE (API 31+), then an adapter that is off or can't advertise (UNAVAILABLE).
+ */
+fun proximityAvailability(userOn: Boolean, granted: Boolean, adapter: AdvertiserState): FeatureAvailability = when {
+    !userOn || !granted || adapter == AdvertiserState.READY -> featureAvailability(granted = granted, userOn = userOn)
+    else -> FeatureAvailability.newBuilder()
+        .setEnabled(false)
+        .setReason(AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE)
+        .build()
+}
 
 /** How much of the phone's photos and videos this app may read. */
 enum class MediaAccess {

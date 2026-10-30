@@ -3,6 +3,7 @@ package io.github.anmirror.phone
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairingFailure
 import io.github.anmirror.connection.PhoneConnectionState
+import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.protocol.v1.AvailabilityReason
 import io.github.anmirror.protocol.v1.DndAvailability
 import io.github.anmirror.protocol.v1.FeatureAvailability
@@ -78,5 +79,18 @@ fun dndRowLines(on: Boolean, access: Boolean, mac: DndAvailability?): List<Int> 
 private fun FeatureAvailability.macReasonLine(): Int? = when (reason) {
     AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP -> R.string.home_dnd_needs_shortcuts
     AvailabilityReason.AVAILABILITY_REASON_OFF_BY_USER -> R.string.home_dnd_mac_off
+    else -> null
+}
+
+/**
+ * The note under "Let your Mac lock when you walk away" while it is on: the Nearby devices
+ * permission first (the row adds its Allow button), then Bluetooth off, then a phone that can't
+ * advertise. Null when it works, or is off.
+ */
+fun proximityRowLine(on: Boolean, granted: Boolean, adapter: AdvertiserState): Int? = when {
+    !on -> null
+    !granted -> R.string.home_proximity_needs_permission
+    adapter == AdvertiserState.BLUETOOTH_OFF -> R.string.home_proximity_bluetooth_off
+    adapter == AdvertiserState.UNSUPPORTED -> R.string.home_proximity_unsupported
     else -> null
 }

@@ -47,6 +47,10 @@ import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
 import io.github.anmirror.feature.photos.MediaStoreLibrary
 import io.github.anmirror.feature.photos.PhotosService
+import io.github.anmirror.feature.proximity.AdvertisedMac
+import io.github.anmirror.feature.proximity.AdvertiserState
+import io.github.anmirror.feature.proximity.AndroidBleAdvertiser
+import io.github.anmirror.feature.proximity.ProximityBeacon
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
@@ -59,11 +63,13 @@ import io.github.anmirror.phone.platform.NsdMacDiscovery
 import io.github.anmirror.phone.ui.isGranted
 import io.github.anmirror.phone.ui.mediaAccess
 import io.github.anmirror.phone.ui.photosAccess
+import io.github.anmirror.phone.ui.proximityPermissions
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.service.PhoneNotificationListener
 import io.github.anmirror.phone.service.SharedNotifications
 import io.github.anmirror.phone.service.TransferNotifier
 import io.github.anmirror.protocol.MessageType
+import io.github.anmirror.protocol.PairingCrypto
 import io.github.anmirror.protocol.v1.ActionOutcome
 import io.github.anmirror.protocol.v1.BulkEndpoint
 import io.github.anmirror.protocol.v1.BulkHello
@@ -286,6 +292,69 @@ class AppGraph private constructor(context: Context) {
 
     /** Do Not Disturb sync with the Mac's Focus (F-11); the service feeds it while [dndOpen]. */
     val dndSync = DndSync(dnd = dndOverride, send = ::sendDnd, clock = SystemClock::elapsedRealtime)
+
+    private val proximityPrefs = app.getSharedPreferences("proximity", Context.MODE_PRIVATE)
+    private val _proximityOn = MutableStateFlow(proximityPrefs.getBoolean(KEY_PROXIMITY_ON, false))
+
+    /** The user's "Let your Mac lock when you walk away" switch. Off until they turn it on. */
+    val proximityOn: StateFlow<Boolean> = _proximityOn.asStateFlow()
+
+    fun setProximityOn(on: Boolean) {
+        proximityPrefs.edit { putBoolean(KEY_PROXIMITY_ON, on) }
+        _proximityOn.value = on
+    }
+
+    private val _proximityGranted = MutableStateFlow(readProximityGranted())
+
+    /** Whether Nearby devices (BLUETOOTH_ADVERTISE, API 31+) is granted; re-read on resume and after the prompt. */
+    val proximityGranted: StateFlow<Boolean> = _proximityGranted.asStateFlow()
+
+    fun refreshProximityGranted() {
+        _proximityGranted.value = readProximityGranted()
+    }
+
+    private fun readProximityGranted(): Boolean = proximityPermissions().all { app.isGranted(it) }
+
+    private val bleAdvertiser = AndroidBleAdvertiser(app)
+    private val _proximityAdapter = MutableStateFlow(bleAdvertiser.state())
+
+    /** Whether the phone can advertise: re-read on resume and on the adapter's state broadcast. */
+    val proximityAdapter: StateFlow<AdvertiserState> = _proximityAdapter.asStateFlow()
+
+    fun refreshProximityAdapter() {
+        _proximityAdapter.value = bleAdvertiser.state()
+    }
+
+    /**
+     * The one Mac the beacon advertises for: the connected one, else the most recently connected.
+     * A new connect time of the same Mac is no change.
+     */
+    val advertisedMac: Flow<PairedMac?> =
+        combine(store.macs, manager.state) { macs, state ->
+            AdvertisedMac.pick(macs.orEmpty(), (state as? PhoneConnectionState.Connected)?.mac)
+        }.distinctUntilChanged { a, b -> a?.id == b?.id && a?.discoveryKey.contentEquals(b?.discoveryKey) }
+
+    /** Made on first use: the phone's fingerprint may need the Keystore key, so never on the main thread. */
+    private val proximityBeaconLazy = lazy {
+        ProximityBeacon(
+            advertiser = bleAdvertiser,
+            phoneFp = PairingCrypto.fingerprint(identity.certificateDer),
+            scope = scope,
+            log = { Log.w(TAG, it) },
+        )
+    }
+
+    /** The phone's Bluetooth LE beacon for the Mac's auto-lock (F-15). */
+    val proximityBeacon: ProximityBeacon by proximityBeaconLazy
+
+    /**
+     * Feeds [proximityBeacon]; the service calls it with the switch, the permission, the adapter
+     * and [advertisedMac]. Stopping a beacon never made makes none (and so touches no Keystore).
+     */
+    fun updateProximityBeacon(active: Boolean, mac: PairedMac?) {
+        if (!active && !proximityBeaconLazy.isInitialized()) return
+        proximityBeacon.update(active, mac)
+    }
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(
@@ -873,7 +942,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
@@ -883,6 +952,7 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_BROWSE_ON = "browse_from_mac"
         private const val KEY_MEDIA_ON = "control_from_mac"
         private const val KEY_DND_ON = "sync_with_mac"
+        private const val KEY_PROXIMITY_ON = "lock_when_away"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */

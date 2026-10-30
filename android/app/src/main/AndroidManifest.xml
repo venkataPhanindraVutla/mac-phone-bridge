@@ -28,7 +28,17 @@
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
+    <!-- "Let your Mac lock when you walk away": a Bluetooth LE advertisement for the Mac (F-15).
+         Nearby devices (API 31+) is asked for only when the switch is turned on; up to API 30 the
+         two install-time permissions cover advertising. No location: the phone never scans. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- BLUETOOTH and BLUETOOTH_ADMIN would otherwise imply a required android.hardware.bluetooth. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- Paired Macs are encrypted with a Keystore key that is not backed up: no backups. -->
     <application

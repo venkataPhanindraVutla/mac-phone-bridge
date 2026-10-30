@@ -73,6 +73,7 @@ dependencies {
     implementation(project(":feature:browse"))
     implementation(project(":feature:media"))
     implementation(project(":feature:dnd"))
+    implementation(project(":feature:proximity"))
     implementation(project(":core:transfer"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)

@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
         graph.refreshCallsPermissions()
         graph.refreshMediaAccess()
         graph.refreshDndAccess()
+        graph.refreshProximityGranted()
+        graph.refreshProximityAdapter()
         graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
@@ -89,6 +91,9 @@ private fun AppRoot(graph: AppGraph) {
     val dndSyncOn by graph.dndSyncOn.collectAsStateWithLifecycle()
     val dndAccess by graph.dndAccess.collectAsStateWithLifecycle()
     val macDnd by graph.dndSync.macAvailability.collectAsStateWithLifecycle()
+    val proximityOn by graph.proximityOn.collectAsStateWithLifecycle()
+    val proximityGranted by graph.proximityGranted.collectAsStateWithLifecycle()
+    val proximityAdapter by graph.proximityAdapter.collectAsStateWithLifecycle()
     val contactsOn by graph.contactsOn.collectAsStateWithLifecycle()
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
@@ -135,6 +140,11 @@ private fun AppRoot(graph: AppGraph) {
                         dndAccess = dndAccess,
                         macDnd = macDnd,
                         onDndSyncToggle = graph::setDndSyncOn,
+                        proximityOn = proximityOn,
+                        proximityGranted = proximityGranted,
+                        proximityAdapter = proximityAdapter,
+                        onProximityToggle = graph::setProximityOn,
+                        onProximityPermissionResult = graph::refreshProximityGranted,
                         contactsOn = contactsOn,
                         contactsGranted = contactsGranted,
                         onContactsToggle = graph::setContactsOn,
