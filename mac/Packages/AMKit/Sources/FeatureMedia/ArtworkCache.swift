@@ -1,8 +1,8 @@
 import Foundation
 
 /// The phone's track artwork by key (SPEC section 20), in memory only: the most recent `limit`
-/// keys put, oldest dropped first. The phone sends each key once per connection, so the cache
-/// is cleared on disconnect.
+/// keys put, oldest dropped first; a `get` does not refresh a key. The phone remembers the same 8
+/// (ruling R36) and sends a key again once it has dropped out of them. Cleared on disconnect.
 public struct ArtworkCache: Sendable {
     public let limit: Int
     /// Keys from oldest to newest put.

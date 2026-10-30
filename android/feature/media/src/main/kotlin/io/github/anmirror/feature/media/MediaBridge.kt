@@ -16,8 +16,9 @@ import kotlin.math.abs
 
 /**
  * Phone side of `media.*` (SPEC 20) while the feature is open: [onConnected] to [onDisconnected].
- * Every session change is read again ([MediaSessions.snapshot]); new artwork goes first, once per
- * key per connection, then the state goes through the [StateThrottle]. A state that differs from
+ * Every session change is read again ([MediaSessions.snapshot]); artwork goes first whenever its key
+ * is not among the [ARTWORK_KEYS] most recently sent this connection (the Mac keeps that many; ruling
+ * R36), then the state goes through the [StateThrottle]. A state that differs from
  * the last one only by where playback has got to is not sent: the Mac extrapolates that itself.
  * Logs command kinds only, never what is playing.
  */
@@ -38,7 +39,8 @@ class MediaBridge(
     private val lock = Any()
     private var open = false
     private var generation = 0
-    private val sentArtwork = HashSet<String>()
+    /** The keys sent this connection, eldest first, at most [ARTWORK_KEYS]; a hit does not refresh. */
+    private val sentArtwork = LinkedHashSet<String>()
     private var lastOffered: MediaState? = null
     private var lastOfferedAt = 0L
 
@@ -100,7 +102,7 @@ class MediaBridge(
         }
         if (newArtwork && jpeg != null) {
             val artwork = MediaArtwork.newBuilder().setArtworkKey(key).setJpeg(ByteString.copyFrom(jpeg)).build()
-            if (send(MessageType.MEDIA_ARTWORK, artwork)) synchronized(lock) { if (gen == generation) sentArtwork += key }
+            if (send(MessageType.MEDIA_ARTWORK, artwork)) synchronized(lock) { if (gen == generation) remember(key) }
         }
         val now = clock()
         synchronized(lock) {
@@ -109,6 +111,12 @@ class MediaBridge(
             lastOfferedAt = now
         }
         throttle.offer(state)
+    }
+
+    /** Under [lock]: [key] as the newest sent, the eldest dropped past [ARTWORK_KEYS], as the Mac's cache does. */
+    private fun remember(key: String) {
+        sentArtwork += key
+        while (sentArtwork.size > ARTWORK_KEYS) sentArtwork.remove(sentArtwork.first())
     }
 
     /**
@@ -125,5 +133,7 @@ class MediaBridge(
 
     private companion object {
         const val SEEK_JUMP_MS = 2_000L
+        /** SPEC 20: the Mac keeps the 8 most recently sent artworks. */
+        const val ARTWORK_KEYS = 8
     }
 }

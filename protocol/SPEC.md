@@ -479,9 +479,10 @@ Channel `MEDIA`.
   after connect. `active = false` means nothing is playing, and every other field is empty.
 - `position_ms` is the position at send time. While `playing`, the Mac extrapolates with its own
   clock at `speed` (1.0 when the speed is 0).
-- `media.artwork` is sent before the first `media.state` that names its key, once per key per
-  connection. It is a JPEG, long edge 300 px, at most 98,304 bytes; artwork that does not fit is
-  not sent and the key is empty.
+- `media.artwork` is sent before the first `media.state` that names its key, and sent once per key
+  while it is among the 8 most recently sent keys; the Mac keeps those 8 (in memory, cleared on
+  disconnect). A key that has dropped out of the 8 is sent again. It is a JPEG, long edge 300 px,
+  at most 98,304 bytes; artwork that does not fit is not sent and the key is empty.
 - The artwork key is the lowercase hex of the first 8 bytes of SHA-256 over the JPEG bytes.
 - `media.command` names a `session_key`. A command for any other key is ignored. A command whose
   action the state does not offer (for example `SEEK` without `can_seek`) is ignored.

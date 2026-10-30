@@ -72,6 +72,49 @@ class MediaBridgeTest {
         assertEquals(ArtworkKey.of(other), states().last().artworkKey)
     }
 
+    @Test fun ninthKeyEvictsAndFirstIsResent() = runTest {
+        // R36: the phone remembers the 8 most recently sent keys, as the Mac's cache keeps 8.
+        val jpegs = (1..9).map { byteArrayOf(it.toByte()) }
+        sessions.current = snapshot(title = "t1", artworkJpeg = jpegs[0])
+        bridge().onConnected()
+        for (i in 2..8) {
+            advanceTimeBy(1_000)
+            sessions.change(snapshot(title = "t$i", artworkJpeg = jpegs[i - 1]))
+            advanceUntilIdle()
+        }
+        assertEquals(8, artworks().size)
+
+        // A hit does not refresh: the first key stays the eldest.
+        advanceTimeBy(1_000)
+        sessions.change(snapshot(title = "t1 again", artworkJpeg = jpegs[0]))
+        advanceUntilIdle()
+        assertEquals(8, artworks().size)
+
+        // The ninth evicts the first …
+        advanceTimeBy(1_000)
+        sessions.change(snapshot(title = "t9", artworkJpeg = jpegs[8]))
+        advanceUntilIdle()
+        assertEquals(9, artworks().size)
+
+        // … so the first is sent again, and the second (still among the 8) is not.
+        advanceTimeBy(1_000)
+        sessions.change(snapshot(title = "t1 third", artworkJpeg = jpegs[0]))
+        advanceUntilIdle()
+        assertEquals(10, artworks().size)
+        assertEquals(ArtworkKey.of(jpegs[0]), artworks().last().artworkKey)
+        assertEquals(MessageType.MEDIA_ARTWORK, sent[sent.size - 2].first)
+        advanceTimeBy(1_000)
+        sessions.change(snapshot(title = "t3 again", artworkJpeg = jpegs[2]))
+        advanceUntilIdle()
+        assertEquals(10, artworks().size)
+        // The resend of the first evicted the second (now the eldest).
+        advanceTimeBy(1_000)
+        sessions.change(snapshot(title = "t2 again", artworkJpeg = jpegs[1]))
+        advanceUntilIdle()
+        assertEquals(11, artworks().size)
+        assertEquals(ArtworkKey.of(jpegs[1]), artworks().last().artworkKey)
+    }
+
     @Test fun sessionGoneSendsInactive() = runTest {
         sessions.current = snapshot()
         bridge().onConnected()
