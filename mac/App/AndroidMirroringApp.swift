@@ -12,15 +12,7 @@ struct AndroidMirroringApp: App {
         } label: {
             // Template symbol, dimmed while no phone is connected; battery text beside it once the
             // phone has reported.
-            HStack(spacing: 4) {
-                Image(systemName: model.isConnected ? "iphone" : "iphone.slash")
-                    .opacity(model.isConnected ? 1 : 0.55)
-                if let title = model.menuBarStatusTitle { Text(title) }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                model.menuBarStatusAccessibilityLabel.map { Text($0) } ?? Text(model.menuBarAccessibilityLabel)
-            )
+            MenuBarLabel(model: model)
         }
 
         Window("Pair a phone", id: WindowID.pairing) {
@@ -50,9 +42,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = model
     }
 
+    /// Opening the app again (Finder, Spotlight, Launchpad) shows a window, so the app is reachable
+    /// when the menu bar has no room for its icon.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { NotificationCenter.default.post(name: .showMainWindow, object: nil) }
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
+}
+
+/// The menu-bar icon. It lives as long as the app, so it also opens windows on request.
+private struct MenuBarLabel: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: model.isConnected ? "iphone" : "iphone.slash")
+                .opacity(model.isConnected ? 1 : 0.55)
+            if let title = model.menuBarStatusTitle { Text(title) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            model.menuBarStatusAccessibilityLabel.map { Text($0) } ?? Text(model.menuBarAccessibilityLabel)
+        )
+        .onReceive(NotificationCenter.default.publisher(for: .showMainWindow)) { _ in
+            let id = model.isConnected ? WindowID.phone : WindowID.pairing
+            if id == WindowID.pairing { _ = model.startPairing() }
+            openWindow(id: id)
+            NSApp.activate(ignoringOtherApps: true)
+            // An agent app's activation can leave the new window behind the front app's windows.
+            DispatchQueue.main.async {
+                NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(id) == true }?.orderFrontRegardless()
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    static let showMainWindow = Notification.Name("io.github.anmirror.showMainWindow")
 }
 
 enum WindowID {
