@@ -371,8 +371,12 @@ public final class BrowseModel: SessionFeature {
         reloadSoon()
     }
 
+    /// Closes the notice. The roots-timeout notice, shown while no roots have come, asks for
+    /// them again: dismissing it must not leave the tab loading for ever.
     public func dismissNotice() {
+        let retry = notice == .timedOut && !rootsLoaded
         notice = nil
+        if retry { refreshRoots() }
     }
 
     // MARK: private
@@ -437,6 +441,19 @@ public final class BrowseModel: SessionFeature {
         if !rootsLoaded, notice == .timedOut { notice = nil }
         rootsLoaded = true
         Self.log.info("roots: \(list.count, privacy: .public)")
+        // Reads in a root that is gone: the phone dropped them (or will), and says nothing more.
+        let listed = Set(list.map(\.id))
+        let gone = queuedReads.filter { !listed.contains($0.rootID) }
+        if !gone.isEmpty {
+            queuedReads.removeAll { !listed.contains($0.rootID) }
+            for r in gone { r.answer.resolve(.failure(.browse(.revoked))) }
+        }
+        // A read whose offer is already in is a live transfer: failing its request does nothing.
+        let sentGone = sentReads.values.filter { !listed.contains($0.rootID) }.map(\.requestID)
+        for id in sentGone { engine.failRequest(id, .browse(.revoked)) }
+        if !gone.isEmpty || !sentGone.isEmpty {
+            Self.log.info("\(gone.count + sentGone.count, privacy: .public) reads in a gone root revoked")
+        }
         if let location, !list.contains(where: { $0.id == location.rootID }) {
             Self.log.info("root \(location.rootID, privacy: .public) is gone")
             closeLocation()

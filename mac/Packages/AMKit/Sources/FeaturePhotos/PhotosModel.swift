@@ -66,6 +66,9 @@ public final class PhotosModel: SessionFeature {
     @ObservationIgnored private var linkTimeout: Task<Void, Never>?
     /// The thumbnail link being read.
     @ObservationIgnored private var link: (any BulkPipe)?
+    /// `photos.fetch` requests whose answer has not come: the phone turning photos off fails them
+    /// at once, since it answers nothing then.
+    @ObservationIgnored private var fetching: Set<UInt64> = []
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "photos")
 
     /// `requestTimeout` bounds the wait for the list and for the thumbnail link; `fetchTimeout` is
@@ -116,8 +119,14 @@ public final class PhotosModel: SessionFeature {
         case .photosAvailability:
             guard let a = try? AMFeatureAvailability(serializedBytes: envelope.payload) else { return }
             phoneAvailability = a
-            // The phone stopped sharing its photos: what this Mac shows of them goes too.
-            if !a.enabled { clear() }
+            // The phone stopped sharing its photos: what this Mac shows of them goes too, and
+            // fetches still waiting for their offer end (one under way is the engine's).
+            if !a.enabled {
+                clear()
+                let waiting = fetching
+                fetching = []
+                for id in waiting { engine.failRequest(id, .transfer(.disabled)) }
+            }
         default:
             break
         }
@@ -322,7 +331,11 @@ public final class PhotosModel: SessionFeature {
         guard sharesPhotos else { return .failure(.transfer(.disabled)) }
         let requestID = engine.nextRequestID()
         let answer = Answer<Result<URL, TransferFailure>>()
-        engine.expect(requestID: requestID, destination: destination, deadline: fetchTimeout) { answer.resolve($0) }
+        fetching.insert(requestID)
+        engine.expect(requestID: requestID, destination: destination, deadline: fetchTimeout) { [weak self] result in
+            self?.fetching.remove(requestID)
+            answer.resolve(result)
+        }
         let engine = engine
         var fetch = AMPhotoFetch()
         fetch.requestID = requestID

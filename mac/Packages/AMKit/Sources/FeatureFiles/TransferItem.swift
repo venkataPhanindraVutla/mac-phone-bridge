@@ -28,9 +28,12 @@ public struct TransferItem: Identifiable, Equatable, Sendable {
     public var state: State
     /// A Mac send into a browse folder (it needs `browse.v1`), not to the phone's Downloads.
     public let targeted: Bool
+    /// A phone send answering a Mac request (a Files tab or Finder read, a photo fetch): those
+    /// report in their own UI, so they are no menu line and no "Couldn't receive" (R23).
+    public let requested: Bool
 
     public init(id: String, direction: Direction, name: String, size: UInt64, done: UInt64 = 0,
-                kind: AMTransferKind, state: State, targeted: Bool = false) {
+                kind: AMTransferKind, state: State, targeted: Bool = false, requested: Bool = false) {
         self.id = id
         self.direction = direction
         self.name = name
@@ -39,6 +42,7 @@ public struct TransferItem: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.state = state
         self.targeted = targeted
+        self.requested = requested
     }
 
     /// Done, failed or cancelled.
@@ -80,11 +84,13 @@ public struct TransferMenuLine: Equatable, Sendable {
 /// What the menu shows of the transfer list (ruling R11, like the phone's R9): at most one line
 /// per direction, sends first. The full list is the Phone window's. Phone screenshots arriving
 /// on their own are not menu lines (R13); they stay in the list, and a failed one still counts.
+/// Receives answering a Mac request (Files tab, Finder, photos) are not menu lines either (R23).
 public enum TransferMenu {
     public static func lines(_ transfers: [TransferItem]) -> [TransferMenuLine] {
         [TransferItem.Direction.send, .receive].compactMap { direction in
             let open = transfers.filter {
-                $0.direction == direction && !$0.isFinal && !($0.direction == .receive && $0.kind == .screenshot)
+                $0.direction == direction && !$0.isFinal
+                    && !($0.direction == .receive && ($0.kind == .screenshot || $0.requested))
             }
             guard let shown = open.first(where: { $0.state != .queued }) ?? open.first else { return nil }
             return TransferMenuLine(item: shown, waiting: open.count - 1)

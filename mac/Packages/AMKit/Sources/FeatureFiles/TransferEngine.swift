@@ -408,7 +408,7 @@ public final class TransferEngine: SessionFeature {
             return
         }
         let item = TransferItem(id: o.transferID, direction: .receive, name: FileNameSanitizer.sanitize(o.name),
-                                size: o.size, kind: o.kind, state: .queued)
+                                size: o.size, kind: o.kind, state: .queued, requested: o.requestID != 0)
         let job = Job(item: item, offer: o, source: nil)
         jobs.append(job)
         // A receive is live: requests wait behind it without counting down.
@@ -421,6 +421,10 @@ public final class TransferEngine: SessionFeature {
             }
             job.destination = e.destination
             job.completion = e.completion
+        } else if o.kind == .file, !shared.contains("files.v1") {
+            // A file the user shared on the phone needs `files.v1`; another bulk capability
+            // (screenshots, photos, browse) is not enough.
+            job.destination = .refuse(.disabled)
         } else {
             job.destination = destination(o)
         }
@@ -429,7 +433,8 @@ public final class TransferEngine: SessionFeature {
             finish(job, .failed(reason), notice: .reject(reason), listed: false)
             return
         }
-        lastReceiveFailure = nil
+        // Requested receives report in their own UI (R23): they leave the summary alone.
+        if o.requestID == 0 { lastReceiveFailure = nil }
         publish()
         pump()
     }
@@ -690,7 +695,7 @@ public final class TransferEngine: SessionFeature {
             }
             if failed, item.direction == .send {
                 lastSendFailure = lastSendFailure?.adding(item) ?? TransferFailureSummary(newest: item)
-            } else if failed {
+            } else if failed, !item.requested {
                 lastReceiveFailure = lastReceiveFailure?.adding(item) ?? TransferFailureSummary(newest: item)
             }
         }

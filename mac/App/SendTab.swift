@@ -166,8 +166,9 @@ enum TransferText {
             case .io: return "The file couldn't be read or saved."
             case .notFound: return "The file is no longer there."
             case .disabled where sending:
-                // The phone's switch for this is off.
-                return item.targeted ? "Turn on file browsing in the phone app." : "Turn on file sharing in the phone app."
+                // A browse write: the phone's browsing switch is off. A plain send: the phone has
+                // no files switch, so a phone that refuses files is an older app.
+                return item.targeted ? "Turn on file browsing in the phone app." : "Update the phone app to send files."
             case .unspecified, .denied, .disabled, .badTarget, .UNRECOGNIZED:
                 return sending ? "The phone didn't take the file." : "This Mac can't take this file."
             }

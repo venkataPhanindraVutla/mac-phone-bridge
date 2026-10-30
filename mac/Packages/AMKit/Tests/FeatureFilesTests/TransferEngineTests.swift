@@ -1125,3 +1125,61 @@ private func item(_ id: String, _ direction: TransferItem.Direction, _ state: Tr
     #expect(fm.fileExists(atPath: folder.appendingPathComponent("inside").path))
     #expect(store.defaults.stringArray(forKey: TransferEngine.openPartsKey) == nil)
 }
+
+// MARK: final wave: plain phone files need files.v1 (item 5), requested receives (item 7)
+
+@MainActor @Test func plainFileOfferNeedsFilesShared() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    // The phone shares screenshots only: a file it offers on its own is refused, unlisted.
+    await r.connect(shared: ["screenshots.v1"])
+    await r.deliver(.filesOffer, r.offer("t1", size: 10))
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.transferID) == ["t1"] }
+    #expect(r.sent.of(.filesReject, AMTransferReject.self).first?.reason == .disabled)
+    #expect(r.engine.transfers.isEmpty)
+    #expect(r.destinationCalls == 0)
+    // A screenshot still goes where the destination says.
+    var shot = r.offer("t2", size: 10)
+    shot.kind = .screenshot
+    await r.deliver(.filesOffer, shot)
+    try await until("accept") { r.sent.of(.filesAccept, AMTransferAccept.self).map(\.transferID) == ["t2"] }
+    #expect(r.destinationCalls == 1)
+    // An answer to a request needs no files.v1: it has its own feature.
+    let request = r.engine.nextRequestID()
+    r.engine.expect(requestID: request, destination: .folder(r.dir)) { _ in }
+    await r.deliver(.filesOffer, r.offer("t3", size: 10, requestID: request))
+    #expect(r.item("t3")?.state == .queued)
+}
+
+@MainActor @Test func requestedReceiveFailuresAreNotSummarized() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let request = r.engine.nextRequestID()
+    r.engine.expect(requestID: request, destination: .folder(r.dir)) { _ in }
+    _ = try await r.startReceive(r.offer("t1", size: 100, requestID: request))
+    #expect(r.item("t1")?.requested == true)
+    var f = AMTransferFailed(); f.transferID = "t1"; f.reason = .io
+    await r.deliver(.filesFailed, f)
+    #expect(r.item("t1")?.state == .failed(.io), "still listed in the Send tab")
+    #expect(r.engine.lastFailure(.receive) == nil)
+
+    // A plain receive that fails is summarized; a requested one arriving does not clear it.
+    _ = try await r.startReceive(r.offer("t2", size: 100))
+    #expect(r.item("t2")?.requested == false)
+    f.transferID = "t2"
+    await r.deliver(.filesFailed, f)
+    #expect(r.engine.lastFailure(.receive)?.newest.id == "t2")
+    let again = r.engine.nextRequestID()
+    r.engine.expect(requestID: again, destination: .folder(r.dir)) { _ in }
+    await r.deliver(.filesOffer, r.offer("t3", size: 100, requestID: again))
+    #expect(r.engine.lastFailure(.receive)?.newest.id == "t2")
+}
+
+@Test func requestedReceivesAreNotMenuLines() {
+    func read(_ id: String, _ state: TransferItem.State) -> TransferItem {
+        TransferItem(id: id, direction: .receive, name: id, size: 10, kind: .file, state: state, requested: true)
+    }
+    #expect(TransferMenu.lines([read("x1", .active), read("x2", .queued)]).isEmpty)
+    let lines = TransferMenu.lines([read("x1", .active), item("r1", .receive, .queued), item("s1", .send, .active)])
+    #expect(lines.map(\.item.id) == ["s1", "r1"])
+    #expect(lines.map(\.waiting) == [0, 0])
+}

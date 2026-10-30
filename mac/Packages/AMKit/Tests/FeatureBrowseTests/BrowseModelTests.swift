@@ -785,3 +785,75 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     try await Task.sleep(for: .milliseconds(50))
     #expect(r.sent.of(.filesOffer, AMTransferOffer.self).count == 1)
 }
+
+// MARK: final wave: requests the phone drops (item 4), the roots-timeout notice (item 12)
+
+@MainActor @Test func readsInAGoneRootAreRevoked() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    await r.pushRoots(["r1", "r2"])
+    var tasks: [Task<Result<URL, TransferFailure>, Never>] = []
+    // Eight reads in r2 fill the slots; a ninth in r2 and one in r1 wait here.
+    for i in 0..<9 {
+        let file = r.dir.appendingPathComponent("b\(i)")
+        tasks.append(Task { await r.model.download(entry("b\(i)"), in: BrowseLocation(rootID: "r2"), to: file, quiet: true) })
+        try await until("read \(i)") { r.reads.count == min(i + 1, 8) }
+    }
+    let kept = Task { await r.model.download(entry("a"), in: BrowseLocation(rootID: "r1"), to: r.dir.appendingPathComponent("a"), quiet: true) }
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(r.reads.count == 8)
+    // r2 goes: the phone drops its reads without a word; they end now, not at the deadline.
+    await r.pushRoots(["r1"])
+    for t in tasks { #expect(await t.value == .failure(.browse(.revoked))) }
+    // Their slots free up: r1's read goes out.
+    try await until("r1 read") { r.reads.contains { $0.rootID == "r1" } }
+    #expect(r.reads.count == 9, "the queued r2 read never went")
+    kept.cancel()
+    _ = await kept.value
+}
+
+@MainActor @Test func readWithItsOfferInIsLeftToTheEngine() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    await r.pushRoots(["r1", "r2"])
+    let file = r.dir.appendingPathComponent("b")
+    let task = Task { await r.model.download(entry("b"), in: BrowseLocation(rootID: "r2"), to: file, quiet: true) }
+    try await until("browse.read") { r.reads.count == 1 }
+    var offer = AMTransferOffer()
+    offer.transferID = "p1"; offer.size = 4; offer.kind = .file; offer.requestID = try #require(r.reads.last).requestID
+    await r.engine.message(envelope(.files, .filesOffer, offer))
+    try await until("accept") { !r.sent.of(.filesAccept, AMTransferAccept.self).isEmpty }
+    // The root goes, but the transfer is live: it ends on its own terms.
+    await r.pushRoots(["r1"])
+    #expect(r.engine.transfers.first { $0.id == "p1" }?.isFinal == false)
+    var cancel = AMTransferCancel(); cancel.transferID = "p1"
+    await r.engine.message(envelope(.files, .filesCancel, cancel))
+    #expect(await task.value == .failure(.transfer(.cancelled)))
+}
+
+@MainActor @Test func dismissingTheRootsTimeoutAsksAgain() async throws {
+    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    await r.connect()
+    try await until("timed out") { r.model.notice == .timedOut }
+    #expect(!r.model.rootsLoaded)
+    let asked = r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count
+    // Dismissing it must not leave the tab spinning for ever: the roots are asked for again.
+    r.model.dismissNotice()
+    #expect(r.model.notice == nil)
+    try await until("asked again") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == asked + 1 }
+    try await until("timed out again") { r.model.notice == .timedOut }
+
+    // With the roots in, any notice just closes.
+    await r.pushRoots(["r1"])
+    #expect(r.model.rootsLoaded)
+    let open = Task { await r.model.open(BrowseLocation(rootID: "r1")) }
+    try await until("browse.list") { r.lists.count == 1 }
+    await r.answerList([], outcome: .notFound)
+    await open.value
+    #expect(r.model.notice == .notFound)
+    let now = r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count
+    r.model.dismissNotice()
+    #expect(r.model.notice == nil)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == now)
+}

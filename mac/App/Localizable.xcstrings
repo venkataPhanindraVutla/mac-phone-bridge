@@ -1355,13 +1355,13 @@
         }
       }
     },
-    "Turn on file sharing in the phone app.": {
+    "Update the phone app to send files.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn on file sharing in the phone app."
+            "value": "Update the phone app to send files."
           }
         }
       }

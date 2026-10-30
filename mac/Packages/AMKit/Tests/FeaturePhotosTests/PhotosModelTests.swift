@@ -527,3 +527,45 @@ private func phoneAnswers(_ r: Rig, with bytes: Data, name: String = "IMG_0005.j
     await secondTask.value
     #expect(second == .failure(.transfer(.timedOut)), "once idle, its deadline runs")
 }
+
+// MARK: final wave: fetches the phone drops (item 4)
+
+@MainActor @Test func photosOffFailsWaitingFetchesAtOnce() async throws {
+    let r = Rig(fetchTimeout: .seconds(30)); defer { r.cleanUp() }
+    await r.connect()
+    let a = Task { await r.model.fetch(1, to: r.downloads.appendingPathComponent("a.jpg")) }
+    let b = Task { await r.model.fetch(2, to: r.downloads.appendingPathComponent("b.jpg")) }
+    try await until("two fetches") { r.sent.of(.photosFetch, AMPhotoFetch.self).count == 2 }
+    // The phone turns photos off: it answers nothing more, so the Mac does not wait 30 s.
+    var off = AMFeatureAvailability()
+    off.enabled = false
+    off.reason = .offByUser
+    await r.model.message(envelope(.photos, .photosAvailability, off))
+    #expect(await a.value == .failure(.transfer(.disabled)))
+    #expect(await b.value == .failure(.transfer(.disabled)))
+    // A late offer for one of them is denied: the request is gone.
+    var offer = AMTransferOffer()
+    offer.transferID = "late"; offer.size = 1; offer.kind = .photo
+    offer.requestID = try #require(r.sent.of(.photosFetch, AMPhotoFetch.self).first).requestID
+    await r.engine.message(envelope(.files, .filesOffer, offer))
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.denied] }
+}
+
+@MainActor @Test func photosOffLeavesAFetchUnderWayToTheEngine() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let task = Task { await r.model.fetch(1, to: r.downloads.appendingPathComponent("a.jpg")) }
+    try await until("photos.fetch") { !r.sent.of(.photosFetch, AMPhotoFetch.self).isEmpty }
+    var offer = AMTransferOffer()
+    offer.transferID = "p1"; offer.size = 4; offer.kind = .photo
+    offer.requestID = try #require(r.sent.of(.photosFetch, AMPhotoFetch.self).last).requestID
+    await r.engine.message(envelope(.files, .filesOffer, offer))
+    try await until("accept") { !r.sent.of(.filesAccept, AMTransferAccept.self).isEmpty }
+    var off = AMFeatureAvailability()
+    off.enabled = false
+    await r.model.message(envelope(.photos, .photosAvailability, off))
+    #expect(r.engine.transfers.first { $0.id == "p1" }?.isFinal == false, "the phone ends its own transfer")
+    var failed = AMTransferFailed(); failed.transferID = "p1"; failed.reason = .disabled
+    await r.engine.message(envelope(.files, .filesFailed, failed))
+    #expect(await task.value == .failure(.transfer(.disabled)))
+}

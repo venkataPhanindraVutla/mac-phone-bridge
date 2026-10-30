@@ -725,7 +725,7 @@ enum SendNote: Equatable {
     var text: LocalizedStringResource {
         switch self {
         case .folders: "Folders can't be sent yet. Send the files inside instead."
-        case .filesOff: "Turn on file sharing in the phone app."
+        case .filesOff: "Update the phone app to send files."
         case .clipboardEmpty: "The clipboard is empty."
         case .nothingToSend: "Nothing to send."
         case .tooLarge: "The text is too long to send."
