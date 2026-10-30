@@ -14,6 +14,7 @@ import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.ContactsContract
 import android.provider.MediaStore
@@ -178,8 +179,8 @@ class ConnectionService : LifecycleService() {
             if (dndSession != null) graph.dndSync.onDisconnected()
             dndSession = null
         }
-        stopBluetoothReceiver()
-        graph.updateProximityBeacon(active = false, mac = null)
+        stopProximityReceiver()
+        graph.proximityBeacon.stop() // its sets and its alarm
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
         network.stop()
@@ -772,51 +773,65 @@ class ConnectionService : LifecycleService() {
     }
 
     /** Registered while the proximity switch is on; touched only on the main thread. */
-    private var bluetoothReceiver: BroadcastReceiver? = null
+    private var proximityReceiver: BroadcastReceiver? = null
 
-    private fun startBluetoothReceiver() {
-        if (bluetoothReceiver != null) return
+    /**
+     * While the switch is on: the adapter's state (Bluetooth off stops the beacon, on starts it
+     * again), and the moments the epoch may have moved without the alarm (ruling R29): the clock or
+     * time zone set, the screen coming on, Doze starting or ending (the alarm is then set again,
+     * allowed while idle).
+     */
+    private fun startProximityReceiver() {
+        if (proximityReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) graph.refreshProximityAdapter()
+                when (intent.action) {
+                    BluetoothAdapter.ACTION_STATE_CHANGED -> graph.refreshProximityAdapter()
+                    else -> graph.proximityBeacon.onClockCheck()
+                }
             }
         }
-        // A system broadcast; it needs no permission from API 31 (BLUETOOTH, granted at install, before).
-        ContextCompat.registerReceiver(
-            this, receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
-        bluetoothReceiver = receiver
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+        }
+        // System broadcasts to registered receivers. The adapter's needs no permission from API 31
+        // (BLUETOOTH, granted at install, before).
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        proximityReceiver = receiver
         // Bluetooth may have changed while nobody listened.
         graph.refreshProximityAdapter()
     }
 
-    private fun stopBluetoothReceiver() {
-        bluetoothReceiver?.let(::unregisterReceiver)
-        bluetoothReceiver = null
+    private fun stopProximityReceiver() {
+        proximityReceiver?.let(::unregisterReceiver)
+        proximityReceiver = null
     }
 
     /**
      * Proximity (F-15): the Bluetooth LE beacon runs while the switch is on, Nearby devices is
-     * granted (API 31+) and the adapter can advertise, for the Mac [AppGraph.advertisedMac] picks.
-     * It does not depend on the LAN connection: it keeps advertising while the Mac is away. The
-     * adapter's state broadcast is watched while the switch is on, so Bluetooth going off stops it
-     * and coming back on starts it again. `proximity.availability` goes to the Mac while it shares
-     * proximity.v1, on connect and on change.
+     * granted (API 31+) and the adapter can advertise, with one set per Mac [AppGraph.advertisedMacs]
+     * lists. It does not depend on the LAN connection: it keeps advertising while a Mac is away.
+     * `proximity.availability` goes to the connected Mac while it shares proximity.v1, on connect
+     * and on each change, including a fault of that Mac's advertisement.
      */
     private fun setUpProximity() {
         lifecycleScope.launch {
-            combine(graph.proximityOn, graph.proximityGranted, graph.proximityAdapter, graph.advertisedMac) { on, granted, adapter, mac ->
-                ProximityInputs(on, granted, adapter, mac)
+            combine(graph.proximityOn, graph.proximityGranted, graph.proximityAdapter, graph.advertisedMacs) { on, granted, adapter, macs ->
+                ProximityInputs(on, granted, adapter, macs)
             }
                 .distinctUntilChanged()
                 .collect { inputs ->
-                    if (inputs.on) startBluetoothReceiver() else stopBluetoothReceiver()
+                    if (inputs.on) startProximityReceiver() else stopProximityReceiver()
                     val active = inputs.on && inputs.granted
                     try {
-                        // Made off the main thread (it reads this phone's certificate from the Keystore);
-                        // updated on it, so onDestroy's stop always comes last.
-                        if (active) withContext(Dispatchers.Default) { graph.proximityBeacon }
-                        graph.updateProximityBeacon(active = active, mac = inputs.mac)
+                        // The fingerprint is read off the main thread (the Keystore); the beacon is fed on
+                        // it, so onDestroy's stop always comes last.
+                        if (active) graph.warmProximity()
+                        graph.proximityBeacon.update(active = active, macs = inputs.macs)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -833,7 +848,14 @@ class ConnectionService : LifecycleService() {
                 graph.proximityOn,
                 graph.proximityGranted,
                 graph.proximityAdapter,
-            ) { session, on, granted, adapter -> session to proximityAvailability(userOn = on, granted = granted, adapter = adapter) }
+                graph.proximityBeacon.faulted,
+            ) { session, on, granted, adapter, faulted ->
+                val availability = proximityAvailability(
+                    userOn = on, granted = granted, adapter = adapter,
+                    faulted = session != null && session.mac.id in faulted,
+                )
+                session to availability
+            }
                 .distinctUntilChanged { a, b -> a.first === b.first && a.second == b.second }
                 .collect { (session, availability) ->
                     if (session != null) graph.manager.send(Channel.CHANNEL_PROXIMITY, MessageType.PROXIMITY_AVAILABILITY, availability)
@@ -1060,12 +1082,12 @@ class ConnectionService : LifecycleService() {
     }
 }
 
-/** What the proximity beacon follows, compared by content ([AppGraph.advertisedMac] already ignores a new connect time). */
+/** What the proximity beacon follows, compared by content ([AppGraph.advertisedMacs] already ignores a new connect time). */
 private data class ProximityInputs(
     val on: Boolean,
     val granted: Boolean,
     val adapter: AdvertiserState,
-    val mac: PairedMac?,
+    val macs: List<PairedMac>,
 )
 
 /** Pairing is between Continue/scan and its result: the service must not stop meanwhile. */

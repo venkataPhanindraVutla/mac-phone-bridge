@@ -2,89 +2,177 @@ package io.github.anmirror.feature.proximity
 
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.protocol.PairingCrypto
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
-private const val EPOCH_MS = 900_000L
-
-/** Milliseconds from [nowMs] (Unix time) to the start of the next 15-minute epoch (SPEC 6); never 0. */
-fun msUntilNextEpoch(nowMs: Long): Long = EPOCH_MS - Math.floorMod(nowMs, EPOCH_MS)
+/** One Mac's advertisement. */
+sealed interface BeaconState {
+    data object Starting : BeaconState
+    data object On : BeaconState
+    data class Failed(val code: Int) : BeaconState
+}
 
 /**
- * The phone's Bluetooth LE beacon for auto-lock (F-15, SPEC 22). While [update] says it is active,
- * a Mac is given and the adapter is ready, it advertises that Mac's BLE ID for this phone and the
- * current epoch, and restarts with the next epoch's ID 1 s after each boundary. Each [update]
- * stops what runs and starts afresh; not active, no Mac, or an adapter that is not ready, stops.
- * It does not depend on the LAN connection. Logs only error codes, never the ID.
+ * The phone's Bluetooth LE beacon for auto-lock (F-15, SPEC 22, rulings R29–R31): one legacy
+ * advertising set per Mac given to [update] (up to [AdvertisedMacs.MAX], in priority order), each
+ * carrying that Mac's BLE ID for this phone and the current epoch.
+ *
+ * - **Rotation:** a wall-clock [WakeAlarm] 1 s past each boundary calls [onClockCheck], which
+ *   recomputes the epoch from [clock] and gives every set its new ID in place. A late alarm, a
+ *   clock change or the screen coming on just calls [onClockCheck] again.
+ * - **Failures:** a failed start, refused new data, or a set the system stopped is
+ *   [BeaconState.Failed] and retried after [RetryBackoff]; the sets that did start are kept.
+ * - **[faulted]:** the Macs whose last confirmed state is a failure. A retry in progress keeps the
+ *   fault (no flicker); only a successful start clears it. The availability sent to a connected
+ *   Mac reads it.
+ *
+ * Not active, no Mac, or an adapter that is not ready stops every set and the alarm. It does not
+ * depend on the LAN connection. Thread-safe; logs only error codes, never an ID.
  */
 class ProximityBeacon(
     private val advertiser: BleAdvertiser,
-    private val phoneFp: ByteArray,
-    private val scope: CoroutineScope,
+    private val alarm: WakeAlarm,
+    private val phoneFp: () -> ByteArray,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
 ) {
-    private val _advertising = MutableStateFlow(false)
-
-    /** True from a start until its stop or failure. */
-    val advertising: StateFlow<Boolean> = _advertising.asStateFlow()
+    private class Slot(val mac: PairedMac) {
+        /** Identifies the current set: events of an earlier one are dropped. */
+        var token = Any()
+        var handle: AdvertisingSlot? = null
+        var state: BeaconState = BeaconState.Starting
+        var epoch = 0L
+        var faulted = false
+        var failures = 0
+        var retryAt: Long? = null
+    }
 
     private val lock = Any()
 
-    /** Bumped by each [update]: a timer or a failure of an earlier one does nothing. Guarded by [lock]. */
-    private var generation = 0L
-    private var timer: Job? = null
-    private var started = false
+    /** By Mac id, in the order started; guarded by [lock]. */
+    private val slots = LinkedHashMap<String, Slot>()
 
-    /** [active]: the switch is on and the permission granted. [mac]: the one to advertise for ([AdvertisedMac]). */
-    fun update(active: Boolean, mac: PairedMac?) {
-        synchronized(lock) {
-            generation++
-            timer?.cancel()
-            timer = null
-            stopLocked()
-            if (!active || mac == null || advertiser.state() != AdvertiserState.READY) return
-            val gen = generation
-            timer = scope.launch {
-                while (true) {
-                    val now = clock()
-                    synchronized(lock) {
-                        if (gen != generation) return@launch
-                        stopLocked()
-                        startLocked(gen, mac, now)
-                    }
-                    delay(msUntilNextEpoch(now) + RESTART_AFTER_BOUNDARY_MS)
+    private val _states = MutableStateFlow<Map<String, BeaconState>>(emptyMap())
+
+    /** Each advertised Mac's state, by Mac id; empty while the beacon is stopped. */
+    val states: StateFlow<Map<String, BeaconState>> = _states.asStateFlow()
+
+    private val _faulted = MutableStateFlow<Set<String>>(emptySet())
+
+    /** The ids of the Macs whose advertisement last failed and has not started since. */
+    val faulted: StateFlow<Set<String>> = _faulted.asStateFlow()
+
+    /**
+     * [active]: the switch is on and the permission granted. [macs]: the ones to advertise for,
+     * in priority order ([AdvertisedMacs.pick]). Sets of Macs no longer listed (forgotten, or
+     * pushed out) stop; new ones start; the others carry on untouched.
+     */
+    fun update(active: Boolean, macs: List<PairedMac>) = synchronized(lock) {
+        val wanted = if (active && advertiser.state() == AdvertiserState.READY) macs.take(AdvertisedMacs.MAX) else emptyList()
+        for (slot in slots.values.toList()) {
+            val keep = wanted.firstOrNull { it.id == slot.mac.id }
+            if (keep == null || !keep.discoveryKey.contentEquals(slot.mac.discoveryKey)) {
+                stopSlot(slot)
+                slots.remove(slot.mac.id)
+            }
+        }
+        val now = clock()
+        for (mac in wanted) {
+            if (mac.id in slots) continue
+            val slot = Slot(mac)
+            slots[mac.id] = slot
+            startSlot(slot, now)
+        }
+        publishAndArm(now)
+    }
+
+    /** Stops everything (the service is going away). */
+    fun stop() = update(active = false, macs = emptyList())
+
+    /**
+     * The alarm fired, the clock or time zone changed, the screen came on, or Doze changed: rotate
+     * every set whose epoch is no longer the current one, retry the failed ones that are due, and
+     * set the next alarm.
+     */
+    fun onClockCheck() = synchronized(lock) {
+        if (slots.isEmpty()) {
+            alarm.cancel()
+            return@synchronized
+        }
+        val now = clock()
+        val epoch = RotationSchedule.epochAt(now)
+        for (slot in slots.values.toList()) {
+            when {
+                slot.state is BeaconState.Failed -> {
+                    val due = slot.retryAt ?: now
+                    // A retry further off than the longest wait means the clock went back: due now.
+                    if (due <= now || due - now > RetryBackoff.MAX_MS) startSlot(slot, now)
+                }
+                slot.epoch != epoch -> {
+                    slot.epoch = epoch
+                    slot.handle?.setData(bleId(slot.mac, epoch))
                 }
             }
         }
+        publishAndArm(clock())
     }
 
-    private fun startLocked(gen: Long, mac: PairedMac, nowMs: Long) {
-        val id = PairingCrypto.bleId(mac.discoveryKey, phoneFp, PairingCrypto.epochOf(Math.floorDiv(nowMs, 1000L)))
-        started = true
-        _advertising.value = true
-        advertiser.start(id) { code ->
-            synchronized(lock) {
-                if (gen == generation) _advertising.value = false
+    private fun bleId(mac: PairedMac, epoch: Long): ByteArray = PairingCrypto.bleId(mac.discoveryKey, phoneFp(), epoch)
+
+    private fun startSlot(slot: Slot, now: Long) {
+        val token = Any()
+        slot.token = token
+        slot.state = BeaconState.Starting
+        slot.retryAt = null
+        slot.epoch = RotationSchedule.epochAt(now)
+        val handle = advertiser.start(bleId(slot.mac, slot.epoch)) { event -> onEvent(slot, token, event) }
+        // A failure reported before start returned has already moved on: the set is not kept.
+        if (slot.token === token && slot.state !is BeaconState.Failed) slot.handle = handle else handle.stop()
+    }
+
+    private fun stopSlot(slot: Slot) {
+        slot.token = Any()
+        slot.handle?.stop()
+        slot.handle = null
+    }
+
+    private fun onEvent(slot: Slot, token: Any, event: AdvertiserEvent) = synchronized(lock) {
+        if (slots[slot.mac.id] !== slot || slot.token !== token) return@synchronized
+        val now = clock()
+        when (event) {
+            AdvertiserEvent.Started -> {
+                slot.state = BeaconState.On
+                slot.faulted = false
+                slot.failures = 0
             }
-            log("proximity: advertise failed ($code)")
+            is AdvertiserEvent.Failed -> fail(slot, event.code, now)
+            AdvertiserEvent.StoppedBySystem -> fail(slot, CODE_STOPPED_BY_SYSTEM, now)
+        }
+        publishAndArm(now)
+    }
+
+    private fun fail(slot: Slot, code: Int, now: Long) {
+        log("proximity: advertise failed ($code)")
+        stopSlot(slot)
+        slot.state = BeaconState.Failed(code)
+        slot.faulted = true
+        slot.retryAt = now + RetryBackoff.delayMs(slot.failures)
+        slot.failures++
+    }
+
+    private fun publishAndArm(now: Long) {
+        _states.value = slots.mapValues { it.value.state }
+        _faulted.value = slots.values.filter { it.faulted }.map { it.mac.id }.toSet()
+        if (slots.isEmpty()) {
+            alarm.cancel()
+        } else {
+            alarm.set(RotationSchedule.nextWake(now, slots.values.mapNotNull { it.retryAt }))
         }
     }
 
-    private fun stopLocked() {
-        if (!started) return
-        started = false
-        advertiser.stop()
-        _advertising.value = false
-    }
-
-    private companion object {
-        /** The restart waits this long past the boundary, so the new epoch is surely under way. */
-        const val RESTART_AFTER_BOUNDARY_MS = 1_000L
+    companion object {
+        /** [BeaconState.Failed]'s code when the system stopped a set ([AdvertiserEvent.StoppedBySystem]). */
+        const val CODE_STOPPED_BY_SYSTEM = -1
     }
 }

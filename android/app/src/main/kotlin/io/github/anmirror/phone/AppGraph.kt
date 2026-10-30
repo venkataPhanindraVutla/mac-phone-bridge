@@ -3,8 +3,10 @@ package io.github.anmirror.phone
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
@@ -47,9 +49,10 @@ import io.github.anmirror.feature.notify.NotificationSnapshot
 import io.github.anmirror.feature.notify.NotifyBridge
 import io.github.anmirror.feature.photos.MediaStoreLibrary
 import io.github.anmirror.feature.photos.PhotosService
-import io.github.anmirror.feature.proximity.AdvertisedMac
+import io.github.anmirror.feature.proximity.AdvertisedMacs
 import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.feature.proximity.AndroidBleAdvertiser
+import io.github.anmirror.feature.proximity.AndroidWakeAlarm
 import io.github.anmirror.feature.proximity.ProximityBeacon
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
@@ -66,6 +69,7 @@ import io.github.anmirror.phone.ui.photosAccess
 import io.github.anmirror.phone.ui.proximityPermissions
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.service.PhoneNotificationListener
+import io.github.anmirror.phone.service.ProximityAlarmReceiver
 import io.github.anmirror.phone.service.SharedNotifications
 import io.github.anmirror.phone.service.TransferNotifier
 import io.github.anmirror.protocol.MessageType
@@ -103,6 +107,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import com.google.protobuf.InvalidProtocolBufferException
 import java.io.Closeable
@@ -326,35 +331,40 @@ class AppGraph private constructor(context: Context) {
     }
 
     /**
-     * The one Mac the beacon advertises for: the connected one, else the most recently connected.
-     * A new connect time of the same Mac is no change.
+     * The Macs the beacon advertises for (ruling R31): every paired one up to three, the connected
+     * one first, then by most recent connection. A new connect time alone is no change.
      */
-    val advertisedMac: Flow<PairedMac?> =
+    val advertisedMacs: Flow<List<PairedMac>> =
         combine(store.macs, manager.state) { macs, state ->
-            AdvertisedMac.pick(macs.orEmpty(), (state as? PhoneConnectionState.Connected)?.mac)
-        }.distinctUntilChanged { a, b -> a?.id == b?.id && a?.discoveryKey.contentEquals(b?.discoveryKey) }
+            AdvertisedMacs.pick(macs.orEmpty(), (state as? PhoneConnectionState.Connected)?.mac)
+        }.distinctUntilChanged { a, b ->
+            a.size == b.size && a.zip(b).all { (x, y) -> x.id == y.id && x.discoveryKey.contentEquals(y.discoveryKey) }
+        }
 
-    /** Made on first use: the phone's fingerprint may need the Keystore key, so never on the main thread. */
-    private val proximityBeaconLazy = lazy {
-        ProximityBeacon(
-            advertiser = bleAdvertiser,
-            phoneFp = PairingCrypto.fingerprint(identity.certificateDer),
-            scope = scope,
-            log = { Log.w(TAG, it) },
-        )
+    /** This phone's certificate fingerprint; the first read may need the Keystore key, so never on the main thread. */
+    private val phoneFingerprint by lazy { PairingCrypto.fingerprint(identity.certificateDer) }
+
+    /** Reads [phoneFingerprint] once off the main thread, so the beacon's starts and rotations find it ready. */
+    suspend fun warmProximity() {
+        withContext(Dispatchers.Default) { phoneFingerprint }
     }
-
-    /** The phone's Bluetooth LE beacon for the Mac's auto-lock (F-15). */
-    val proximityBeacon: ProximityBeacon by proximityBeaconLazy
 
     /**
-     * Feeds [proximityBeacon]; the service calls it with the switch, the permission, the adapter
-     * and [advertisedMac]. Stopping a beacon never made makes none (and so touches no Keystore).
+     * The phone's Bluetooth LE beacon for the Mac's auto-lock (F-15). The service feeds it; its
+     * wall-clock alarm reaches it through [ProximityAlarmReceiver].
      */
-    fun updateProximityBeacon(active: Boolean, mac: PairedMac?) {
-        if (!active && !proximityBeaconLazy.isInitialized()) return
-        proximityBeacon.update(active, mac)
-    }
+    val proximityBeacon = ProximityBeacon(
+        advertiser = bleAdvertiser,
+        alarm = AndroidWakeAlarm(
+            app,
+            PendingIntent.getBroadcast(
+                app, 0, Intent(app, ProximityAlarmReceiver::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            ),
+        ),
+        phoneFp = { phoneFingerprint },
+        log = { Log.w(TAG, it) },
+    )
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(

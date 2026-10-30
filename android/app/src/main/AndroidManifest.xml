@@ -141,6 +141,11 @@
             </intent-filter>
         </service>
 
+        <!-- The proximity beacon's wall-clock alarm (RTC_WAKEUP, inexact); only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.ProximityAlarmReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="false">

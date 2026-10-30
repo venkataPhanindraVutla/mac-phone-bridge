@@ -30,11 +30,13 @@ fun dndAvailability(userOn: Boolean, policyAccess: Boolean): DndAvailability = D
     .build()
 
 /**
- * The phone's `proximity.availability` (SPEC 22): whether it advertises. The switch comes first,
- * then BLUETOOTH_ADVERTISE (API 31+), then an adapter that is off or can't advertise (UNAVAILABLE).
+ * The phone's `proximity.availability` for one Mac (SPEC 22): whether the phone advertises for it.
+ * The switch comes first, then BLUETOOTH_ADVERTISE (API 31+); then an adapter that is off or can't
+ * advertise, or this Mac's advertisement [faulted] (it failed, or the system stopped it, and has not
+ * started since: ruling R30), is UNAVAILABLE.
  */
-fun proximityAvailability(userOn: Boolean, granted: Boolean, adapter: AdvertiserState): FeatureAvailability = when {
-    !userOn || !granted || adapter == AdvertiserState.READY -> featureAvailability(granted = granted, userOn = userOn)
+fun proximityAvailability(userOn: Boolean, granted: Boolean, adapter: AdvertiserState, faulted: Boolean): FeatureAvailability = when {
+    !userOn || !granted || (adapter == AdvertiserState.READY && !faulted) -> featureAvailability(granted = granted, userOn = userOn)
     else -> FeatureAvailability.newBuilder()
         .setEnabled(false)
         .setReason(AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE)
