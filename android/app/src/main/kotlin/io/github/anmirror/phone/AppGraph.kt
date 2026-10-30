@@ -38,6 +38,8 @@ import io.github.anmirror.feature.browse.PickedFolders
 import io.github.anmirror.feature.browse.RootInfo
 import io.github.anmirror.feature.browse.RootsSource
 import io.github.anmirror.feature.browse.SafFileTree
+import io.github.anmirror.feature.dnd.DndSync
+import io.github.anmirror.feature.find.AndroidDndOverride
 import io.github.anmirror.feature.media.AndroidMediaSessions
 import io.github.anmirror.feature.media.MediaBridge
 import io.github.anmirror.feature.notify.ActionInvoker
@@ -247,6 +249,43 @@ class AppGraph private constructor(context: Context) {
         clock = SystemClock::elapsedRealtime,
         log = { Log.i(TAG, "media: $it") },
     )
+
+    private val dndPrefs = app.getSharedPreferences("dnd", Context.MODE_PRIVATE)
+    private val _dndSyncOn = MutableStateFlow(dndPrefs.getBoolean(KEY_DND_ON, false))
+
+    /** The user's "Sync Do Not Disturb with your Mac" switch. Off until they turn it on. */
+    val dndSyncOn: StateFlow<Boolean> = _dndSyncOn.asStateFlow()
+
+    fun setDndSyncOn(on: Boolean) {
+        dndPrefs.edit { putBoolean(KEY_DND_ON, on) }
+        _dndSyncOn.value = on
+    }
+
+    private val dndOverride = AndroidDndOverride(app)
+    private val _dndAccess = MutableStateFlow(dndOverride.hasAccess())
+
+    /** Whether Do Not Disturb (notification policy) access is granted; re-read on resume and on its broadcast. */
+    val dndAccess: StateFlow<Boolean> = _dndAccess.asStateFlow()
+
+    fun refreshDndAccess() {
+        _dndAccess.value = dndOverride.hasAccess()
+    }
+
+    /** The connected Mac shares dnd.v1. */
+    fun dndShared(): Boolean = shares("dnd.v1")
+
+    /**
+     * The phone sends no `dnd.state` and applies none unless the Mac shares dnd.v1 and the switch is
+     * on. Sending needs no permission; applying also needs [dndAccess], checked by [dndSync].
+     */
+    fun dndOpen(): Boolean = dndShared() && _dndSyncOn.value
+
+    /** Sends a `dnd.*` message when [dndOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendDnd(type: String, payload: MessageLite): Boolean =
+        dndOpen() && manager.send(ProtoChannel.CHANNEL_DND, type, payload)
+
+    /** Do Not Disturb sync with the Mac's Focus (F-11); the service feeds it while [dndOpen]. */
+    val dndSync = DndSync(dnd = dndOverride, send = ::sendDnd, clock = SystemClock::elapsedRealtime)
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(
@@ -834,7 +873,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
@@ -843,6 +882,7 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_PHOTOS_ON = "show_on_mac"
         private const val KEY_BROWSE_ON = "browse_from_mac"
         private const val KEY_MEDIA_ON = "control_from_mac"
+        private const val KEY_DND_ON = "sync_with_mac"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */

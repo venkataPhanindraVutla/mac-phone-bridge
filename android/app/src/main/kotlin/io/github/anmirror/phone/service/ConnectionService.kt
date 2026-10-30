@@ -2,9 +2,12 @@ package io.github.anmirror.phone.service
 
 import android.Manifest
 import android.app.Notification
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
@@ -35,6 +38,7 @@ import io.github.anmirror.phone.answerInvoke
 import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
+import io.github.anmirror.phone.dndAvailability
 import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.mediaFeatureAvailability
 import io.github.anmirror.phone.messageRes
@@ -68,6 +72,8 @@ import io.github.anmirror.protocol.v1.Channel
 import io.github.anmirror.protocol.v1.ClipboardText
 import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
+import io.github.anmirror.protocol.v1.DndAvailability
+import io.github.anmirror.protocol.v1.DndState
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.MediaCommand
@@ -133,6 +139,7 @@ class ConnectionService : LifecycleService() {
         setUpPhotos()
         setUpBrowse()
         setUpMedia()
+        setUpDnd()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -161,6 +168,11 @@ class ConnectionService : LifecycleService() {
         if (mediaBridgeOpen) {
             mediaBridgeOpen = false
             graph.mediaBridge.onDisconnected()
+        }
+        stopDndReceiver()
+        synchronized(dndLock) {
+            if (dndSession != null) graph.dndSync.onDisconnected()
+            dndSession = null
         }
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
@@ -645,6 +657,108 @@ class ConnectionService : LifecycleService() {
                             throw e
                         } catch (e: Exception) {
                             Log.e(TAG, "media: start failed (${e.javaClass.simpleName})")
+                        }
+                    }
+                }
+        }
+    }
+
+    private val dndLock = Any()
+
+    /** The session [AppGraph.dndSync]'s Mac state belongs to; guarded by [dndLock]. */
+    private var dndSession: Connected? = null
+
+    /**
+     * The current session if it shares dnd.v1. A new session clears what the last one's Mac said
+     * first, so a handler running before the collector has seen the new session cannot be undone by it.
+     */
+    private fun dndSessionNow(): Connected? {
+        val s = (graph.manager.state.value as? Connected)?.takeIf { "dnd.v1" in it.shared }
+        synchronized(dndLock) {
+            if (s !== dndSession) {
+                if (dndSession != null) graph.dndSync.onDisconnected()
+                dndSession = s
+            }
+        }
+        return s
+    }
+
+    /** Registered while [AppGraph.dndOpen]; touched only on the main thread. */
+    private var dndReceiver: BroadcastReceiver? = null
+
+    private fun startDndReceiver() {
+        if (dndReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED ->
+                        graph.launchQuietly("dnd: local change") { graph.dndSync.onLocalChange() }
+                    NotificationManager.ACTION_NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED -> graph.refreshDndAccess()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
+            addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED)
+        }
+        // Both are system broadcasts to registered receivers only.
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        dndReceiver = receiver
+    }
+
+    private fun stopDndReceiver() {
+        dndReceiver?.let(::unregisterReceiver)
+        dndReceiver = null
+    }
+
+    /**
+     * Do Not Disturb (F-11): while the feature is open (the Mac shares dnd.v1 and the switch is on)
+     * the filter broadcasts go to [AppGraph.dndSync], which sends the phone's transitions and
+     * applies the Mac's (with Do Not Disturb access); it starts with the snapshot. The Mac's
+     * `dnd.state` is dropped while the feature is closed; its `dnd.availability` is kept while it
+     * shares dnd.v1. The phone's `dnd.availability` is sent regardless, on connect and on change.
+     */
+    private fun setUpDnd() {
+        graph.manager.on(MessageType.DND_STATE) { env ->
+            val state = DndState.parseFrom(env.payload)
+            if (dndSessionNow() != null && graph.dndSyncOn.value) graph.dndSync.onMacState(state)
+        }
+        graph.manager.on(MessageType.DND_AVAILABILITY) { env ->
+            val availability = DndAvailability.parseFrom(env.payload)
+            if (dndSessionNow() != null) graph.dndSync.onMacAvailability(availability)
+        }
+        lifecycleScope.launch {
+            var openSession: Connected? = null
+            combine(
+                // By identity: a new session of the same Mac with the same capabilities is still new.
+                graph.manager.state
+                    .map { s -> (s as? Connected)?.takeIf { "dnd.v1" in it.shared } }
+                    .distinctUntilChanged { a, b -> a === b },
+                graph.dndSyncOn,
+                graph.dndAccess,
+            ) { session, on, access -> Triple(session, on, access) }
+                .distinctUntilChanged { a, b -> a.first === b.first && a.second == b.second && a.third == b.third }
+                .collect { (session, on, access) ->
+                    dndSessionNow()
+                    if (session != null) {
+                        graph.manager.send(Channel.CHANNEL_DND, MessageType.DND_AVAILABILITY, dndAvailability(userOn = on, policyAccess = access))
+                    }
+                    val open = session != null && on
+                    if (!open) {
+                        stopDndReceiver()
+                        openSession = null
+                        return@collect
+                    }
+                    // Listening first: a change while the baseline is read is not missed.
+                    startDndReceiver()
+                    if (openSession !== session) {
+                        openSession = session
+                        try {
+                            withContext(Dispatchers.Default) { graph.dndSync.onConnected(sends = true) }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.e(TAG, "dnd: start failed (${e.javaClass.simpleName})")
                         }
                     }
                 }

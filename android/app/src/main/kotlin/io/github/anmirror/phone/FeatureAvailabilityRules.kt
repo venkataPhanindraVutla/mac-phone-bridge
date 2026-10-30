@@ -1,6 +1,7 @@
 package io.github.anmirror.phone
 
 import io.github.anmirror.protocol.v1.AvailabilityReason
+import io.github.anmirror.protocol.v1.DndAvailability
 import io.github.anmirror.protocol.v1.FeatureAvailability
 
 /**
@@ -17,6 +18,15 @@ fun featureAvailability(granted: Boolean, userOn: Boolean): FeatureAvailability 
     }
     return builder.build()
 }
+
+/**
+ * The phone's `dnd.availability` (SPEC 21): it sends its transitions whenever the switch is on
+ * (reading the filter needs no permission), and applies the Mac's only with Do Not Disturb access.
+ */
+fun dndAvailability(userOn: Boolean, policyAccess: Boolean): DndAvailability = DndAvailability.newBuilder()
+    .setSends(featureAvailability(granted = true, userOn = userOn))
+    .setApplies(featureAvailability(granted = policyAccess, userOn = userOn))
+    .build()
 
 /** How much of the phone's photos and videos this app may read. */
 enum class MediaAccess {

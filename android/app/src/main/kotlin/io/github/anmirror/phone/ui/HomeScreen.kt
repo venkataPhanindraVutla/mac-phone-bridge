@@ -50,8 +50,10 @@ import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.R
 import io.github.anmirror.feature.browse.PickedFolders
 import io.github.anmirror.phone.copyNamesMac
+import io.github.anmirror.phone.dndRowLines
 import io.github.anmirror.phone.forgetBodyRes
 import io.github.anmirror.phone.messageRes
+import io.github.anmirror.protocol.v1.DndAvailability
 
 /** The paired Mac, the connection state from ConnectionManager, and Forget this Mac. */
 @Composable
@@ -66,6 +68,10 @@ fun HomeScreen(
     onNotifyToggle: (Boolean) -> Unit,
     mediaControlOn: Boolean,
     onMediaControlToggle: (Boolean) -> Unit,
+    dndSyncOn: Boolean,
+    dndAccess: Boolean,
+    macDnd: DndAvailability?,
+    onDndSyncToggle: (Boolean) -> Unit,
     contactsOn: Boolean,
     contactsGranted: Boolean,
     onContactsToggle: (Boolean) -> Unit,
@@ -133,6 +139,7 @@ fun HomeScreen(
         }
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
         MediaRow(on = mediaControlOn, access = notifyAccess, onToggle = onMediaControlToggle)
+        DndRow(on = dndSyncOn, access = dndAccess, mac = macDnd, onToggle = onDndSyncToggle)
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         ClipboardRow(on = clipboardOn, onToggle = onClipboardToggle)
@@ -288,6 +295,47 @@ private fun MediaRow(on: Boolean, access: Boolean, onToggle: (Boolean) -> Unit) 
                 onClick = { context.openNotificationAccessSettings() },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_notify_allow)) }
+        }
+    }
+}
+
+/**
+ * "Sync Do Not Disturb with your Mac": off by default. Sending the phone's Do Not Disturb needs no
+ * permission; applying the Mac's Focus needs Do Not Disturb access, which only Settings grants, so
+ * turning the switch on without it opens that page. The lines say what works in each direction.
+ */
+@Composable
+private fun DndRow(on: Boolean, access: Boolean, mac: DndAvailability?, onToggle: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_dnd_title)
+    val openAccess = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked && !access) openAccess()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        for (line in dndRowLines(on, access, mac)) {
+            Text(stringResource(line), style = MaterialTheme.typography.bodyMedium)
+        }
+        if (on && !access) {
+            OutlinedButton(onClick = openAccess, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_find_allow))
+            }
         }
     }
 }

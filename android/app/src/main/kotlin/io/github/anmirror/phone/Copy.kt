@@ -3,6 +3,9 @@ package io.github.anmirror.phone
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairingFailure
 import io.github.anmirror.connection.PhoneConnectionState
+import io.github.anmirror.protocol.v1.AvailabilityReason
+import io.github.anmirror.protocol.v1.DndAvailability
+import io.github.anmirror.protocol.v1.FeatureAvailability
 
 /** What the pairing screen says for each way pairing can fail. */
 fun PairingFailure.messageRes(): Int = when (this) {
@@ -50,3 +53,30 @@ val PhoneConnectionState.macOrNull: PairedMac?
  */
 fun PhoneConnectionState.forgetBodyRes(): Int =
     if (this is PhoneConnectionState.Connected) R.string.home_forget_body_connected else R.string.home_forget_body_not_connected
+
+/**
+ * The direction lines of "Sync Do Not Disturb with your Mac", given the switch, Do Not Disturb
+ * access and the Mac's last `dnd.availability` (null: none yet, or not connected). Phone to Mac
+ * follows the Mac's `applies`, Mac to phone its `sends` and this phone's access (without access the
+ * row shows the Allow button instead). A Mac reason without copy shows no line; the same line is
+ * never shown twice.
+ */
+fun dndRowLines(on: Boolean, access: Boolean, mac: DndAvailability?): List<Int> {
+    if (!on || mac == null) return emptyList()
+    val phoneToMac = when {
+        mac.applies.enabled -> R.string.home_dnd_phone_to_mac
+        else -> mac.applies.macReasonLine()
+    }
+    val macToPhone = when {
+        !mac.sends.enabled -> mac.sends.macReasonLine()
+        access -> R.string.home_dnd_mac_to_phone
+        else -> null
+    }
+    return listOfNotNull(phoneToMac, macToPhone).distinct()
+}
+
+private fun FeatureAvailability.macReasonLine(): Int? = when (reason) {
+    AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP -> R.string.home_dnd_needs_shortcuts
+    AvailabilityReason.AVAILABILITY_REASON_OFF_BY_USER -> R.string.home_dnd_mac_off
+    else -> null
+}

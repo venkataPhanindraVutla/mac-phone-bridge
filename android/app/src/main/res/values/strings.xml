@@ -72,6 +72,12 @@
     <string name="home_notify_needs_access">Android Mirroring needs notification access to do this. Allow it in Settings.</string>
     <string name="home_notify_allow">Allow notification access</string>
     <string name="home_media_title">Control media from your Mac</string>
+    <!-- Home: Do Not Disturb sync with the Mac's Focus (F-11); the Allow button reuses home_find_allow. -->
+    <string name="home_dnd_title">Sync Do Not Disturb with your Mac</string>
+    <string name="home_dnd_phone_to_mac">Do Not Disturb here turns on Focus on your Mac.</string>
+    <string name="home_dnd_mac_to_phone">Your Mac\'s Focus turns on Do Not Disturb here.</string>
+    <string name="home_dnd_needs_shortcuts">Install the two Shortcuts on your Mac to let your phone turn on Focus.</string>
+    <string name="home_dnd_mac_off">Turn on Focus sync in your Mac\'s settings.</string>
     <!-- Home: calls on the Mac -->
     <string name="home_calls_title">Calls on your Mac</string>
     <string name="home_calls_needs_permission">Android Mirroring needs access to your phone\'s call state to do this. Allow it in Settings.</string>

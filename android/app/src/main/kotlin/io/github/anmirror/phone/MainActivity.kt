@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         graph.refreshContactsGranted()
         graph.refreshCallsPermissions()
         graph.refreshMediaAccess()
+        graph.refreshDndAccess()
         graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
         // Opening the app is a way to silence a ring, also when notifications are blocked.
         if (ConnectionService.ringing.value) ConnectionService.stopRing(this)
@@ -85,6 +86,9 @@ private fun AppRoot(graph: AppGraph) {
     val notifyOn by graph.notifyOn.collectAsStateWithLifecycle()
     val notifyAccess by graph.notifyAccess.collectAsStateWithLifecycle()
     val mediaControlOn by graph.mediaControlOn.collectAsStateWithLifecycle()
+    val dndSyncOn by graph.dndSyncOn.collectAsStateWithLifecycle()
+    val dndAccess by graph.dndAccess.collectAsStateWithLifecycle()
+    val macDnd by graph.dndSync.macAvailability.collectAsStateWithLifecycle()
     val contactsOn by graph.contactsOn.collectAsStateWithLifecycle()
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
@@ -127,6 +131,10 @@ private fun AppRoot(graph: AppGraph) {
                         onNotifyToggle = graph::setNotifyOn,
                         mediaControlOn = mediaControlOn,
                         onMediaControlToggle = graph::setMediaControlOn,
+                        dndSyncOn = dndSyncOn,
+                        dndAccess = dndAccess,
+                        macDnd = macDnd,
+                        onDndSyncToggle = graph::setDndSyncOn,
                         contactsOn = contactsOn,
                         contactsGranted = contactsGranted,
                         onContactsToggle = graph::setContactsOn,
