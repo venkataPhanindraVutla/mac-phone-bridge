@@ -17,7 +17,8 @@ public enum MirrorSessionEvent: Sendable {
     case needsReset
 }
 
-/// The clock the RESET_VIDEO throttle reads and schedules on (a fake one in tests).
+/// The clock the RESET_VIDEO throttle reads and schedules on, and the control drain deadline
+/// runs on (a fake one in tests).
 struct ResetClock: Sendable {
     var now: @Sendable () -> ContinuousClock.Instant
     var after: @Sendable (Duration, @escaping @Sendable () -> Void) -> Void
@@ -44,6 +45,9 @@ public final class MirrorSession: @unchecked Sendable {
     static let readChunk = 262_144
     /// Control messages queued for a slow control link at most.
     static let maxQueuedControl = 512
+    /// After `close()`, the control link stays open at most this long for what is still queued
+    /// (a release's touch UP) to go out.
+    static let controlDrainDeadline: Duration = .milliseconds(200)
 
     public let id: UInt32
     /// Internal so tests can hold it.
@@ -81,9 +85,14 @@ public final class MirrorSession: @unchecked Sendable {
     /// Starts reading `pipe` for `role` off the main actor. A second link for a role, or a link
     /// after `close()`, is closed.
     public func attach(_ pipe: any BulkPipe, role: AMBulkRole) {
+        // Bounded: a stalled link keeps the newest messages (it is ending anyway; the writer drops after an error).
+        // Made before the lock and kept with the pipe in one step, so close() always finds both.
+        let queue = role == .mirrorControl
+            ? AsyncStream.makeStream(of: Data.self, bufferingPolicy: .bufferingNewest(Self.maxQueuedControl)) : nil
         let accepted: Bool = lock.withLock {
             guard !closed, pipes[role] == nil, [.mirrorVideo, .mirrorAudio, .mirrorControl].contains(role) else { return false }
             pipes[role] = pipe
+            if let queue { control = queue.continuation }
             return true
         }
         guard accepted else {
@@ -94,12 +103,13 @@ public final class MirrorSession: @unchecked Sendable {
         case .mirrorVideo:
             Task.detached { [self] in await readVideo(pipe) }
         case .mirrorControl:
-            // Bounded: a stalled link keeps the newest messages (it is ending anyway; the writer drops after an error).
-            let (stream, continuation) = AsyncStream.makeStream(of: Data.self, bufferingPolicy: .bufferingNewest(Self.maxQueuedControl))
-            lock.withLock { control = continuation }
+            guard let stream = queue?.stream else { return }
             let writer = ControlWriter(pipe: pipe)
             Task.detached {
                 for await bytes in stream { await writer.send(bytes) }
+                // The stream ends only at close(): everything queued has been written (or the
+                // link failed), so the link can close now, before the drain deadline.
+                pipe.close()
             }
             // Device messages (Task 8 reads them); drained so the phone's side never backs up.
             Task.detached { [self] in await drain(pipe, role: role) }
@@ -117,18 +127,25 @@ public final class MirrorSession: @unchecked Sendable {
     /// The last session packet's size.
     public var videoSize: (width: Int, height: Int)? { lock.withLock { size } }
 
-    /// Closes every link and stops the decoder. Nothing is reported after this.
+    /// Closes the video and audio links at once and stops the decoder. The control link closes
+    /// once what is already queued on it has been written (a release's touch UP), or after
+    /// `controlDrainDeadline`, whichever comes first; nothing here waits for it. Nothing is
+    /// reported after this, and later `sendControl` calls are dropped.
     public func close() {
-        let (open, writer): ([any BulkPipe], AsyncStream<Data>.Continuation?) = lock.withLock {
+        let (now, draining, writer): ([any BulkPipe], (any BulkPipe)?, AsyncStream<Data>.Continuation?) = lock.withLock {
             closed = true
             defer {
                 pipes = [:]
                 control = nil
             }
-            return (Array(pipes.values), control)
+            let controlPipe = pipes[.mirrorControl]
+            return (pipes.filter { $0.key != .mirrorControl }.map(\.value), controlPipe, control)
         }
         writer?.finish()
-        for pipe in open { pipe.close() }
+        for pipe in now { pipe.close() }
+        if let draining {
+            clock.after(Self.controlDrainDeadline) { draining.close() }
+        }
         decoder.invalidate()
     }
 

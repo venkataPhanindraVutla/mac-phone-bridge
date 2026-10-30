@@ -54,13 +54,18 @@ public enum KeyMap {
         case ("v", .command): return .paste
         case ("c", .command): return .copy
         case ("x", .command): return .cut
-        case ("a", .command): return .strokes([KeyStroke(code: AndroidKey.a, meta: AndroidKey.ctrl)])
-        case ("z", .command): return .strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl)])
-        case ("z", [.command, .shift]): return .strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl | AndroidKey.shift)])
+        case ("a", .command): return selectAll
+        case ("z", .command): return undo
+        case ("z", [.command, .shift]): return redo
         case ("w", .command): return .closeWindow
         default: return nil
         }
     }
+
+    /// ⌘A, ⌘Z and ⌘⇧Z, shared with the Edit menu's actions in the view.
+    static let selectAll = ShortcutAction.strokes([KeyStroke(code: AndroidKey.a, meta: AndroidKey.ctrl)])
+    static let undo = ShortcutAction.strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl)])
+    static let redo = ShortcutAction.strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl | AndroidKey.shift)])
 
     private static let commands: [String: [KeyStroke]] = {
         typealias K = AndroidKey

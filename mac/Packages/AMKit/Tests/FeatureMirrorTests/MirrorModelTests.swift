@@ -218,7 +218,9 @@ private final class Rig {
         #expect(rig.bulk.revoked == ["mirror-1"])
         #expect(rig.model.phase == .ended(.user))
         #expect(rig.model.session == nil)
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         // A second stop, or the phone's STOPPED answer, changes nothing.
         await rig.model.stop()
         await rig.state(1, .stopped, .user)
@@ -235,7 +237,9 @@ private final class Rig {
         #expect(rig.model.phoneAvailability == nil)
         #expect(!rig.model.canStart)
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         #expect(rig.stops.isEmpty)
     }
 
@@ -269,7 +273,9 @@ private final class Rig {
         #expect(rig.model.phase == .ended(.macSleep))
         #expect(rig.model.session == nil)
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         try await until("stop sent") { rig.stops.count == 1 }
         #expect(rig.stops.first?.reason == .user)
         #expect(rig.stops.first?.session == 1)
@@ -336,7 +342,9 @@ private final class Rig {
         #expect(rig.model.sessionID == 2)
         #expect(rig.model.session !== first)
         #expect(rig.model.phase == .starting)
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         #expect(rig.bulk.revoked == ["mirror-1"])
         // The phone ends the old one itself (REPLACED); the Mac sends no stop.
         #expect(rig.stops.isEmpty)
@@ -351,7 +359,7 @@ private final class Rig {
         try await until("link failed") { rig.model.phase == .ended(.phone(.linkFailed)) }
         #expect(rig.stops.map(\.reason) == [.user])
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.control.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
     }
 
     @Test func linkEndedThenStateWithinGraceUsesTheState() async throws {

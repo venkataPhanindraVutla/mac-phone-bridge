@@ -66,11 +66,12 @@ public final class MirrorModel: SessionFeature {
     /// The running (or starting) session; nil otherwise.
     public var session: MirrorSession? { current }
 
-    /// Lets go of held input (the mirror view's `InputMapper.releaseAll`). Called while the session
+    /// Lets go of held input: owned by `MirrorView.bind`, which sets it to its `InputMapper.releaseAll`
+    /// (one slot; nothing else sets it, tests aside). Called while the session
     /// is still current, before it ends for any reason (so the UP goes out on its control link before
     /// the links close), and after a session packet changes the video size (so the UP carries the
     /// new size, the only one the helper accepts).
-    @ObservationIgnored public var releaseInput: (@MainActor () -> Void)?
+    @ObservationIgnored public internal(set) var releaseInput: (@MainActor () -> Void)?
     /// Text the view has just set on the phone's clipboard to paste (⌘V, emoji, other scripts).
     /// Task 8 wires it; never logged.
     @ObservationIgnored public var onPasteSent: ((String) -> Void)?

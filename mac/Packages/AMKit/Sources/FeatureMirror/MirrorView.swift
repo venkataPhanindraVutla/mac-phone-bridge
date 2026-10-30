@@ -263,8 +263,11 @@ public final class MirrorView: NSView {
     /// ⌘V, ⌘C, ⌘X, ⌘A, ⌘Z, ⌘⇧Z and ⌘W while the mirror has the focus; every other ⌘ key goes on
     /// to the Mac's menus and never reaches the phone.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // With no running session only ⌘W is taken; the rest go on to the menus, whose items
+        // are disabled then (`validateUserInterfaceItem`).
         guard event.type == .keyDown, let input, window?.firstResponder === self,
-              let action = KeyMap.shortcut(characters: event.charactersIgnoringModifiers ?? "", modifiers: event.modifierFlags)
+              let action = KeyMap.shortcut(characters: event.charactersIgnoringModifiers ?? "", modifiers: event.modifierFlags),
+              action == .closeWindow || input.isActive
         else { return super.performKeyEquivalent(with: event) }
         input.shortcut(action)
         return true
@@ -275,11 +278,15 @@ public final class MirrorView: NSView {
     @objc func paste(_ sender: Any?) { input?.shortcut(.paste) }
     @objc func copy(_ sender: Any?) { input?.shortcut(.copy) }
     @objc func cut(_ sender: Any?) { input?.shortcut(.cut) }
-    public override func selectAll(_ sender: Any?) { input?.shortcut(.strokes([KeyStroke(code: AndroidKey.a, meta: AndroidKey.ctrl)])) }
-    @objc func undo(_ sender: Any?) { input?.shortcut(.strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl)])) }
-    @objc func redo(_ sender: Any?) {
-        input?.shortcut(.strokes([KeyStroke(code: AndroidKey.z, meta: AndroidKey.ctrl | AndroidKey.shift)]))
-    }
+    public override func selectAll(_ sender: Any?) { input?.shortcut(KeyMap.selectAll) }
+    @objc func undo(_ sender: Any?) { input?.shortcut(KeyMap.undo) }
+    @objc func redo(_ sender: Any?) { input?.shortcut(KeyMap.redo) }
+
+    /// The Edit menu's actions are enabled only while a session runs.
+    static let phoneEditActions: Set<Selector> = [
+        #selector(paste(_:)), #selector(copy(_:)), #selector(cut(_:)),
+        #selector(selectAll(_:)), #selector(undo(_:)), #selector(redo(_:)),
+    ]
 
     // MARK: composition
 
@@ -310,13 +317,17 @@ extension MirrorView: @preconcurrency NSTextInputClient {
         return NSAttributedString(string: string as? String ?? "")
     }
 
-    /// Committed text: sent (typed or pasted); any composition is over.
+    /// Committed text: sent (typed or pasted); any composition is over. A replacement range with
+    /// no composition (press-and-hold accents: "é" replacing the "e" already sent) deletes the
+    /// replaced characters on the phone first.
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = Self.plain(string).string
+        let replaced = markedText.length == 0 && replacementRange.location != NSNotFound ? replacementRange.length : 0
         markedText = NSAttributedString()
         markedSelection = NSRange(location: 0, length: 0)
         showComposition()
         guard !discarding else { return }
+        if replaced > 0 { input?.deleteBackward(replaced) }
         input?.commit(text)
     }
 
@@ -377,6 +388,13 @@ extension MirrorView: @preconcurrency NSTextInputClient {
     }
 
     public func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+}
+
+extension MirrorView: @preconcurrency NSUserInterfaceValidations {
+    public func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        guard let action = item.action, Self.phoneEditActions.contains(action) else { return true }
+        return input?.isActive == true
+    }
 }
 
 extension MirrorModel.Phase {

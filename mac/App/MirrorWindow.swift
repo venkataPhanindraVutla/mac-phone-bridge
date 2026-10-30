@@ -36,8 +36,6 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// The video size the window was last fitted to; nil before the first.
     private var fitted: (width: Int, height: Int)?
     private let qualityMenu = NSMenu()
-    /// The phone key buttons, enabled only while running.
-    private var keyItems: [NSToolbarItem] = []
 
     private static let qualityItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.quality")
     /// The phone keys, in toolbar order.
@@ -226,7 +224,6 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         item.action = #selector(pressKey(_:))
         item.autovalidates = false
         item.isEnabled = isRunning
-        keyItems.append(item)
         return item
     }
 
@@ -245,9 +242,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         if case .running = model.phase { true } else { false }
     }
 
+    /// The phone key buttons in the toolbar are enabled only while running.
     private func updateKeyItems() {
         let running = isRunning
-        for item in keyItems { item.isEnabled = running }
+        let ids = Set(Self.keys.map(\.id))
+        for item in window?.toolbar?.items ?? [] where ids.contains(item.itemIdentifier) {
+            item.isEnabled = running
+        }
     }
 
     @objc private func pressKey(_ sender: NSToolbarItem) {

@@ -23,6 +23,19 @@ import Testing
         #expect(TextRouter.route("\u{7F}") == [.paste("\u{7F}")])
     }
 
+    /// AppKit's private-use function-key characters (F1 U+F704, F5 U+F708, F19 U+F716, Help U+F746,
+    /// the top of the range U+F8FF) are dropped; text around them is kept.
+    @Test func functionKeyCharactersAreDropped() {
+        for key in ["\u{F704}", "\u{F708}", "\u{F716}", "\u{F746}", "\u{F700}", "\u{F8FF}"] {
+            #expect(TextRouter.droppingFunctionKeys(key) == "", "\(key.unicodeScalars.first!.value)")
+        }
+        #expect(TextRouter.droppingFunctionKeys("a\u{F708}b") == "ab")
+        #expect(TextRouter.droppingFunctionKeys("日\u{F746}本") == "日本")
+        // Just outside the range is text.
+        #expect(TextRouter.droppingFunctionKeys("\u{F6FF}\u{F900}") == "\u{F6FF}\u{F900}")
+        #expect(TextRouter.droppingFunctionKeys("hello") == "hello")
+    }
+
     @Test func longTextSplitsAt300BytesOnScalarBoundary() {
         // ASCII: 700 bytes in chunks of 300, 300 and 100, in order.
         let ascii = String(repeating: "abcdefghij", count: 70)

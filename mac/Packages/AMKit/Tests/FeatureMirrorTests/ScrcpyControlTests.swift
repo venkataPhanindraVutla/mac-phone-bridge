@@ -2,13 +2,12 @@ import Foundation
 import Testing
 @testable import FeatureMirror
 
-/// `protocol/vectors/scrcpy.json`, the authority for the scrcpy wire format.
+/// `protocol/vectors/scrcpy.json`, the authority for the scrcpy wire format. Empty when it cannot
+/// be read, which fails `fixturesLoad` (and the tests that use it) rather than the whole process.
 nonisolated(unsafe) let scrcpyVectors: [String: Any] = {
     let url = protocolDir.appendingPathComponent("vectors/scrcpy.json")
     guard let data = try? Data(contentsOf: url),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        fatalError("cannot load \(url.path)")
-    }
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
     return object
 }()
 
@@ -38,6 +37,11 @@ extension Data {
 }
 
 @Suite struct ScrcpyControlTests {
+    @Test func fixturesLoad() {
+        #expect(!scrcpyVectors.isEmpty, "cannot read protocol/vectors/scrcpy.json")
+        #expect(!controlVectors.isEmpty)
+    }
+
     /// Every `control` entry in `scrcpy.json`, encoded from its fields, gives its bytes.
     @Test func encodersMatchScrcpyFixtures() throws {
         #expect(controlVectors.count >= 20)

@@ -116,9 +116,10 @@ public final class InputMapper {
     // MARK: keys and text
 
     /// Text the input method committed: printable ASCII is typed, anything else is pasted.
+    /// Function-key characters (F1–F19, Help, …) are dropped first: they are never pasted.
     public func commit(_ text: String) {
         guard active else { return }
-        for route in TextRouter.route(text) {
+        for route in TextRouter.route(TextRouter.droppingFunctionKeys(text)) {
             switch route {
             case let .inject(chunk): send(ScrcpyControl.text(chunk))
             case let .paste(whole): paste(whole)
@@ -166,6 +167,19 @@ public final class InputMapper {
         case .rotate: send(ScrcpyControl.rotateDevice())
         }
     }
+
+    /// Replaces the `count` characters just before the phone's cursor: DEL × `count` (at most
+    /// `maxReplaced`), for a commit that replaces text already sent (press-and-hold accents).
+    func deleteBackward(_ count: Int) {
+        guard active, count > 0 else { return }
+        press(Array(repeating: KeyStroke(code: AndroidKey.del), count: min(count, Self.maxReplaced)))
+    }
+
+    /// The most characters a commit's replacement deletes.
+    static let maxReplaced = 32
+
+    /// There is a running session: input is sent.
+    public var isActive: Bool { active }
 
     // MARK: release
 

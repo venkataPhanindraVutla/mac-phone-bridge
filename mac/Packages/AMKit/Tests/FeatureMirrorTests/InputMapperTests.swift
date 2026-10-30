@@ -176,24 +176,41 @@ final class InputRig {
         #expect(rig.sent == [touchDown(540, 1200), touchUp(540, 1200)])
     }
 
-    /// The model asks for the release while its session is still current (so the UP goes out on the
-    /// live control link, before the links close), for every way a session ends.
-    @Test func sessionEndReleasesHeldTouch() async throws {
-        // The bound view's mapper sends on the session's control link.
+    /// However a session ends, a finger held in the bound view is lifted and the UP is read off the
+    /// control link itself: the model releases while the session is current, and the session
+    /// writes what is queued before it closes the control link (R45).
+    @Test(arguments: ModelRig.Ending.allCases)
+    func sessionEndReleasesHeldTouch(_ ending: ModelRig.Ending) async throws {
         let rig = ModelRig()
         let links = try await rig.running()
         let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
         view.bind(rig.model, closeWindow: {})
         let mapper = try #require(view.input)
         mapper.mouseDown(at: CGPoint(x: 80, y: 160), viewSize: view.bounds.size)
-        let read1 = try await readTouch(links.control)
-        #expect(read1.hex == touchDown(160, 320, 320, 640).hex)
-        // The model's release hook is the mapper's release: an UP on the same link.
-        rig.model.releaseInput?()
-        let read2 = try await readTouch(links.control)
-        #expect(read2.hex == touchUp(160, 320, 320, 640).hex)
+        let down = try await readTouch(links.control)
+        #expect(down.hex == touchDown(160, 320, 320, 640).hex)
 
-        // Each end runs the hook with the session still current.
+        let ended = ContinuousClock.now
+        await rig.end(ending)
+        // Everything up to the Mac's close of the link (EOF): the UP, last (a RESET_VIDEO may come first).
+        let rest = Data(try await readAll(links.control, 1 << 20).drop(while: { $0 == 17 }))
+        #expect(rest.hex == touchUp(160, 320, 320, 640).hex, "\(ending)")
+        // The Mac closed it (well inside readAll's 5 s wait), once the UP had gone.
+        #expect(ContinuousClock.now - ended < .seconds(2), "\(ending)")
+    }
+
+    /// The release hook is the view's mapper, and runs with the session still current.
+    @Test func releaseHookRunsWhileTheSessionIsCurrent() async throws {
+        let rig = ModelRig()
+        let links = try await rig.running()
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        view.bind(rig.model, closeWindow: {})
+        view.input?.mouseDown(at: CGPoint(x: 80, y: 160), viewSize: view.bounds.size)
+        #expect(try await readTouch(links.control).hex == touchDown(160, 320, 320, 640).hex)
+        rig.model.releaseInput?()
+        let up = try await readTouch(links.control)
+        #expect(up.hex == touchUp(160, 320, 320, 640).hex)
+
         for end in ModelRig.Ending.allCases {
             let each = ModelRig()
             let eachLinks = try await each.running()
@@ -330,13 +347,45 @@ final class InputRig {
         #expect(rig.sent == keyPair(kEnter) + keyPair(kMoveHome, mShift) + keyPair(kDel))
     }
 
-    /// Key repeat: every keyDown (repeats included) is its own DOWN and UP, with repeat 0.
-    @Test func repeatedKeyDownSendsPairEach() {
+    /// Key repeat: every keyDown (repeats included) goes through interpretKeyEvents and is its own
+    /// DOWN and UP, with repeat 0.
+    @Test func repeatedKeyDownSendsPairEach() throws {
         let rig = InputRig()
         let (window, view) = mirrorWindow(rig)
         defer { window.close() }
-        for _ in 0..<3 { view.doCommand(by: #selector(NSResponder.deleteBackward(_:))) }
+        for isRepeat in [false, true, true] {
+            view.keyDown(with: try key("\u{7F}", keyCode: 51, isARepeat: isRepeat, window: window)) // Delete
+        }
         #expect(rig.sent == keyPair(kDel) + keyPair(kDel) + keyPair(kDel))
+        // A held letter repeats as text, one INJECT_TEXT per event.
+        rig.reset()
+        for isRepeat in [false, true] {
+            view.keyDown(with: try key("a", keyCode: 0, isARepeat: isRepeat, window: window))
+        }
+        #expect(rig.sent == [ScrcpyControl.text("a"), ScrcpyControl.text("a")])
+        // And doCommand(by:) directly, as the input method calls it.
+        rig.reset()
+        for _ in 0..<2 { view.doCommand(by: #selector(NSResponder.deleteBackward(_:))) }
+        #expect(rig.sent == keyPair(kDel) + keyPair(kDel))
+    }
+
+    /// F1–F19 and Help have no binding: AppKit hands them to insertText as private-use characters,
+    /// which are never pasted (nor typed).
+    @Test func functionKeysSendNothing() throws {
+        let rig = InputRig()
+        rig.mapper.commit("\u{F708}")
+        rig.mapper.commit("\u{F704}\u{F716}\u{F746}")
+        #expect(rig.sent.isEmpty)
+        #expect(rig.pastes.isEmpty)
+        // Through the view, as a key press: F5.
+        let (window, view) = mirrorWindow(rig)
+        defer { window.close() }
+        view.keyDown(with: try key("\u{F708}", keyCode: 96, window: window))
+        view.insertText("\u{F708}", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(rig.sent.isEmpty)
+        // Mixed with text, the text still goes.
+        rig.mapper.commit("a\u{F708}")
+        #expect(rig.sent == [ScrcpyControl.text("a")])
     }
 
     @Test func cmdVPastesMacClipboard() {
@@ -406,6 +455,50 @@ final class InputRig {
         #expect(rig.closes == 0)
     }
 
+    /// With no running session the Edit menu's phone actions are disabled, and only ⌘W is taken
+    /// from the keyboard; the rest go on to the (disabled) menus.
+    @Test func editActionsAreDisabledWithoutASession() throws {
+        let rig = InputRig()
+        let (window, view) = mirrorWindow(rig)
+        defer { window.close() }
+        let actions = ["paste:", "copy:", "cut:", "selectAll:", "undo:", "redo:"]
+        for name in actions {
+            let item = NSMenuItem(title: name, action: NSSelectorFromString(name), keyEquivalent: "")
+            #expect(view.validateUserInterfaceItem(item), "\(name)")
+        }
+        #expect(view.performKeyEquivalent(with: try cmdKey("a", window: window)))
+
+        rig.size = nil
+        rig.reset()
+        for name in actions {
+            let item = NSMenuItem(title: name, action: NSSelectorFromString(name), keyEquivalent: "")
+            #expect(!view.validateUserInterfaceItem(item), "\(name)")
+        }
+        for c in ["v", "c", "x", "a", "z"] {
+            #expect(!view.performKeyEquivalent(with: try cmdKey(c, window: window)), "⌘\(c)")
+        }
+        #expect(view.performKeyEquivalent(with: try cmdKey("w", window: window)))
+        #expect(rig.closes == 1)
+        #expect(rig.sent.isEmpty)
+        // Anything else is the view's usual validation.
+        let other = NSMenuItem(title: "x", action: #selector(NSResponder.noResponder(for:)), keyEquivalent: "")
+        #expect(view.validateUserInterfaceItem(other))
+    }
+
+    /// The Edit menu's ⌘A, ⌘Z and ⌘⇧Z send the same strokes as the keys.
+    @Test func editMenuActionsMatchTheShortcuts() {
+        let rig = InputRig()
+        let (window, view) = mirrorWindow(rig)
+        defer { window.close() }
+        view.selectAll(nil)
+        view.undo(nil)
+        view.redo(nil)
+        #expect(rig.sent == keyPair(kA, mCtrl) + keyPair(kZ, mCtrl) + keyPair(kZ, mCtrl | mShift))
+        #expect(KeyMap.shortcut(characters: "a", modifiers: .command) == KeyMap.selectAll)
+        #expect(KeyMap.shortcut(characters: "z", modifiers: .command) == KeyMap.undo)
+        #expect(KeyMap.shortcut(characters: "Z", modifiers: [.command, .shift]) == KeyMap.redo)
+    }
+
     @Test func pasteOverLimitIsRefused() {
         let rig = InputRig()
         rig.pasteboard = String(repeating: "a", count: ScrcpyControl.setClipboardTextMaxBytes + 1)
@@ -468,6 +561,28 @@ final class InputRig {
         let rect = view.firstRect(forCharacterRange: NSRange(location: 0, length: 1), actualRange: nil)
         #expect(rect.width > 0 && rect.height > 0)
         #expect(window.frame.insetBy(dx: -1, dy: -1).contains(rect))
+    }
+
+    /// Press-and-hold accents: "é" replaces the "e" already sent, so the phone deletes it first.
+    /// A replacement inside a composition deletes nothing (the composition was never sent).
+    @Test func replacementRangeDeletesWhatWasSent() {
+        let rig = InputRig()
+        let (window, view) = mirrorWindow(rig)
+        defer { window.close() }
+        view.insertText("e", replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertText("é", replacementRange: NSRange(location: 0, length: 1))
+        #expect(rig.sent == [ScrcpyControl.text("e")] + keyPair(kDel)
+            + [ScrcpyControl.setClipboard(sequence: 1, paste: true, text: "é")])
+
+        rig.reset()
+        view.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertText("家", replacementRange: NSRange(location: 0, length: 1))
+        #expect(rig.sent == [ScrcpyControl.setClipboard(sequence: 2, paste: true, text: "家")])
+
+        // At most 32 deletions, whatever the range says.
+        rig.reset()
+        view.insertText("x", replacementRange: NSRange(location: 0, length: 500))
+        #expect(rig.sent == Array(repeating: keyPair(kDel), count: 32).flatMap { $0 } + [ScrcpyControl.text("x")])
     }
 
     @Test func asciiGoesAsInjectText() {
@@ -575,6 +690,13 @@ func mirrorWindow(_ rig: InputRig) -> (NSWindow, MirrorView) {
 }
 
 @MainActor
+func key(_ c: String, keyCode: UInt16, isARepeat: Bool = false, window: NSWindow) throws -> NSEvent {
+    try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                  windowNumber: window.windowNumber, context: nil, characters: c,
+                                  charactersIgnoringModifiers: c, isARepeat: isARepeat, keyCode: keyCode))
+}
+
+@MainActor
 func cmdKey(_ c: String, modifiers: NSEvent.ModifierFlags = .command, window: NSWindow) throws -> NSEvent {
     try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                                   windowNumber: window.windowNumber, context: nil, characters: c,
@@ -598,7 +720,7 @@ final class ModelRig {
     let bulk = FakeBulk()
     let model: MirrorModel
 
-    enum Ending: CaseIterable { case userStop, phoneStop, phoneFailed, disconnect, sleep, replaced }
+    enum Ending: CaseIterable, Sendable { case userStop, phoneStop, phoneFailed, disconnect, sleep, replaced }
 
     init() {
         model = MirrorModel(bulk: bulk, send: { _, _ in }, makeSink: { CountingSink() })

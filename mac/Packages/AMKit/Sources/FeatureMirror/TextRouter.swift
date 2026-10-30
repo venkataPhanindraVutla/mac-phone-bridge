@@ -16,6 +16,20 @@ public enum TextRouter {
         return chunks(committed, maxBytes: ScrcpyControl.injectTextMaxBytes).map(TextRoute.inject)
     }
 
+    /// `s` without AppKit's function-key characters (U+F700–U+F8FF: F1–F35, Help, Insert, Print
+    /// Screen and the like), which an input client is handed for keys with no binding. They are
+    /// keys, not text, and are never sent.
+    public static func droppingFunctionKeys(_ s: String) -> String {
+        guard s.unicodeScalars.contains(where: isFunctionKey) else { return s }
+        var kept = String.UnicodeScalarView()
+        kept.append(contentsOf: s.unicodeScalars.filter { !isFunctionKey($0) })
+        return String(kept)
+    }
+
+    private static func isFunctionKey(_ scalar: Unicode.Scalar) -> Bool {
+        (0xF700...0xF8FF).contains(scalar.value)
+    }
+
     /// `s` cut into pieces of at most `maxBytes` UTF-8 bytes, each cut at a Unicode scalar boundary.
     static func chunks(_ s: String, maxBytes: Int) -> [String] {
         var out: [String] = []
