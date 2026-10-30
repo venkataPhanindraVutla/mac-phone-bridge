@@ -38,7 +38,10 @@ class BootReceiver : BroadcastReceiver() {
             try {
                 val start = BootDecision.shouldStart(confirmedEmpty = graph.noMacPaired())
                 Log.i(TAG, "boot: ${intent.action}, start=$start")
-                if (start) ConnectionService.start(context.applicationContext)
+                if (start) {
+                    ConnectionService.start(context.applicationContext)
+                    KeepAliveWatchdog(context).schedule()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "boot: cannot start the service", e)
             } finally {

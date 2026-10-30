@@ -117,6 +117,8 @@ class ConnectionService : LifecycleService() {
     /** The wait-then-kick after a `NotPaired` the store did not confirm; one per episode. */
     private var notPairedJob: Job? = null
     private lateinit var network: NetworkWatcher
+    private lateinit var screenOn: ScreenOnKicker
+    private lateinit var watchdog: KeepAliveWatchdog
     private var lastText: String? = null
     private lateinit var ring: RingController
     private var lastNotifyEnabled: Boolean? = null
@@ -128,10 +130,22 @@ class ConnectionService : LifecycleService() {
         running = true
         graph = AppGraph.get(this)
         graph.keepAliveLog.record(KeepAliveEvent.SERVICE_CREATE)
-        createChannel()
+        createChannel(this)
         goForeground(getString(R.string.state_looking_unnamed))
-        network = NetworkWatcher(this) { graph.manager.kick() }
+        ReconnectNotice.clear(this)
+        watchdog = KeepAliveWatchdog(this)
+        watchdog.schedule()
+        network = NetworkWatcher(this) { kind ->
+            graph.keepAliveLog.record(KeepAliveEvent.NETWORK, kind)
+            graph.manager.kick()
+        }
         network.start()
+        // A connected session pings at once, a disconnected one dials at once.
+        screenOn = ScreenOnKicker(this) {
+            graph.keepAliveLog.record(KeepAliveEvent.SCREEN_ON)
+            graph.manager.kick()
+        }
+        screenOn.start()
         graph.manager.start()
         // Phone status goes out only while the Mac shares status.v1.
         StatusPublisher(
@@ -194,6 +208,7 @@ class ConnectionService : LifecycleService() {
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
         network.stop()
+        screenOn.stop()
         graph.manager.stop()
         // The collector never sees Stopped once cancelled: end the session here (getAndSet: exactly one of us does).
         sessionWatch?.cancel()
@@ -1024,6 +1039,7 @@ class ConnectionService : LifecycleService() {
                     onUnreadable = { graph.keepAliveLog.record(KeepAliveEvent.STATE, "notpaired-unreadable") },
                     onSelfStop = {
                         graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
+                        watchdog.cancel()
                         Log.i(TAG, "service: no Mac paired, stopping")
                         ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
@@ -1048,15 +1064,6 @@ class ConnectionService : LifecycleService() {
             lastText = text
             update(text)
         }
-    }
-
-    private fun createChannel() {
-        val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
-            .setName(getString(R.string.channel_connection))
-            .setDescription(getString(R.string.channel_connection_description))
-            .setShowBadge(false)
-            .build()
-        NotificationManagerCompat.from(this).createNotificationChannel(channel)
     }
 
     private fun notification(text: String): Notification {
@@ -1104,6 +1111,17 @@ class ConnectionService : LifecycleService() {
         private const val UNREADABLE_RETRY_MS = 30_000L
 
         const val CHANNEL_ID = "connection"
+
+        /** The `connection` channel: the service notification and [ReconnectNotice]. Creating it again is a no-op. */
+        fun createChannel(context: Context) {
+            val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+                .setName(context.getString(R.string.channel_connection))
+                .setDescription(context.getString(R.string.channel_connection_description))
+                .setShowBadge(false)
+                .build()
+            NotificationManagerCompat.from(context).createNotificationChannel(channel)
+        }
+
         private val FILES_TYPES = listOf(
             MessageType.FILES_ENDPOINT, MessageType.FILES_OFFER, MessageType.FILES_ACCEPT, MessageType.FILES_REJECT,
             MessageType.FILES_PROGRESS, MessageType.FILES_COMPLETE, MessageType.FILES_RECEIVED, MessageType.FILES_CANCEL,

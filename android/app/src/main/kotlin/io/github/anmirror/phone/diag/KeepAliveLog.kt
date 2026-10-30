@@ -9,6 +9,7 @@ enum class KeepAliveEvent(val code: String) {
     SERVICE_CREATE("service-create"), SERVICE_START("service-start"), SERVICE_DESTROY("service-destroy"),
     SERVICE_SELF_STOP("service-self-stop"), STATE("state"), STORE_UNREADABLE("store-unreadable"),
     SCREEN_ON("screen-on"), NETWORK("network"), WATCHDOG("watchdog"), EXEMPT("exempt"),
+    SOCKET_TUNE("socket-tune"),
 }
 
 /**

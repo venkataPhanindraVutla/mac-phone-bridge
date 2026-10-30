@@ -201,4 +201,6 @@
     <!-- Service notification -->
     <string name="channel_connection">Connection</string>
     <string name="channel_connection_description">Shows whether this phone is connected to your Mac.</string>
+    <string name="reconnect_title">Android Mirroring stopped</string>
+    <string name="reconnect_text">Tap to reconnect to your Mac.</string>
 </resources>

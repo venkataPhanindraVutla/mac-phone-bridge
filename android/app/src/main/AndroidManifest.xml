@@ -153,6 +153,11 @@
             android:name=".service.ProximityAlarmReceiver"
             android:exported="false" />
 
+        <!-- The keep-alive watchdog's alarm (ELAPSED_REALTIME_WAKEUP, inexact, every 15 min); only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.KeepAliveWatchdogReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="false">

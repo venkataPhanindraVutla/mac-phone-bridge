@@ -13,9 +13,10 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Calls [onChange] when a Wi-Fi or Ethernet network comes up, goes away, or changes its
  * addresses: the moments the Mac may have become reachable at a new address. The app wires it
- * to `ConnectionManager.kick()`, which retries at once (or pings, if connected).
+ * to `ConnectionManager.kick()`, which retries at once (or pings, if connected). [onChange]
+ * hears which: `available`, `lost` or `changed`.
  */
-class NetworkWatcher(context: Context, private val onChange: () -> Unit) {
+class NetworkWatcher(context: Context, private val onChange: (kind: String) -> Unit) {
     private val connectivity: ConnectivityManager =
         checkNotNull(context.applicationContext.getSystemService(ConnectivityManager::class.java))
     private val addresses = ConcurrentHashMap<Network, Set<String>>()
@@ -24,13 +25,13 @@ class NetworkWatcher(context: Context, private val onChange: () -> Unit) {
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             Log.d(TAG, "network: available")
-            onChange()
+            onChange("available")
         }
 
         override fun onLost(network: Network) {
             addresses.remove(network)
             Log.d(TAG, "network: lost")
-            onChange()
+            onChange("lost")
         }
 
         override fun onLinkPropertiesChanged(network: Network, link: LinkProperties) {
@@ -38,7 +39,7 @@ class NetworkWatcher(context: Context, private val onChange: () -> Unit) {
             val before = addresses.put(network, now)
             if (before != null && before != now) {
                 Log.d(TAG, "network: addresses changed")
-                onChange()
+                onChange("changed")
             }
         }
     }

@@ -22,6 +22,7 @@ import androidx.core.content.edit
 import io.github.anmirror.connection.BulkConnector
 import io.github.anmirror.connection.BulkStream
 import io.github.anmirror.connection.ConnectionManager
+import io.github.anmirror.connection.LIVENESS_CAPABILITY
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.connection.PROTOCOL_VERSION
 import io.github.anmirror.connection.PairedMac
@@ -57,6 +58,7 @@ import io.github.anmirror.feature.proximity.ProximityBeacon
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
+import io.github.anmirror.phone.platform.AndroidKeepAliveTuner
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.diag.KeepAliveLog
@@ -160,7 +162,11 @@ class AppGraph private constructor(context: Context) {
     /** The store as read now; [StoreRead.Unreadable] is reported to the event log. */
     suspend fun readPairings(): StoreRead = encryptedStore.readStore()
 
-    private val connector = TlsConnector(identity)
+    /** SPEC 7's TCP keepalive timings on every dialed socket; a phone that cannot set them keeps the system's. */
+    private val connector = TlsConnector(
+        identity,
+        tuner = AndroidKeepAliveTuner(onFallback = { keepAliveLog.record(KeepAliveEvent.SOCKET_TUNE, it) }),
+    )
 
     val manager = ConnectionManager(
         scope = scope,
@@ -1016,7 +1022,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", LIVENESS_CAPABILITY)
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
