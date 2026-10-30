@@ -229,6 +229,44 @@ class TlsConnectorTest {
     }
 
     @Test
+    fun tunerRunsOnEveryDialedSocket() = runBlocking {
+        val tuned = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
+        val tuner = SocketTuner { socket -> tuned += socket.isConnected }
+        TestMacServer { c -> c.awaitEof() }.use { server ->
+            val connector = TlsConnector(Identities.phone, tuner = tuner)
+            val channel = withTimeout(10_000) { connector.connect(listOf("127.0.0.1"), server.port, Identities.MAC_FP) }
+            assertEquals(listOf(true), tuned, "the control socket, once it is connected")
+            val bulk = withTimeout(10_000) { connector.dialPinned("127.0.0.1", server.port, Identities.MAC_FP) }
+            assertEquals(listOf(true, true), tuned, "the bulk socket too")
+            bulk.close()
+            channel.close()
+            server.join()
+        }
+    }
+
+    @Test
+    fun failingTunerDoesNotStopTheDial() = runBlocking {
+        TestMacServer { c -> c.answerHello() }.use { server ->
+            val connector = TlsConnector(Identities.phone, tuner = { throw java.net.SocketException("unsupported") })
+            val channel = withTimeout(10_000) { connector.connect(listOf("127.0.0.1"), server.port, Identities.MAC_FP) }
+            assertIs<HelloResult.Ok>(exchangeHello(channel, phoneHello()))
+            channel.close()
+            server.join()
+        }
+    }
+
+    @Test
+    fun defaultTunerTurnsOnKeepAlive() {
+        java.net.Socket().use { socket ->
+            TcpKeepAlive.BASIC.tune(socket)
+            assertTrue(socket.keepAlive)
+        }
+        assertEquals(60, TcpKeepAlive.IDLE_S)
+        assertEquals(10, TcpKeepAlive.INTERVAL_S)
+        assertEquals(3, TcpKeepAlive.COUNT)
+    }
+
+    @Test
     fun pinnedTrustManagerComparesLowercaseHexOfLeaf() {
         val tm = PinnedTrustManager(setOf(Identities.MAC_FP))
         val cert = (Identities.mac as Pkcs12Identity).certificate

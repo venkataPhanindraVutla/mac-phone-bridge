@@ -39,10 +39,14 @@ fun interface MacConnector {
  * Each host gets [connectTimeoutMs] for the TCP connect and the same again for the TLS
  * handshake. A host that fails for any reason (refused, timeout, wrong certificate,
  * not TLS 1.3) is skipped and its socket closed.
+ *
+ * [tuner] runs on every dialed socket (control and bulk) right after the TCP connect. A tuner
+ * that throws is logged by exception class only; the dial goes on.
  */
 class TlsConnector(
     private val identity: TlsIdentity,
     private val connectTimeoutMs: Int = 3000,
+    private val tuner: SocketTuner = TcpKeepAlive.BASIC,
 ) : MacConnector {
 
     override suspend fun connect(hosts: List<String>, port: Int, pinnedFpHex: String): ControlChannel {
@@ -95,6 +99,9 @@ class TlsConnector(
                 try {
                     raw.tcpNoDelay = true
                     raw.connect(InetSocketAddress(host, port), connectTimeoutMs)
+                    runCatching { tuner.tune(raw) }.onFailure { e ->
+                        System.err.println("TlsConnector: socket tuning failed: ${e.javaClass.simpleName}")
+                    }
                     raw.soTimeout = connectTimeoutMs
                     ssl = context.socketFactory.createSocket(raw, host, port, true) as SSLSocket
                     ssl.enabledProtocols = arrayOf("TLSv1.3")

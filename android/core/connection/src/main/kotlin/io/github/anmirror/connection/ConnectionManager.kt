@@ -61,11 +61,14 @@ sealed interface PhoneConnectionState {
 
 /** Timing knobs. Defaults are the SPEC 7 values plus rulings R16; tests inject their own. */
 data class ConnectionTiming(
+    /** The phone's own ping interval without `liveness.v1`; also how long a session must live to reset the backoff. */
     val pingIntervalMs: Long = 30_000,
     val pongTimeoutMs: Long = 10_000,
+    /** With `liveness.v1`: the phone pings only after this long with nothing received. */
+    val fallbackIdleMs: Long = 45_000,
     val helloTimeoutMs: Long = 10_000,
-    /** Delay before retry n (0-based); the last value repeats: 1, 2, 4, 5, 5, 5, 30, 60, 60, ... s. */
-    val backoffMs: List<Long> = listOf(1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 30_000, 60_000),
+    /** Delay before retry n (0-based); the last value repeats: 1, 2, 4, 5, 5, 5, 15, 30, 30, ... s. */
+    val backoffMs: List<Long> = listOf(1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 15_000, 30_000),
     /** Retry delay after `system.error BUSY`. */
     val busyRetryMs: Long = 60_000,
     /** Timed retry out of `NotRecognized`. */
@@ -84,17 +87,23 @@ data class ConnectionTiming(
  * - While disconnected, keeps one Bonjour subscription for that Mac; the latest service whose
  *   TXT `r` matches its rotating ID at ±1 epoch (SPEC 6) is its discovered address.
  * - An attempt tries `lastHost:lastPort`, then the discovered address.
- * - After a failed attempt waits 1, 2, 4, 5, 5, 5 s, then 30 s once, then 60 s each time.
+ * - After a failed attempt waits 1, 2, 4, 5, 5, 5 s, then 15 s once, then 30 s each time.
  *   [kick] retries now and resets that; so does a matching Bonjour event, so a Mac that wakes
- *   and re-advertises is reached within seconds even at the 60 s cap.
+ *   and re-advertises is reached within seconds even at the 30 s cap. Kicks that land
+ *   together (screen on, network change, watchdog) give one retry.
  * - `BUSY`: retry after 60 s or on [kick]. Protocol mismatch: `Incompatible`, until [kick].
  * - [PhoneConnectionState.NotRecognized] at once on an explicit `system.error NOT_PAIRED`; for a
  *   TLS-level refusal (a heuristic: resets look alike) only after 2 consecutive attempts that
  *   each ended refused on every address. The first such attempt backs off like `Unreachable`.
  * - After a session shorter than one ping interval, the backoff wait ignores Bonjour events:
  *   the new subscription replays the visible Mac, which must not cause a hot reconnect loop.
- * - While connected: ping every 30 s, reconnect if no pong within 10 s. Discovery is not
- *   subscribed while connected, so other paired Macs appearing change nothing.
+ * - While connected, keep-alive has two modes (SPEC 7, see [PhoneSession]):
+ *   - Without `liveness.v1` shared (0.1): ping every 30 s, reconnect if no pong within 10 s.
+ *   - With it, the Mac pings every 30 s and the phone answers each at once. The phone pings
+ *     only after 45 s with nothing received, and reconnects if nothing arrives within 10 s.
+ *   In both, a [kick] while connected pings at once, unless a ping already awaits its
+ *   answer (that ping's 10 s deadline stands). Discovery is not subscribed while
+ *   connected, so other paired Macs appearing change nothing.
  * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect. The backoff
  *   starts over after a session that lived at least one ping interval.
  * - `system.goodbye UNPAIRED` removes the Mac, then moves on to the next Mac or `NotPaired`.
@@ -104,7 +113,8 @@ data class ConnectionTiming(
  *   error restarts the loop after a backoff (1, 2, 4, ... s, or a kick): it never ends by itself.
  *
  * [hello] builds the phone's `system.hello`; its capabilities decide what [send] allows.
- * [clock] is unix milliseconds (rotating-ID epoch and `lastConnectedAt`).
+ * [clock] is unix milliseconds (rotating-ID epoch and `lastConnectedAt`). [uptimeMs] is
+ * monotonic uptime for the keep-alive timers (it stops in deep sleep).
  */
 class ConnectionManager(
     private val scope: CoroutineScope,
@@ -118,6 +128,7 @@ class ConnectionManager(
     private val log: (String, Throwable?) -> Unit = { message, e ->
         System.err.println("ConnectionManager: $message${e?.let { ": $it" } ?: ""}")
     },
+    private val uptimeMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _state = MutableStateFlow<PhoneConnectionState>(PhoneConnectionState.NotPaired)
     val state: StateFlow<PhoneConnectionState> = _state.asStateFlow()
@@ -561,7 +572,9 @@ class ConnectionManager(
                 }
                 // A pairing connection to this Mac handed over while we dialed it is not needed now.
                 adopted.get()?.takeIf { it !== channel && it.isFor(mac) && adopted.compareAndSet(it, null) }?.close()
-                val session = PhoneSession(channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs)
+                val session = PhoneSession(
+                    channel, a.shared, timing.pingIntervalMs, timing.pongTimeoutMs, timing.fallbackIdleMs, uptimeMs,
+                )
                 val cur = Current(updated, session)
                 current = cur
                 // adopt() sets `adopted` before reading `current`; we publish `current`, then read

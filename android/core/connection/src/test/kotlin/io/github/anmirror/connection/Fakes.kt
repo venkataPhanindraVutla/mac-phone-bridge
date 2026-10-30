@@ -6,6 +6,7 @@ import io.github.anmirror.protocol.v1.Envelope
 import io.github.anmirror.protocol.v1.ErrorCode
 import io.github.anmirror.protocol.v1.Goodbye
 import io.github.anmirror.protocol.v1.GoodbyeReason
+import io.github.anmirror.protocol.v1.Ping
 import io.github.anmirror.protocol.v1.Pong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -129,6 +130,11 @@ class FakeMac(val fpHex: String, private val scope: CoroutineScope, var caps: Li
             disconnects++
         }
         return phone
+    }
+
+    /** Sends `system.ping` on the current connection (a `liveness.v1` Mac's keep-alive tick). */
+    suspend fun sendPing() {
+        checkNotNull(current).send(Channel.CHANNEL_SYSTEM, MessageType.PING, Ping.getDefaultInstance())
     }
 
     suspend fun goodbye(reason: GoodbyeReason) {

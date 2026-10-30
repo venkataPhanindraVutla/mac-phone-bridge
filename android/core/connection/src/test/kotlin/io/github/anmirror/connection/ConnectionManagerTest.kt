@@ -60,7 +60,11 @@ class ConnectionManagerTest {
     ): Rig {
         val connector = FakeConnector { testScheduler.currentTime }
         val store = InMemoryPairedMacStore(macs)
-        val manager = ConnectionManager(backgroundScope, store, discovery, connector, hello, clock = { nowMs })
+        val manager = ConnectionManager(
+            backgroundScope, store, discovery, connector, hello,
+            clock = { nowMs },
+            uptimeMs = { testScheduler.currentTime },
+        )
         return Rig(manager, connector, store)
     }
 
@@ -74,8 +78,11 @@ class ConnectionManagerTest {
         assertEquals(10_000, t.pongTimeoutMs)
         assertEquals(10_000, t.helloTimeoutMs)
         assertEquals(60_000, t.busyRetryMs)
+        assertEquals(15 * 60_000, t.notRecognizedRetryMs)
+        assertEquals(2, t.heuristicRefusalsForNotRecognized)
+        assertEquals(45_000, t.fallbackIdleMs)
         assertEquals(
-            listOf(1_000L, 2_000L, 4_000L, 5_000L, 5_000L, 5_000L, 30_000L, 60_000L, 60_000L, 60_000L),
+            listOf(1_000L, 2_000L, 4_000L, 5_000L, 5_000L, 5_000L, 15_000L, 30_000L, 30_000L, 30_000L),
             (0..9).map { t.backoff(it) },
         )
     }
@@ -200,14 +207,14 @@ class ConnectionManagerTest {
     }
 
     @Test
-    fun backoffCapsAt60sAfterSixAttempts() = runTest {
+    fun backoffCapsAt30sAfterSixAttempts() = runTest {
         val r = rig(listOf(macA()))
         r.manager.start()
-        advanceTimeBy(400_001)
+        advanceTimeBy(130_001)
         runCurrent()
-        // Waits 1, 2, 4, 5, 5, 5 s, then 30 s once, then 60 s.
+        // Waits 1, 2, 4, 5, 5, 5 s, then 15 s once, then 30 s.
         assertEquals(
-            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 52_000L, 112_000L, 172_000L, 232_000L, 292_000L, 352_000L),
+            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 37_000L, 67_000L, 97_000L, 127_000L),
             r.connector.dials.map { it.second },
         )
         assertEquals(PhoneConnectionState.Unreachable(macA()), r.manager.state.value)
@@ -216,7 +223,57 @@ class ConnectionManagerTest {
         runCurrent()
         advanceTimeBy(1_000)
         runCurrent()
-        assertEquals(listOf(400_001L, 401_001L), r.connector.dials.map { it.second }.drop(13))
+        assertEquals(listOf(130_001L, 131_001L), r.connector.dials.map { it.second }.drop(11))
+    }
+
+    @Test
+    fun burstOfKicksDialsOnce() = runTest {
+        // Screen-on, a network change and the watchdog at once: one dial, not three.
+        val r = rig(listOf(macA()))
+        r.manager.start()
+        advanceTimeBy(23_000) // in the 15 s wait after the dial at 22 s
+        runCurrent()
+        assertEquals(22_000L, r.connector.dials.last().second)
+        r.manager.kick()
+        r.manager.kick()
+        r.manager.kick()
+        runCurrent()
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(listOf(23_000L), r.connector.dials.map { it.second }.filter { it in 23_000L..23_999L })
+        advanceTimeBy(1)
+        runCurrent()
+        // The kick started the backoff over: the next dial is 1 s later.
+        assertEquals(listOf(23_000L, 24_000L), r.connector.dials.map { it.second }.filter { it >= 23_000L })
+    }
+
+    @Test
+    fun livenessSessionAnswersMacPingsAndSendsNoTimerPings() = runTest {
+        val caps = CAPS + LIVENESS_CAPABILITY
+        val r = rig(listOf(macA()), hello = { phoneHello(caps) })
+        val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope, caps)
+        r.manager.start()
+        runCurrent()
+        assertEquals(setOf("find.v1", LIVENESS_CAPABILITY, "status.v1"), assertIs<PhoneConnectionState.Connected>(r.manager.state.value).shared)
+        repeat(10) {
+            advanceTimeBy(30_000)
+            mac.sendPing()
+            runCurrent()
+        }
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        assertEquals(1, mac.connects)
+        assertEquals(0, mac.received.count { it.type == MessageType.PING })
+        assertEquals(10, mac.received.count { it.type == MessageType.PONG })
+
+        // The Mac goes quiet: the phone's own ping after 45 s, the drop 10 s after that.
+        mac.answerPings = false
+        advanceTimeBy(45_001)
+        runCurrent()
+        assertEquals(1, mac.received.count { it.type == MessageType.PING })
+        assertIs<PhoneConnectionState.Connected>(r.manager.state.value)
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertFalse(r.manager.state.value is PhoneConnectionState.Connected, "dropped 10 s after the fallback ping")
     }
 
     @Test
@@ -224,16 +281,16 @@ class ConnectionManagerTest {
         val flow = MutableSharedFlow<DiscoveredService>(extraBufferCapacity = 16)
         val r = rig(listOf(macA()), MacDiscovery { flow })
         r.manager.start()
-        advanceTimeBy(200_000) // deep into the 60 s cap; last dial at 172 s, next due at 232 s
+        advanceTimeBy(200_000) // deep into the 30 s cap; last dial at 187 s, next due at 217 s
         runCurrent()
-        assertEquals(172_000L, r.connector.dials.last().second)
+        assertEquals(187_000L, r.connector.dials.last().second)
 
         // Another Mac's advertisement is not a wake-up.
         flow.tryEmit(service("10.0.0.21", 4000, keyB))
         runCurrent()
-        assertEquals(172_000L, r.connector.dials.last().second)
+        assertEquals(187_000L, r.connector.dials.last().second)
 
-        // Our Mac wakes on a new address and re-advertises: reconnect now, not at 232 s.
+        // Our Mac wakes on a new address and re-advertises: reconnect now, not at 217 s.
         r.addMac("10.0.0.30:4000", Identities.MAC_FP, backgroundScope)
         flow.tryEmit(service("10.0.0.30", 4000, keyA))
         runCurrent()
@@ -262,11 +319,11 @@ class ConnectionManagerTest {
         val mac = r.addMac("10.0.0.5:4000", Identities.MAC_FP, backgroundScope)
         mac.goodbyeAfterHello = GoodbyeReason.GOODBYE_REASON_SHUTDOWN
         r.manager.start()
-        advanceTimeBy(52_001)
+        advanceTimeBy(37_001)
         runCurrent()
-        // Each session dies at once, so the backoff keeps its 1, 2, 4, 5, 5, 5, 30 s cadence.
+        // Each session dies at once, so the backoff keeps its 1, 2, 4, 5, 5, 5, 15 s cadence.
         assertEquals(
-            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 52_000L),
+            listOf(0L, 1_000L, 3_000L, 7_000L, 12_000L, 17_000L, 22_000L, 37_000L),
             r.connector.dials.map { it.second },
         )
     }

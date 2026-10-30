@@ -11,6 +11,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class StatusPublisherTest {
@@ -27,6 +29,12 @@ class StatusPublisherTest {
             send = { sent += scope.currentTime to it },
             minIntervalMs = 5_000,
         )
+    }
+
+    @Test
+    fun backgroundRestrictedGoesOnTheWire() {
+        assertTrue(status(50).copy(backgroundRestricted = true).toProto().backgroundRestricted)
+        assertFalse(status(50).toProto().backgroundRestricted, "false unless set")
     }
 
     @Test

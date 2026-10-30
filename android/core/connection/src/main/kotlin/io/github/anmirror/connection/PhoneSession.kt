@@ -14,8 +14,8 @@ import io.github.anmirror.protocol.v1.Pong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
@@ -157,22 +157,35 @@ enum class SessionEnd {
 /**
  * A connected control channel after a successful hello: keep-alive plus message dispatch.
  *
- * Every [pingIntervalMs] it sends `system.ping`; if no `system.pong` arrives within
- * [pongTimeoutMs], it closes the channel (SPEC 7). Other messages go to `onMessage`
- * (hello, ping/pong, goodbye and error are handled here).
+ * Keep-alive follows SPEC 7, through [PhoneLiveness]:
+ * - Without `liveness.v1` in [shared] (0.1): `system.ping` every [pingIntervalMs]; if no
+ *   `system.pong` arrives within [pongTimeoutMs], the session ends with `PONG_TIMEOUT`.
+ * - With it, the Mac pings. Each Mac ping is answered at once with `system.pong`. The phone
+ *   pings only after [fallbackIdleMs] with nothing received, and ends the session if nothing
+ *   at all arrives within [pongTimeoutMs] of that ping.
+ *
+ * [uptimeMs] is monotonic uptime (it stops in deep sleep, like the coroutine delays here).
+ * Other messages go to `onMessage` (hello, ping/pong, goodbye and error are handled here).
  */
 class PhoneSession(
     val channel: ControlChannel,
     val shared: Set<String>,
     private val pingIntervalMs: Long = 30_000,
     private val pongTimeoutMs: Long = 10_000,
+    private val fallbackIdleMs: Long = 45_000,
+    private val uptimeMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     /**
      * Runs until the connection ends; the channel is closed on return or cancellation.
      * An element on [pingNow] (for example "the network changed") sends a ping right away.
+     * [onMacPing] runs after each Mac `system.ping` has been answered.
      * Exceptions thrown by `onMessage` are dropped so one bad handler cannot end the session.
      */
-    suspend fun run(pingNow: ReceiveChannel<Unit>? = null, onMessage: suspend (Envelope) -> Unit): SessionEnd = try {
+    suspend fun run(
+        pingNow: ReceiveChannel<Unit>? = null,
+        onMacPing: (() -> Unit)? = null,
+        onMessage: suspend (Envelope) -> Unit,
+    ): SessionEnd = try {
         coroutineScope {
             val end = AtomicReference<SessionEnd?>(null)
             fun finish(reason: SessionEnd) {
@@ -180,22 +193,46 @@ class PhoneSession(
                 channel.close()
             }
 
-            val pongs = KChannel<Unit>(KChannel.CONFLATED)
+            val liveness = PhoneLiveness(
+                macDriven = LIVENESS_CAPABILITY in shared,
+                pingIntervalMs = pingIntervalMs,
+                fallbackIdleMs = fallbackIdleMs,
+                pongTimeoutMs = pongTimeoutMs,
+                startMs = uptimeMs(),
+            )
+            // Something arrived: the pinger looks at the liveness state again.
+            val heard = KChannel<Unit>(KChannel.CONFLATED)
             val pinger = launch {
+                var kicks = pingNow
                 while (true) {
-                    val early = pingNow?.let { withTimeoutOrNull(pingIntervalMs) { it.receiveCatching() } }
-                    // No pingNow, or it was closed: just wait out the interval.
-                    if (pingNow == null || early?.isClosed == true) delay(pingIntervalMs)
-                    while (pongs.tryReceive().isSuccess) continue
-                    try {
-                        channel.send(Channel.CHANNEL_SYSTEM, MessageType.PING, Ping.getDefaultInstance())
-                    } catch (e: IOException) {
-                        finish(SessionEnd.CLOSED)
-                        return@launch
-                    }
-                    if (withTimeoutOrNull(pongTimeoutMs) { pongs.receive() } == null) {
-                        finish(SessionEnd.PONG_TIMEOUT)
-                        return@launch
+                    val now = uptimeMs()
+                    when (val step = liveness.next(now)) {
+                        LivenessStep.SendPing -> {
+                            // Marked before the write, so an answer racing the write is not missed.
+                            liveness.onPingSent(now)
+                            try {
+                                channel.send(Channel.CHANNEL_SYSTEM, MessageType.PING, Ping.getDefaultInstance())
+                            } catch (e: IOException) {
+                                finish(SessionEnd.CLOSED)
+                                return@launch
+                            }
+                        }
+                        is LivenessStep.WaitUntil -> withTimeoutOrNull(step.atMs - now) {
+                            val k = kicks
+                            select<Unit> {
+                                heard.onReceive {}
+                                if (k != null) {
+                                    k.onReceiveCatching { r ->
+                                        // A closed pingNow just stops being listened to.
+                                        if (r.isClosed) kicks = null else liveness.requestPing()
+                                    }
+                                }
+                            }
+                        }
+                        LivenessStep.Dead -> {
+                            finish(SessionEnd.PONG_TIMEOUT)
+                            return@launch
+                        }
                     }
                 }
             }
@@ -203,10 +240,16 @@ class PhoneSession(
             try {
                 while (end.get() == null) {
                     val env = channel.receive() ?: break
+                    liveness.onIncoming(uptimeMs(), isPong = env.type == MessageType.PONG)
+                    heard.trySend(Unit)
                     when (env.type) {
-                        MessageType.PONG -> pongs.trySend(Unit)
-                        MessageType.PING -> runCatching {
-                            channel.send(Channel.CHANNEL_SYSTEM, MessageType.PONG, Pong.getDefaultInstance(), env.id)
+                        MessageType.PONG -> Unit
+                        MessageType.PING -> {
+                            // At once, whatever the timers say (SPEC 7: the Mac's drop rule relies on it).
+                            runCatching {
+                                channel.send(Channel.CHANNEL_SYSTEM, MessageType.PONG, Pong.getDefaultInstance(), env.id)
+                            }
+                            onMacPing?.invoke()
                         }
                         MessageType.HELLO -> Unit
                         MessageType.GOODBYE -> {

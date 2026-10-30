@@ -9,6 +9,7 @@
 //   EVENT connected shared=<a,b>
 //   EVENT ring
 //   EVENT stop
+//   EVENT mac-ping                                          (with --liveness; one per Mac system.ping answered)
 //   EVENT files-received bytes=<n> sha256=<hex> mbps=<x>   (with --send-bytes)
 //   EVENT files-sent bytes=<n>                              (with --send-bytes)
 //   EVENT files-failed <id> <reason>                        (with --send-bytes; the process then exits 1)
@@ -25,6 +26,7 @@ import io.github.anmirror.connection.ControlChannel
 import io.github.anmirror.connection.HelloFailure
 import io.github.anmirror.connection.HelloResult
 import io.github.anmirror.connection.JsonFilePairedMacStore
+import io.github.anmirror.connection.LIVENESS_CAPABILITY
 import io.github.anmirror.connection.PROTOCOL_VERSION
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairingResult
@@ -57,11 +59,12 @@ private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> 
                       [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [--send-bytes <n>] [common options]
        phone-sim connect --state-dir <dir> --identity <p12>
                       [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [common options]
-common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>]
+common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>] [--liveness]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
   --media: advertise media.v1, send media.availability and a paused session "sim"; a TOGGLE for it flips it; exit 0 after the second TOGGLE
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
+  --liveness: advertise liveness.v1 (the Mac pings; the phone answers and pings only after 45 s of quiet)
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 
 private val CAPABILITIES = listOf("find.v1", "status.v1")
@@ -94,6 +97,7 @@ private class Options(
     val notify: Boolean,
     val media: Boolean,
     val sendBytes: Long?,
+    val liveness: Boolean,
     val name: String,
     val model: String,
 )
@@ -136,6 +140,7 @@ private fun parse(args: Array<String>): Options {
     var notify = false
     var media = false
     var sendBytes: Long? = null
+    var liveness = false
     var name = "phone-sim"
     var model = "phone-sim"
     var i = 1
@@ -151,6 +156,7 @@ private fun parse(args: Array<String>): Options {
             "--notify" -> notify = true
             "--media" -> media = true
             "--send-bytes" -> sendBytes = value(arg).toLongOrNull()?.takeIf { it >= 0 } ?: usageError("--send-bytes needs a size in bytes")
+            "--liveness" -> liveness = true
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
             "-h", "--help" -> {
@@ -167,7 +173,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, notify, media, sendBytes, name, model,
+        autoConfirm, status, notify, media, sendBytes, liveness, name, model,
     )
 }
 
@@ -194,7 +200,7 @@ fun main(args: Array<String>) {
     val stateDir = File(options.stateDir)
     if (!stateDir.isDirectory && !stateDir.mkdirs()) usageError("cannot create state dir ${options.stateDir}")
     val store = JsonFilePairedMacStore(File(stateDir, "paired-macs.json"))
-    val connector = TlsConnector(identity)
+    val connector = TlsConnector(identity, tuner = JdkKeepAliveTuner)
     val hello = Hello.newBuilder()
         .setProtocolVersion(PROTOCOL_VERSION)
         .setAppVersion("0.1.0-sim")
@@ -203,6 +209,7 @@ fun main(args: Array<String>) {
                 "notify.v1".takeIf { options.notify },
                 "media.v1".takeIf { options.media },
                 "files.v1".takeIf { options.sendBytes != null },
+                LIVENESS_CAPABILITY.takeIf { options.liveness },
             )).sorted(),
         )
         .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
@@ -318,7 +325,7 @@ private suspend fun session(
     }
     val media = if (options.media && "media.v1" in shared) SimMedia(channel, ::emit) { exitProcess(0) } else null
     media?.start()
-    val end = PhoneSession(channel, shared).run { env ->
+    val end = PhoneSession(channel, shared).run(onMacPing = { emit("EVENT mac-ping") }) { env ->
         if (transfers?.onMessage(env) == true) return@run
         if (media?.onMessage(env) == true) return@run
         when (env.type) {
