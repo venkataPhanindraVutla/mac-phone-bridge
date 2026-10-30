@@ -84,7 +84,7 @@ This document describes how the PRD gets built. Items marked **(builder's choice
 - **Control connection:** one long-lived TLS connection.
   - Carries length-prefixed **Protocol Buffers** messages in an envelope: `{channel, id, reply_to, type, payload}`.
   - Used for everything small: notifications, clipboard, calls, media, status, settings.
-  - Keep-alive is tuned for battery (builder's choice; it must meet the 2%/day goal).
+  - Keep-alive is tuned for battery (builder's choice; it must meet the 2%/day goal): Mac-driven ping every 30 s (`liveness.v1`), phone answers, TCP keepalive on all sockets.
 - **Bulk connections:** a separate TLS connection per file transfer, or per batch (F-04, F-12, F-13). Big files then never block small messages.
 - **Mirror connections (Full mode):** separate TLS connections for video, audio and input (see §6).
 - **Capabilities handshake:** on connect, both sides exchange `{protocol_version, app_version, capabilities[], setup_level}`.
@@ -142,6 +142,8 @@ This document describes how the PRD gets built. Items marked **(builder's choice
   - A **foreground service** of type `connectedDevice` holds the connection, with a quiet persistent notification as Android requires.
   - Everything is restarted on boot and after the service is killed.
   - Per-maker guidance screens cover battery-saver exemptions.
+  - After pairing, the app asks for the battery-optimisation exemption (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`), and the home screen keeps a row until it is granted.
+  - A **watchdog** alarm (inexact `setAndAllowWhileIdle`, every 15 min, re-armed on each fire) restarts the service if it is gone while a Mac is paired. Without the exemption it posts a "Tap to reconnect" notification instead.
 - **Build flavors:** one `oss` flavor for GitHub and F-Droid now. Features that depend on Play-restricted permissions (`READ_CALL_LOG`, `MANAGE_EXTERNAL_STORAGE`, `ANSWER_PHONE_CALLS`) are behind capability switches. A later `play` flavor can then drop them from its manifest and fall back:
   - number from the call notification instead of the call log
   - picked folders instead of All files access

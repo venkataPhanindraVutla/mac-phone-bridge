@@ -82,6 +82,9 @@ public nonisolated struct AMStatusUpdate: Sendable {
 
   public var network: AMNetworkKind = .unspecified
 
+  /// true: not exempt from battery optimisation, so the phone may disconnect while locked. Absent (false) from older phones.
+  public var backgroundRestricted: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -97,7 +100,7 @@ nonisolated extension AMNetworkKind: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension AMStatusUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StatusUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}battery_percent\0\u{1}charging\0\u{3}signal_level\0\u{1}network\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}battery_percent\0\u{1}charging\0\u{3}signal_level\0\u{1}network\0\u{3}background_restricted\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -109,6 +112,7 @@ nonisolated extension AMStatusUpdate: SwiftProtobuf.Message, SwiftProtobuf._Mess
       case 2: try { try decoder.decodeSingularBoolField(value: &self.charging) }()
       case 3: try { try decoder.decodeSingularInt32Field(value: &self.signalLevel) }()
       case 4: try { try decoder.decodeSingularEnumField(value: &self.network) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.backgroundRestricted) }()
       default: break
       }
     }
@@ -127,6 +131,9 @@ nonisolated extension AMStatusUpdate: SwiftProtobuf.Message, SwiftProtobuf._Mess
     if self.network != .unspecified {
       try visitor.visitSingularEnumField(value: self.network, fieldNumber: 4)
     }
+    if self.backgroundRestricted != false {
+      try visitor.visitSingularBoolField(value: self.backgroundRestricted, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -135,6 +142,7 @@ nonisolated extension AMStatusUpdate: SwiftProtobuf.Message, SwiftProtobuf._Mess
     if lhs.charging != rhs.charging {return false}
     if lhs.signalLevel != rhs.signalLevel {return false}
     if lhs.network != rhs.network {return false}
+    if lhs.backgroundRestricted != rhs.backgroundRestricted {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

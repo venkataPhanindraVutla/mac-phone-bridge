@@ -22,6 +22,9 @@ Key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
   `r` (rotating ID, section 6). The Mac picks a new random instance name at every 15-minute
   epoch and on wake from sleep; the phone finds its Mac by TXT `r` only, never by the name.
 - A Mac serves one phone at a time. A phone connects to one Mac at a time.
+- Both sides SHOULD enable TCP keepalive (idle 60 s, interval 10 s, 3 probes) on control and
+  bulk connections. It does not replace section 7: a peer's kernel answers keepalive probes even
+  when its app is frozen. (Linux option numbers: `TCP_KEEPIDLE` 4, `TCP_KEEPINTVL` 5, `TCP_KEEPCNT` 6.)
 
 ## 2. Framing
 
@@ -72,7 +75,7 @@ message Envelope {
 | `type` | Direction | Payload | Channel |
 |---|---|---|---|
 | `system.hello` | both (phone first) | `Hello` | SYSTEM |
-| `system.ping` / `system.pong` | phone to Mac / reply | `Ping` / `Pong` | SYSTEM |
+| `system.ping` / `system.pong` | either / reply | `Ping` / `Pong` | SYSTEM |
 | `system.error` | either | `Error` | SYSTEM |
 | `system.goodbye` | either | `Goodbye` | SYSTEM |
 | `pairing.request` | phone to Mac | `PairRequest` | PAIRING |
@@ -143,6 +146,8 @@ encoded, so `0` and `-1` stay distinct.
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
 Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23). A side MUST NOT send messages of a feature the peer did not list.
+The 0.1 keep-alive patch adds `liveness.v1` (section 7). It is a property of the connection, not a
+feature channel: it carries no messages of its own and changes who sends `system.ping`.
 
 `Hello.protocol_version` is the integer **1**. If versions differ, the receiver answers
 `system.error` with `ERROR_CODE_PROTOCOL_MISMATCH` and closes.
@@ -267,17 +272,38 @@ values on both sides of an epoch boundary).
 
 Initial values (battery tuning is planned for 0.9):
 
+**Without `liveness.v1`** (either side did not list it; the 0.1 rules, unchanged):
+
 - The phone sends `system.ping` every **30 s**. If no `system.pong` arrives within **10 s**,
   the phone drops the connection and reconnects.
 - The Mac marks the phone as lost after **75 s** with no incoming message.
+
+**With `liveness.v1` shared** (both sides listed it in `Hello.capabilities`). An idle phone must
+not need its own timer, because its CPU may be suspended; it wakes on an incoming packet.
+
+- The Mac sends `system.ping` (channel SYSTEM, empty `Ping`) every **30 s**, the first one 30 s
+  after the hello. It counts any incoming envelope as proof of life, drops the phone when **3**
+  consecutive intervals pass with nothing received, and does not apply the 75 s silence rule to
+  that session.
+- The phone answers each `system.ping` at once with `system.pong`, `reply_to` set to the ping's
+  `id`. It sends its own ping only after **45 s** with nothing received, measured on monotonic
+  uptime (which stops in deep sleep), and drops the connection if nothing arrives within **10 s**
+  of that ping.
+- A Mac MUST NOT ping a phone that did not list `liveness.v1` (section 3).
+
+Both modes:
+
 - On wake from sleep the Mac closes every connection and restarts its listener on the same port.
 - When the Mac app quits it sends `system.goodbye{SHUTDOWN}` to the connected phone first. The
   phone treats it as a normal disconnect: it keeps the pairing and reconnects with its backoff.
 
 What the user sees (builder's call, recorded in 0.1; shorter detection is tracked for 0.9):
 "connected/disconnected" updates **immediately when the connection closes** (app quit, Mac
-sleep/wake, phone app stopped), and **within 75 s when the phone vanishes** (Wi-Fi off, out of
-range), which is the Mac's silence timeout above.
+sleep/wake, phone app stopped). When the phone vanishes (Wi-Fi off, out of range, app frozen) it
+updates **within 2 minutes** for a `liveness.v1` phone, and **within 75 s** for a phone without it.
+
+`StatusUpdate.background_restricted` (field 5) is `true` when the phone is not exempt from
+battery optimisation, so it may disconnect while locked. Older phones leave it `false`.
 
 ## 8. Errors
 
@@ -373,6 +399,7 @@ File bytes never travel in control frames. They use separate bulk connections.
   `size` bytes and never waits for EOF; extra bytes fail the transfer. The sender closes after
   `files.received` or `files.failed`, or after 30 s.
 - A control disconnect revokes every token and ends every bulk connection.
+- Bulk sockets use the TCP keepalive of section 1.
 - Requests that the Mac originates (`photos.list`, `browse.*`) carry their own `request_id`, a
   Mac counter echoed by the phone, not the envelope `reply_to`.
 
