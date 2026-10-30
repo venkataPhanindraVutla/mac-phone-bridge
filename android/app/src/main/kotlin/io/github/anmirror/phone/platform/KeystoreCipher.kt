@@ -13,10 +13,10 @@ import javax.crypto.spec.GCMParameterSpec
  * AES-256-GCM with a key that stays in the AndroidKeyStore. Output is the 12-byte IV followed by
  * the ciphertext and 16-byte tag. The Keystore picks a fresh random IV for every [encrypt].
  */
-class KeystoreCipher {
+class KeystoreCipher : BlobCipher {
     private val key: SecretKey by lazy { loadOrCreate() }
 
-    fun encrypt(plain: ByteArray): ByteArray {
+    override fun encrypt(plain: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key)
         val iv = cipher.iv
@@ -25,7 +25,7 @@ class KeystoreCipher {
     }
 
     /** Throws [GeneralSecurityException] if [blob] was not made by this key or was changed. */
-    fun decrypt(blob: ByteArray): ByteArray {
+    override fun decrypt(blob: ByteArray): ByteArray {
         if (blob.size < IV_BYTES + TAG_BITS / 8) throw GeneralSecurityException("ciphertext too short")
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, blob, 0, IV_BYTES))

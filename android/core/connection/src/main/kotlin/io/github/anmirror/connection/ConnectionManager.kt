@@ -359,7 +359,7 @@ class ConnectionManager(
                     val (end, matured) = runConnected(gen, mac, result)
                     // adopt() ended this session for another Mac; its kick went to the session.
                     if (adopted.get() != null) kick()
-                    if (end == SessionEnd.UNPAIRED) store.remove(mac.id)
+                    if (end == SessionEnd.UNPAIRED) removeQuietly(mac)
                     // A Mac no longer paired (goodbye UNPAIRED, forget) is not retried.
                     val still = store.all().firstOrNull { it.id == mac.id }
                     if (still == null) {
@@ -375,7 +375,7 @@ class ConnectionManager(
                     backoffWait(attempt, listenToDiscovery = matured)
                 }
                 Attempt.Unpaired -> {
-                    store.remove(mac.id)
+                    removeQuietly(mac)
                     attempt = 0
                     continue
                 }
@@ -516,6 +516,14 @@ class ConnectionManager(
             refused -> Attempt.NotRecognized(tried, explicit = false)
             tried.isEmpty() -> Attempt.NothingToDial
             else -> Attempt.Unreachable
+        }
+    }
+
+    /** A failed write (the store was unreadable and was left alone) is not fatal: it is retried on the next goodbye or connect. */
+    private suspend fun removeQuietly(mac: PairedMac) {
+        runCatching { store.remove(mac.id) }.onFailure { e ->
+            if (e is CancellationException) throw e
+            log("could not remove the Mac", e)
         }
     }
 

@@ -10,8 +10,16 @@ import java.security.ProviderException
 /** What reading the paired-Macs file gave. [Unreadable] is not the same as "no Mac paired". */
 sealed interface StoreRead {
     data class Macs(val macs: List<PairedMac>) : StoreRead
-    data class Unreadable(val causeClass: String) : StoreRead
+    data class Unreadable(val causeClass: String) : StoreRead {
+        /**
+         * Keystore busy or an IO hiccup: the blob may be fine and a later read may work, so
+         * nothing may overwrite it. Anything else (bad tag, bad JSON, key gone) is permanent.
+         */
+        val transient: Boolean get() = causeClass in TRANSIENT_CAUSES
+    }
 }
+
+private val TRANSIENT_CAUSES = setOf("ProviderException", "KeyStoreException", "IOException")
 
 object PairedMacsBlob {
     private val json = Json { ignoreUnknownKeys = true }

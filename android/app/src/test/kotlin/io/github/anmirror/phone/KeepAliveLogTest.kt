@@ -15,9 +15,7 @@ class KeepAliveLogTest {
     fun lineIsUtcTimeCodeAndDetail() {
         val f = File(tmp(), "k.log")
         KeepAliveLog(f, clock = { 1_700_000_000_000 }).record(KeepAliveEvent.SERVICE_START, "restart=true")
-        val lines = f.readLines()
-        assertEquals(1, lines.size)
-        assertTrue(Regex("""^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z service-start restart=true$""").matches(lines[0]), lines[0])
+        assertEquals(listOf("2023-11-14T22:13:20Z service-start restart=true"), f.readLines())
     }
 
     @Test

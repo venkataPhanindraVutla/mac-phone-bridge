@@ -9,61 +9,34 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 
-/**
- * The paired Macs as one JSON list, encrypted as a single blob with [cipher] and written
- * atomically. The discovery keys in it are secrets (SPEC 6), so nothing is stored in clear.
- */
-class EncryptedPairedMacStore(
-    private val file: AtomicFile,
-    private val cipher: KeystoreCipher,
-    private val onUnreadable: (causeClass: String) -> Unit = {},
-) : PairedMacStore {
-    private val lock = Mutex()
+/** Encrypts and decrypts one blob. [KeystoreCipher] in the app; a fake in tests. */
+interface BlobCipher {
+    fun encrypt(plain: ByteArray): ByteArray
+    fun decrypt(blob: ByteArray): ByteArray
+}
 
-    override suspend fun all(): List<PairedMac> = lock.withLock { load() }
+/** Where the blob lives: written atomically, absent until first saved. */
+interface BlobFile {
+    /** Null when the file does not exist. */
+    fun read(): ByteArray?
+    fun write(blob: ByteArray)
 
-    override suspend fun save(mac: PairedMac) = lock.withLock {
-        val macs = load()
-        val i = macs.indexOfFirst { it.id == mac.id }
-        store(if (i < 0) macs + mac else macs.toMutableList().also { it[i] = mac })
+    /** Keeps a copy of the current blob, if any, before it is replaced. */
+    fun backUp()
+}
+
+class AtomicBlobFile(private val file: AtomicFile, private val backup: File) : BlobFile {
+    override fun read(): ByteArray? = try {
+        file.readFully()
+    } catch (e: FileNotFoundException) {
+        null
     }
 
-    override suspend fun remove(id: String) = lock.withLock { store(load().filter { it.id != id }) }
-
-    private suspend fun read(): StoreRead = withContext(Dispatchers.IO) {
-        val blob = try {
-            file.readFully()
-        } catch (e: FileNotFoundException) {
-            null
-        }
-        PairedMacsBlob.decode(blob, cipher::decrypt)
-    }
-
-    /** 0.1's meaning: unreadable reads as none, but is recorded. Writers must not use this. */
-    private suspend fun load(): List<PairedMac> = when (val r = read()) {
-        is StoreRead.Macs -> r.macs
-        is StoreRead.Unreadable -> {
-            Log.w(TAG, "paired Macs unreadable (${r.causeClass}); treating as none")
-            onUnreadable(r.causeClass)
-            emptyList()
-        }
-    }
-
-    /** True only when the file is absent or decodes to no Macs, never for an unreadable store. */
-    suspend fun confirmedEmpty(): Boolean = lock.withLock {
-        when (val r = read()) {
-            is StoreRead.Macs -> r.macs.isEmpty()
-            is StoreRead.Unreadable -> {
-                onUnreadable(r.causeClass)
-                false
-            }
-        }
-    }
-
-    private suspend fun store(macs: List<PairedMac>) = withContext(Dispatchers.IO) {
-        val blob = cipher.encrypt(PairedMacsBlob.encode(macs))
+    override fun write(blob: ByteArray) {
         val out = file.startWrite()
         try {
             out.write(blob)
@@ -72,5 +45,81 @@ class EncryptedPairedMacStore(
             file.failWrite(out)
             throw t
         }
+    }
+
+    override fun backUp() {
+        file.baseFile.takeIf { it.exists() }?.copyTo(backup, overwrite = true)
+    }
+}
+
+/**
+ * The paired Macs as one JSON list, encrypted as a single blob with [cipher] and written
+ * atomically. The discovery keys in it are secrets (SPEC 6), so nothing is stored in clear.
+ *
+ * A store that cannot be read is never overwritten on a hunch. A transient failure (Keystore
+ * busy, IO) makes [save] and [remove] throw [IOException] and write nothing; the caller tries
+ * later. A permanent one (damaged blob, key gone) keeps the old blob as a backup and then
+ * replaces it.
+ */
+class EncryptedPairedMacStore(
+    private val file: BlobFile,
+    private val cipher: BlobCipher,
+    private val onUnreadable: (causeClass: String) -> Unit = {},
+) : PairedMacStore {
+    constructor(
+        file: AtomicFile,
+        cipher: KeystoreCipher,
+        onUnreadable: (causeClass: String) -> Unit = {},
+    ) : this(AtomicBlobFile(file, File(file.baseFile.parentFile, file.baseFile.name + ".bak")), cipher, onUnreadable)
+
+    private val lock = Mutex()
+
+    /** 0.1's meaning for readers: unreadable reads as none. It is recorded. */
+    override suspend fun all(): List<PairedMac> = lock.withLock {
+        when (val r = read()) {
+            is StoreRead.Macs -> r.macs
+            is StoreRead.Unreadable -> {
+                Log.w(TAG, "paired Macs unreadable (${r.causeClass}); treating as none")
+                emptyList()
+            }
+        }
+    }
+
+    override suspend fun save(mac: PairedMac) = lock.withLock {
+        val macs = macsForWrite()
+        val i = macs.indexOfFirst { it.id == mac.id }
+        store(if (i < 0) macs + mac else macs.toMutableList().also { it[i] = mac })
+    }
+
+    override suspend fun remove(id: String) = lock.withLock { store(macsForWrite().filter { it.id != id }) }
+
+    /** What a read gave, with the unreadable case reported. */
+    suspend fun readStore(): StoreRead = lock.withLock { read() }
+
+    /** True only when the file is absent or decodes to no Macs, never for an unreadable store. */
+    suspend fun confirmedEmpty(): Boolean = (readStore() as? StoreRead.Macs)?.macs?.isEmpty() == true
+
+    private suspend fun read(): StoreRead = withContext(Dispatchers.IO) {
+        val r = try {
+            PairedMacsBlob.decode(file.read(), cipher::decrypt)
+        } catch (e: IOException) {
+            StoreRead.Unreadable("IOException")
+        }
+        if (r is StoreRead.Unreadable) onUnreadable(r.causeClass)
+        r
+    }
+
+    private suspend fun macsForWrite(): List<PairedMac> = when (val r = read()) {
+        is StoreRead.Macs -> r.macs
+        is StoreRead.Unreadable -> {
+            if (r.transient) throw IOException("paired Macs unreadable (${r.causeClass}); not writing")
+            Log.w(TAG, "paired Macs unreadable (${r.causeClass}); keeping a backup and replacing")
+            withContext(Dispatchers.IO) { file.backUp() }
+            emptyList()
+        }
+    }
+
+    private suspend fun store(macs: List<PairedMac>) = withContext(Dispatchers.IO) {
+        file.write(cipher.encrypt(PairedMacsBlob.encode(macs)))
     }
 }

@@ -1015,20 +1015,26 @@ class ConnectionService : LifecycleService() {
             // agrees no Mac is paired.
             notPairedJob?.cancel()
             notPairedJob = lifecycleScope.launch {
-                if (BootDecision.shouldSelfStop(pairingUnderWay = false, confirmedEmpty = graph.noMacPaired())) {
-                    graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
-                    Log.i(TAG, "service: no Mac paired, stopping")
-                    ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                } else {
-                    // Unreadable store (Keystore busy or reset): keep running and look again.
-                    graph.keepAliveLog.record(KeepAliveEvent.STATE, "notpaired-unreadable")
-                    delay(UNREADABLE_RETRY_MS)
-                    graph.manager.kick()
-                }
+                watchNotPaired(
+                    intervalMs = UNREADABLE_RETRY_MS,
+                    read = { graph.readPairings() },
+                    pairingUnderWay = { graph.pairing.state.value.isUnderWay() },
+                    stillNotPaired = { graph.manager.state.value == PhoneConnectionState.NotPaired },
+                    kick = { graph.manager.kick() },
+                    onUnreadable = { graph.keepAliveLog.record(KeepAliveEvent.STATE, "notpaired-unreadable") },
+                    onSelfStop = {
+                        graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
+                        Log.i(TAG, "service: no Mac paired, stopping")
+                        ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    },
+                )
             }
             return
         }
+        // Any other state ends the wait-and-kick loop.
+        notPairedJob?.cancel()
+        notPairedJob = null
         if (state == PhoneConnectionState.Stopped) return
         val name = state.macOrNull?.name ?: macs?.maxByOrNull { it.lastConnectedAt }?.name
         val text = when {

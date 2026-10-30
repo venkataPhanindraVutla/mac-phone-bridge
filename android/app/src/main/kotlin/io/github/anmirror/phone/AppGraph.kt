@@ -61,6 +61,7 @@ import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.diag.KeepAliveLog
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
+import io.github.anmirror.phone.platform.StoreRead
 import io.github.anmirror.phone.platform.KeystoreCipher
 import io.github.anmirror.phone.platform.MediaStoreDownloads
 import io.github.anmirror.phone.platform.SharedFile
@@ -155,6 +156,9 @@ class AppGraph private constructor(context: Context) {
 
     /** True only when the store confirms no Mac is paired; an unreadable store is not "none". */
     suspend fun noMacPaired(): Boolean = encryptedStore.confirmedEmpty()
+
+    /** The store as read now; [StoreRead.Unreadable] is reported to the event log. */
+    suspend fun readPairings(): StoreRead = encryptedStore.readStore()
 
     private val connector = TlsConnector(identity)
 
@@ -953,7 +957,6 @@ class AppGraph private constructor(context: Context) {
 
     private val notifyEvents = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
-    /** Queues a listener event; they run one at a time, in the order the listener saw them. */
     /** `exit=<ApplicationExitInfo.reason>` of the previous process, on API 30+. */
     private fun lastExitDetail(): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return ""
@@ -965,6 +968,7 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
+    /** Queues a listener event; they run one at a time, in the order the listener saw them. */
     fun postNotifyEvent(event: suspend () -> Unit) {
         notifyEvents.trySend(event)
     }

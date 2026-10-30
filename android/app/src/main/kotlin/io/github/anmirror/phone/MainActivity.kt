@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.anmirror.phone.remote.TrackpadActivity
 import io.github.anmirror.phone.diag.KeepAliveEvent
+import io.github.anmirror.phone.service.BootDecision
 import io.github.anmirror.phone.service.ServiceProbe
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
@@ -66,7 +67,7 @@ class MainActivity : ComponentActivity() {
                 KeepAliveEvent.APP_OPEN,
                 "flag=${ConnectionService.running} probe=${ServiceProbe.connectionServiceRunning(this@MainActivity)}",
             )
-            if (!graph.noMacPaired()) {
+            if (BootDecision.shouldStart(confirmedEmpty = graph.noMacPaired())) {
                 runOnUiThread { ConnectionService.start(this@MainActivity) }
             }
         }

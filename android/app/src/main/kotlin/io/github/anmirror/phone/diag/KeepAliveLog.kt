@@ -13,8 +13,10 @@ enum class KeepAliveEvent(val code: String) {
 
 /**
  * A small content-free event log: one line per event, `<UTC time> <code> <detail>`, newest
- * [maxLines] kept. The detail is sanitised to `[A-Za-z0-9_=.,-]`, so no Mac name, host or
- * address can get in. Writes are synchronous (a line is tiny) and never throw.
+ * [maxLines] kept. The detail is sanitised to `[A-Za-z0-9_=.,-]` (no spaces, quotes or
+ * punctuation), but that is not a privacy filter: callers pass only codes, booleans, counts and
+ * class names, never a Mac name, host, address or text. Writes are synchronous (a line is tiny)
+ * and never throw.
  */
 class KeepAliveLog(
     private val file: File,
@@ -43,7 +45,7 @@ class KeepAliveLog(
                 }
             }
         } catch (_: Throwable) {
-            lines = -1
+            synchronized(lock) { lines = -1 }
         }
     }
 
