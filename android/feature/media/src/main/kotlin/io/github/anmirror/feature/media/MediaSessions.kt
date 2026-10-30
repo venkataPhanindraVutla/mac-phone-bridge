@@ -6,11 +6,11 @@ import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.media.MediaMetadata
-import android.media.VolumeProvider
 import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -57,14 +57,17 @@ class AndroidMediaSessions(
     private var onChange: (() -> Unit)? = null
     private var watching = false
 
+    /** Bumped by each list the system pushes, so [start]'s own (maybe older) read never replaces one. */
+    private var listVersion = 0
+
     private val activeListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
-        update(controllers.orEmpty())
+        update(controllers.orEmpty(), fromStart = null)
     }
 
-    // The local volume lives in Settings.System.
+    // The local volume lives in Settings.System (`volume_*`); other system settings are ignored.
     private val volumeObserver = object : ContentObserver(handler) {
-        override fun onChange(selfChange: Boolean) {
-            changed()
+        override fun onChange(selfChange: Boolean, uri: Uri?) {
+            if (VolumeRules.isVolumeSetting(uri?.lastPathSegment)) changed()
         }
     }
 
@@ -74,8 +77,7 @@ class AndroidMediaSessions(
 
         @Volatile var lastPlayingAtMs = 0L
         @Volatile private var wasPlaying = false
-        @Volatile var artworkStale = true
-        @Volatile var artwork: ByteArray? = null
+        val artwork = ArtworkSlot()
 
         val callback = object : MediaController.Callback() {
             override fun onPlaybackStateChanged(state: PlaybackState?) {
@@ -84,7 +86,7 @@ class AndroidMediaSessions(
             }
 
             override fun onMetadataChanged(metadata: MediaMetadata?) {
-                artworkStale = true
+                artwork.invalidate()
                 changed()
             }
 
@@ -108,22 +110,25 @@ class AndroidMediaSessions(
     }
 
     override fun start(onChange: () -> Unit) {
-        val controllers = synchronized(lock) {
+        // Registration and unregistration both happen under [lock], so a stop() that races this
+        // start can't leave the listener or the observer behind.
+        val (controllers, version) = synchronized(lock) {
             this.onChange = onChange
             if (watching) return
             val manager = manager ?: return
             try {
                 manager.addOnActiveSessionsChangedListener(activeListener, listener, handler)
                 watching = true
-                manager.getActiveSessions(listener)
+                val list = manager.getActiveSessions(listener)
+                app.contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
+                list to listVersion
             } catch (e: SecurityException) { // no notification access
                 if (watching) manager.removeOnActiveSessionsChangedListener(activeListener)
                 watching = false
                 return
             }
         }
-        app.contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
-        update(controllers)
+        update(controllers, fromStart = version)
     }
 
     override fun stop() {
@@ -131,19 +136,24 @@ class AndroidMediaSessions(
             onChange = null
             if (!watching) return
             watching = false
+            manager?.removeOnActiveSessionsChangedListener(activeListener)
+            app.contentResolver.unregisterContentObserver(volumeObserver)
             sessions.also { sessions = emptyList() }
         }
-        manager?.removeOnActiveSessionsChangedListener(activeListener)
-        app.contentResolver.unregisterContentObserver(volumeObserver)
         gone.forEach { it.controller.unregisterCallback(it.callback) }
     }
 
-    /** Keeps a [Tracked] (and so its key) for every session still active, in the system's order. */
-    private fun update(controllers: List<MediaController>) {
+    /**
+     * Keeps a [Tracked] (and so its key) for every session still active, in the system's order.
+     * [fromStart] is the [listVersion] when [start] read its list: if the system pushed a list
+     * since, that one is newer and [start]'s is dropped.
+     */
+    private fun update(controllers: List<MediaController>, fromStart: Int?) {
         val added = mutableListOf<Tracked>()
         val removed: List<Tracked>
         synchronized(lock) {
             if (!watching) return
+            if (fromStart == null) listVersion++ else if (fromStart != listVersion) return
             val known = sessions.associateBy { it.token }
             val next = controllers.map { c -> known[c.sessionToken] ?: Tracked(c).also { added += it } }
             val keep = next.map { it.token }.toSet()
@@ -187,6 +197,8 @@ class AndroidMediaSessions(
 
     private fun read(t: Tracked, withArtwork: Boolean): MediaSnapshot {
         val c = t.controller
+        // Before the metadata is read: a change that lands during the read is not lost.
+        val artworkTicket = t.artwork.ticket()
         val state = c.playbackState
         val metadata = c.metadata
         val playing = state?.state == PlaybackState.STATE_PLAYING
@@ -209,7 +221,7 @@ class AndroidMediaSessions(
             volume = volume.current,
             maxVolume = volume.max,
             volumeFixed = volume.fixed,
-            artworkJpeg = if (withArtwork) artworkOf(t, metadata) else null,
+            artworkJpeg = if (withArtwork) t.artwork.get(artworkTicket) { artworkOf(metadata) } else null,
         )
     }
 
@@ -234,7 +246,7 @@ class AndroidMediaSessions(
                 remote = true,
                 current = info.currentVolume,
                 max = info.maxVolume,
-                fixed = info.volumeControl == VolumeProvider.VOLUME_CONTROL_FIXED,
+                fixed = VolumeRules.remoteFixed(info.volumeControl),
             )
         }
         val a = audio ?: return Volume(remote = false, current = 0, max = 0, fixed = true)
@@ -246,18 +258,14 @@ class AndroidMediaSessions(
         )
     }
 
-    /** Encoded again only after the metadata changed: ART, else ALBUM_ART, else DISPLAY_ICON. */
-    private fun artworkOf(t: Tracked, metadata: MediaMetadata?): ByteArray? {
-        if (!t.artworkStale) return t.artwork
-        t.artworkStale = false
+    /** ART, else ALBUM_ART, else DISPLAY_ICON, fitted to the wire ([ArtworkSlot] keeps it until the metadata changes). */
+    private fun artworkOf(metadata: MediaMetadata?): ByteArray? {
         val bitmap: Bitmap? = metadata?.let {
             it.getBitmap(MediaMetadata.METADATA_KEY_ART)
                 ?: it.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                 ?: it.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         }
-        val jpeg = bitmap?.let(ArtworkEncoder::encode)
-        t.artwork = jpeg
-        return jpeg
+        return bitmap?.let(ArtworkEncoder::encode)
     }
 
     private fun appLabel(packageName: String): String = try {
@@ -269,11 +277,10 @@ class AndroidMediaSessions(
 
     override fun apply(key: String, command: MediaCommand): Boolean {
         val t = picked() ?: return false
-        if (t.key != key) return false
         return try {
             val snapshot = read(t, withArtwork = false)
             val state = MediaStateMapper.toState(snapshot)
-            if (!MediaStateMapper.offers(state, command)) return false
+            if (!MediaStateMapper.accepts(key, state, command)) return false
             val controls = t.controller.transportControls
             when (command.kind) {
                 MediaCommandKind.MEDIA_COMMAND_KIND_PLAY -> controls.play()

@@ -13,7 +13,8 @@
 //   EVENT files-sent bytes=<n>                              (with --send-bytes)
 //   EVENT files-failed <id> <reason>                        (with --send-bytes; the process then exits 1)
 //   EVENT notify-invoke key=<key> action=<n> reply=<text>   (with --notify; the process then exits 0)
-//   EVENT media-command kind=TOGGLE playing=<bool>          (with --media; exits 0 after the second command)
+//   EVENT media-command kind=TOGGLE playing=<bool>          (with --media; exits 0 after the second one)
+//   EVENT media-ignored kind=<kind> key=<key>                (with --media; any other media.command)
 //   EVENT unpaired <mac-id>
 //   EVENT disconnected <reason>
 //   EVENT failed <reason>
@@ -59,7 +60,7 @@ private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> 
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
-  --media: advertise media.v1, send media.availability and a paused session "sim"; TOGGLE flips it; exit 0 after the second media.command
+  --media: advertise media.v1, send media.availability and a paused session "sim"; a TOGGLE for it flips it; exit 0 after the second TOGGLE
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 

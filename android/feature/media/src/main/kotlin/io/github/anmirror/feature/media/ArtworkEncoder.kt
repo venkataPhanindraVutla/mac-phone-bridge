@@ -1,6 +1,9 @@
 package io.github.anmirror.feature.media
 
 import android.graphics.Bitmap
+import android.graphics.Color
+import androidx.core.graphics.applyCanvas
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import java.io.ByteArrayOutputStream
 import kotlin.math.max
@@ -12,22 +15,39 @@ object ArtworkEncoder {
     const val MAX_BYTES = 98_304
     val QUALITIES = listOf(85, 70, 55, 40)
 
-    /** Scaled down to [LONG_EDGE] (never up), then [fit]; null when it does not fit and is dropped. */
+    /**
+     * Scaled down to [LONG_EDGE] (never up), drawn on white when it has transparency (JPEG has
+     * none; an app icon would otherwise come out on black), then [fit]. Null when it does not fit
+     * and is dropped. [source] is never recycled.
+     */
     fun encode(source: Bitmap): ByteArray? {
         if (source.width <= 0 || source.height <= 0) return null
         var bitmap = source
+        fun replace(next: Bitmap) {
+            if (bitmap !== source && bitmap !== next) bitmap.recycle()
+            bitmap = next
+        }
         if (bitmap.config == Bitmap.Config.HARDWARE) {
-            bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            replace(bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null)
         }
         val longEdge = max(bitmap.width, bitmap.height)
         if (longEdge > LONG_EDGE) {
             val scale = LONG_EDGE.toFloat() / longEdge
-            val scaled = bitmap.scale(
-                max(1, (bitmap.width * scale).roundToInt()),
-                max(1, (bitmap.height * scale).roundToInt()),
+            replace(
+                bitmap.scale(
+                    max(1, (bitmap.width * scale).roundToInt()),
+                    max(1, (bitmap.height * scale).roundToInt()),
+                ),
             )
-            if (bitmap !== source) bitmap.recycle()
-            bitmap = scaled
+        }
+        if (bitmap.hasAlpha()) {
+            val transparent = bitmap
+            replace(
+                createBitmap(transparent.width, transparent.height).applyCanvas {
+                    drawColor(Color.WHITE)
+                    drawBitmap(transparent, 0f, 0f, null)
+                },
+            )
         }
         val frame = bitmap
         return try {

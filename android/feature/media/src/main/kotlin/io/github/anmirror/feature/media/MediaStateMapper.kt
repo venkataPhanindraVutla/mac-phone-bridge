@@ -62,6 +62,13 @@ object MediaStateMapper {
         }
     }
 
+    /**
+     * Whether a command for [key] is applied to the reported [state]: [key] must be its session's
+     * (a command for any other key is ignored), and the state must offer the action.
+     */
+    fun accepts(key: String, state: MediaState, command: MediaCommand): Boolean =
+        state.active && state.sessionKey == key && offers(state, command)
+
     /** `SET_VOLUME.volume` (a uint32) clamped to `0..volume.max`. */
     fun volumeLevel(state: MediaState, command: MediaCommand): Int =
         Integer.toUnsignedLong(command.volume).coerceAtMost(state.volume.max.toLong()).toInt()

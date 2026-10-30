@@ -41,6 +41,35 @@ class StateThrottleTest {
         assertEquals(state(19), emitted.last().second)
     }
 
+    private fun playing(positionMs: Long, speed: Float = 1f, durationMs: Long = 0, playing: Boolean = true) =
+        MediaState.newBuilder().setActive(true).setPlaying(playing).setPositionMs(positionMs).setSpeed(speed).setDurationMs(durationMs).build()
+
+    @Test fun positionIsCarriedForwardToEmitTime() = runTest {
+        val t = throttle()
+        t.offer(state(1)) // leading edge at 0
+        advanceTimeBy(100)
+        t.offer(playing(positionMs = 1_000, speed = 2f)) // trailing, at 250
+        advanceUntilIdle()
+        assertEquals(250L, emitted.last().first)
+        assertEquals(1_000 + 150 * 2L, emitted.last().second.positionMs)
+    }
+
+    @Test fun carriedPositionStopsAtTheDurationAndNeverMovesWhilePaused() = runTest {
+        val t = throttle()
+        t.offer(state(1))
+        advanceTimeBy(100)
+        t.offer(playing(positionMs = 1_000, speed = 0f, durationMs = 1_100)) // speed 0 counts as 1
+        advanceUntilIdle()
+        assertEquals(1_100, emitted.last().second.positionMs)
+
+        advanceTimeBy(1_000)
+        t.offer(state(2))
+        advanceTimeBy(100)
+        t.offer(playing(positionMs = 5_000, playing = false))
+        advanceUntilIdle()
+        assertEquals(5_000, emitted.last().second.positionMs)
+    }
+
     @Test fun resetDropsThePendingStateAndOpensTheLeadingEdge() = runTest {
         val t = throttle()
         t.offer(state(1))

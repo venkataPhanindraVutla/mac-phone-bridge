@@ -142,9 +142,12 @@ class MediaBridgeTest {
         sessions.current = snapshot()
         val bridge = bridge()
         bridge.onConnected()
+        val late = sessions.lastOnChange!!
         bridge.onDisconnected()
         sent.clear()
+        // A system callback already on its way when the bridge stopped.
         sessions.current = snapshot(title = "Other")
+        late()
         advanceUntilIdle()
         assertTrue(sent.isEmpty())
     }

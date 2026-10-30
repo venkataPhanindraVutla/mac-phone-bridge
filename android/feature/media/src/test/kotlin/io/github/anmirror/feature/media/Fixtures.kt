@@ -34,9 +34,13 @@ class FakeSessions : MediaSessions {
     val applied = mutableListOf<Pair<String, MediaCommand>>()
     private var onChange: (() -> Unit)? = null
 
+    /** The callback given to the last [start], kept after [stop] (a late system callback). */
+    var lastOnChange: (() -> Unit)? = null
+
     override fun start(onChange: () -> Unit) {
         started++
         this.onChange = onChange
+        lastOnChange = onChange
     }
 
     override fun stop() {

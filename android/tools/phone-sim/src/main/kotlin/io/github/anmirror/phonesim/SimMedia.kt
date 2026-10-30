@@ -12,7 +12,8 @@ import io.github.anmirror.protocol.v1.MediaState
 
 /**
  * After connect: `media.availability{enabled}` and the session's state. A `TOGGLE` for "sim"
- * flips `playing` and sends the new state at once. [onDone] is called after the second command.
+ * flips `playing` and sends the new state at once; [onDone] is called after the second one. Any
+ * other command is printed as `EVENT media-ignored` and does not count.
  */
 internal class SimMedia(
     private val channel: ControlChannel,
@@ -20,7 +21,7 @@ internal class SimMedia(
     private val onDone: () -> Unit,
 ) {
     private var playing = false
-    private var commands = 0
+    private var toggles = 0
 
     suspend fun start() {
         channel.send(Channel.CHANNEL_MEDIA, MessageType.MEDIA_AVAILABILITY, FeatureAvailability.newBuilder().setEnabled(true).build())
@@ -31,12 +32,14 @@ internal class SimMedia(
     suspend fun onMessage(env: Envelope): Boolean {
         if (env.type != MessageType.MEDIA_COMMAND) return false
         val command = MediaCommand.parseFrom(env.payload)
-        if (command.sessionKey == SESSION_KEY && command.kind == MediaCommandKind.MEDIA_COMMAND_KIND_TOGGLE) {
-            playing = !playing
-            sendState()
-            emit("EVENT media-command kind=TOGGLE playing=$playing")
+        if (command.sessionKey != SESSION_KEY || command.kind != MediaCommandKind.MEDIA_COMMAND_KIND_TOGGLE) {
+            emit("EVENT media-ignored kind=${command.kind.name.removePrefix("MEDIA_COMMAND_KIND_")} key=${command.sessionKey}")
+            return true
         }
-        if (++commands == 2) onDone()
+        playing = !playing
+        sendState()
+        emit("EVENT media-command kind=TOGGLE playing=$playing")
+        if (++toggles == 2) onDone()
         return true
     }
 

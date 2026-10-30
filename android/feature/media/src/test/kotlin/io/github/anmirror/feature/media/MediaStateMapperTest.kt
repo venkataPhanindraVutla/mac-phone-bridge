@@ -86,6 +86,15 @@ class MediaStateMapperTest {
         assertFalse(MediaStateMapper.offers(MediaStateMapper.toState(null), cmd(MediaCommandKind.MEDIA_COMMAND_KIND_PLAY)))
     }
 
+    @Test fun commandsNeedTheReportedKeyAndAnOfferedAction() {
+        fun cmd(key: String, kind: MediaCommandKind) = MediaCommand.newBuilder().setSessionKey(key).setKind(kind).build()
+        val state = MediaStateMapper.toState(snapshot(key = "now", actions = PlaybackState.ACTION_PLAY_PAUSE))
+        assertTrue(MediaStateMapper.accepts("now", state, cmd("now", MediaCommandKind.MEDIA_COMMAND_KIND_TOGGLE)))
+        assertFalse(MediaStateMapper.accepts("old", state, cmd("old", MediaCommandKind.MEDIA_COMMAND_KIND_TOGGLE)))
+        assertFalse(MediaStateMapper.accepts("now", state, cmd("now", MediaCommandKind.MEDIA_COMMAND_KIND_NEXT)))
+        assertFalse(MediaStateMapper.accepts("", MediaStateMapper.toState(null), cmd("", MediaCommandKind.MEDIA_COMMAND_KIND_PLAY)))
+    }
+
     @Test fun volumeIsClampedToMax() {
         val state = MediaStateMapper.toState(snapshot(maxVolume = 15))
         assertEquals(15, MediaStateMapper.volumeLevel(state, MediaCommand.newBuilder().setVolume(40).build()))
