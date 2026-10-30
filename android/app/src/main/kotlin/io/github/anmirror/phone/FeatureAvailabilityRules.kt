@@ -31,6 +31,31 @@ fun dndAvailability(userOn: Boolean, policyAccess: Boolean): DndAvailability = D
     .build()
 
 /**
+ * Which `dnd.availability` to send a session, and when. A new session re-reads the Do Not Disturb
+ * access first ([readAccess]; it may have been granted while no session was up, with no broadcast
+ * seen) and always gets one; later in the same session one goes out only when it changed.
+ */
+class DndAvailabilityOnSession(private val readAccess: () -> Boolean) {
+    private var session: Any? = null
+    private var last: DndAvailability? = null
+
+    /** The availability to send [session] now, or null when it has it already. */
+    fun next(session: Any, userOn: Boolean, access: Boolean): DndAvailability? {
+        val policyAccess = if (session !== this.session) {
+            this.session = session
+            last = null
+            readAccess()
+        } else {
+            access
+        }
+        val a = dndAvailability(userOn = userOn, policyAccess = policyAccess)
+        if (a == last) return null
+        last = a
+        return a
+    }
+}
+
+/**
  * The phone's `proximity.availability` for one Mac (SPEC 22): whether the phone advertises for it.
  * The switch comes first, then BLUETOOTH_ADVERTISE (API 31+); then an adapter that is off or can't
  * advertise, or this Mac's advertisement [faulted] (it failed, or the system stopped it, and has not

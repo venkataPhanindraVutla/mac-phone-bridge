@@ -36,6 +36,27 @@ class DndRowTest {
         assertTrue(all.applies.enabled)
     }
 
+    @Test fun newSessionRereadsAccessBeforeTheAvailabilityGoesOut() {
+        // Access granted while no session was up (no broadcast seen): the stale flow still says no.
+        var granted = true
+        var reads = 0
+        val gate = DndAvailabilityOnSession { reads++; granted }
+        val s1 = Any()
+        assertEquals(dndAvailability(userOn = true, policyAccess = true), gate.next(s1, userOn = true, access = false))
+        assertEquals(1, reads)
+        // The refreshed flow comes back with the same value: not sent twice.
+        assertEquals(null, gate.next(s1, userOn = true, access = true))
+        // Later changes in the same session go out as they come, without another read.
+        granted = false
+        assertEquals(dndAvailability(userOn = true, policyAccess = false), gate.next(s1, userOn = true, access = false))
+        assertEquals(dndAvailability(userOn = false, policyAccess = false), gate.next(s1, userOn = false, access = false))
+        assertEquals(1, reads)
+        // A new session reads again and always gets the availability, even an unchanged one.
+        val s2 = Any()
+        assertEquals(dndAvailability(userOn = false, policyAccess = false), gate.next(s2, userOn = false, access = true))
+        assertEquals(2, reads)
+    }
+
     @Test fun bothDirectionsActive() {
         assertEquals(
             listOf(R.string.home_dnd_phone_to_mac, R.string.home_dnd_mac_to_phone),

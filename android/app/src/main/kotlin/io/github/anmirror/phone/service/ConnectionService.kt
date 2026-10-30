@@ -40,7 +40,7 @@ import io.github.anmirror.phone.answerInvoke
 import io.github.anmirror.phone.clipboardTracksMac
 import io.github.anmirror.phone.featureAvailability
 import io.github.anmirror.phone.copyNamesMac
-import io.github.anmirror.phone.dndAvailability
+import io.github.anmirror.phone.DndAvailabilityOnSession
 import io.github.anmirror.phone.macOrNull
 import io.github.anmirror.phone.mediaFeatureAvailability
 import io.github.anmirror.phone.messageRes
@@ -94,6 +94,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -725,12 +726,31 @@ class ConnectionService : LifecycleService() {
      * the filter broadcasts go to [AppGraph.dndSync], which sends the phone's transitions and
      * applies the Mac's (with Do Not Disturb access); it starts with the snapshot. The Mac's
      * `dnd.state` is dropped while the feature is closed; its `dnd.availability` is kept while it
-     * shares dnd.v1. The phone's `dnd.availability` is sent regardless, on connect and on change.
+     * shares dnd.v1. The phone's `dnd.availability` is sent regardless, on connect (with the access
+     * read again) and on change.
+     *
+     * While Find my phone rings, the Mac's state is shown but deferred: applying it could silence
+     * the ring, and the ring's restore would undo it. It is applied once the ring has stopped and
+     * put the filter back.
      */
     private fun setUpDnd() {
         graph.manager.on(MessageType.DND_STATE) { env ->
             val state = DndState.parseFrom(env.payload)
-            if (dndSessionNow() != null && graph.dndSyncOn.value) graph.dndSync.onMacState(state)
+            if (dndSessionNow() != null && graph.dndSyncOn.value) {
+                if (ring.ringing.value) {
+                    graph.dndSync.deferMacState(state)
+                    // The ring may have stopped meanwhile, after its collector looked.
+                    if (!ring.ringing.value) graph.dndSync.applyDeferred()
+                } else {
+                    graph.dndSync.onMacState(state)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            // stop() puts the filter back before ringing turns false.
+            ring.ringing.drop(1).filter { !it }.collect {
+                if (dndSessionNow() != null && graph.dndSyncOn.value) graph.dndSync.applyDeferred() else graph.dndSync.dropDeferred()
+            }
         }
         graph.manager.on(MessageType.DND_AVAILABILITY) { env ->
             val availability = DndAvailability.parseFrom(env.payload)
@@ -738,6 +758,7 @@ class ConnectionService : LifecycleService() {
         }
         lifecycleScope.launch {
             var openSession: Connected? = null
+            val availability = DndAvailabilityOnSession { graph.refreshDndAccess(); graph.dndAccess.value }
             combine(
                 // By identity: a new session of the same Mac with the same capabilities is still new.
                 graph.manager.state
@@ -750,7 +771,9 @@ class ConnectionService : LifecycleService() {
                 .collect { (session, on, access) ->
                     dndSessionNow()
                     if (session != null) {
-                        graph.manager.send(Channel.CHANNEL_DND, MessageType.DND_AVAILABILITY, dndAvailability(userOn = on, policyAccess = access))
+                        availability.next(session, userOn = on, access = access)?.let {
+                            graph.manager.send(Channel.CHANNEL_DND, MessageType.DND_AVAILABILITY, it)
+                        }
                     }
                     val open = session != null && on
                     if (!open) {

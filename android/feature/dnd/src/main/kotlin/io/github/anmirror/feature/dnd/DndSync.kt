@@ -38,6 +38,9 @@ class DndSync(
     /** The phone's state as last seen; null until read (or while the filter is unknown). */
     private var lastSeen: Boolean? = null
 
+    /** The Mac's latest USER transition that came while Find my phone rang; applied after. */
+    private var deferred: DndState? = null
+
     private val _macOn = MutableStateFlow<Boolean?>(null)
 
     /** The Mac's Focus as it last said (snapshots included); null until it does, and after a disconnect. */
@@ -94,12 +97,43 @@ class DndSync(
     fun onMacState(s: DndState) {
         synchronized(lock) {
             _macOn.value = s.on
-            if (s.snapshot || s.origin != DndOrigin.DND_ORIGIN_USER || !dnd.hasAccess()) return
-            val mine = DndRules.isOn(dnd.currentFilter()) ?: return
-            if (mine == s.on) return
-            dnd.setFilter(if (s.on) INTERRUPTION_FILTER_PRIORITY else INTERRUPTION_FILTER_ALL)
-            guard.applied(s.on, clock())
+            apply(s)
         }
+    }
+
+    /**
+     * The Mac's Focus while Find my phone rings: shown ([macOn]) but not applied, since a change
+     * now could silence the ring and the ring's restore would undo it. The latest USER transition
+     * is kept for [applyDeferred].
+     */
+    fun deferMacState(s: DndState) {
+        synchronized(lock) {
+            _macOn.value = s.on
+            if (!s.snapshot && s.origin == DndOrigin.DND_ORIGIN_USER) deferred = s
+        }
+    }
+
+    /** The ring stopped and put the filter back: applies what [deferMacState] kept, checked against the filter now. */
+    fun applyDeferred() {
+        synchronized(lock) {
+            val s = deferred ?: return
+            deferred = null
+            apply(s)
+        }
+    }
+
+    /** The ring stopped while the feature is closed: what [deferMacState] kept is not applied. */
+    fun dropDeferred() {
+        synchronized(lock) { deferred = null }
+    }
+
+    /** Under [lock]. */
+    private fun apply(s: DndState) {
+        if (s.snapshot || s.origin != DndOrigin.DND_ORIGIN_USER || !dnd.hasAccess()) return
+        val mine = DndRules.isOn(dnd.currentFilter()) ?: return
+        if (mine == s.on) return
+        dnd.setFilter(if (s.on) INTERRUPTION_FILTER_PRIORITY else INTERRUPTION_FILTER_ALL)
+        guard.applied(s.on, clock())
     }
 
     fun onMacAvailability(a: DndAvailability) {
@@ -110,6 +144,7 @@ class DndSync(
     fun onDisconnected() {
         synchronized(lock) {
             lastSeen = null
+            deferred = null
             _macOn.value = null
             _macAvailability.value = null
         }

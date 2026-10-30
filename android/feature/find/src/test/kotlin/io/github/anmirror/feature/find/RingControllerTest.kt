@@ -42,12 +42,18 @@ class RingControllerTest {
         override fun clear() { saved = null }
     }
 
-    private class Rig(vol: Int = 3, access: Boolean = true, filter: Int = INTERRUPTION_FILTER_ALL, val store: FakeStore = FakeStore()) {
+    private class Rig(
+        vol: Int = 3,
+        access: Boolean = true,
+        filter: Int = INTERRUPTION_FILTER_ALL,
+        val store: FakeStore = FakeStore(),
+        sdk: Int = 34,
+    ) {
         val audio = FakeAudio(vol)
         val dnd = FakeDnd(access, filter)
         val notifier = FakeNotifier()
         val states = mutableListOf<RingState>()
-        val controller = RingController(audio, dnd, notifier, store) { states += it }
+        val controller = RingController(audio, dnd, notifier, store, sdkInt = sdk) { states += it }
     }
 
     @Test
@@ -176,6 +182,50 @@ class RingControllerTest {
         r.controller.restoreLeftover()
         assertEquals(INTERRUPTION_FILTER_ALL, r.dnd.current)
         assertEquals(2, r.audio.vol)
+    }
+
+    @Test
+    fun totalSilenceOnAndroid15IsNotSwappedAndMayBeSilent() {
+        // On 15+ setFilter only turns this app's own mode on: it can't lift the user's Total silence.
+        val r = Rig(vol = 2, access = true, filter = INTERRUPTION_FILTER_NONE, sdk = 35)
+        r.controller.start()
+        assertTrue(r.dnd.sets.isEmpty())
+        assertEquals(RingState.newBuilder().setRinging(true).setMayBeSilent(true).build(), r.states.last())
+        assertEquals(SavedRingState(2, null), r.store.saved)
+        r.controller.stop()
+        assertTrue(r.dnd.sets.isEmpty())
+        assertEquals(INTERRUPTION_FILTER_NONE, r.dnd.current)
+        assertEquals(2, r.audio.vol)
+        // Below 15 the swap is unchanged.
+        val old = Rig(access = true, filter = INTERRUPTION_FILTER_NONE, sdk = 34)
+        old.controller.start()
+        assertEquals(listOf(INTERRUPTION_FILTER_ALARMS), old.dnd.sets)
+        assertFalse(old.states.last().mayBeSilent)
+    }
+
+    @Test
+    fun leftoverOnAndroid15TurnsOffOnlyTheAppsOwnMode() {
+        // A ring swapped the filter (an older build, or before an OS update), then the process died.
+        // The global filter reads NONE again (the user's Total silence), so the old "still ALARMS"
+        // check would leave the app's own mode on.
+        val store = FakeStore().apply { saved = SavedRingState(2, INTERRUPTION_FILTER_NONE) }
+        val r = Rig(vol = 7, filter = INTERRUPTION_FILTER_NONE, store = store, sdk = 35)
+        r.controller.restoreLeftover()
+        assertEquals(listOf(INTERRUPTION_FILTER_ALL), r.dnd.sets)
+        assertEquals(2, r.audio.vol)
+        assertEquals(null, store.saved)
+        // Once: nothing is left to restore.
+        r.controller.restoreLeftover()
+        assertEquals(listOf(INTERRUPTION_FILTER_ALL), r.dnd.sets)
+        // No saved filter: the filter is not touched.
+        val none = Rig(vol = 7, filter = INTERRUPTION_FILTER_NONE, store = FakeStore().apply { saved = SavedRingState(2, null) }, sdk = 35)
+        none.controller.restoreLeftover()
+        assertTrue(none.dnd.sets.isEmpty())
+        assertEquals(2, none.audio.vol)
+        // Below 15 the leftover restore is unchanged: only if it is still our ALARMS.
+        val old = Rig(vol = 7, filter = INTERRUPTION_FILTER_NONE, store = FakeStore().apply { saved = SavedRingState(2, INTERRUPTION_FILTER_NONE) }, sdk = 34)
+        old.controller.restoreLeftover()
+        assertTrue(old.dnd.sets.isEmpty())
     }
 
     @Test

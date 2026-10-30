@@ -180,7 +180,7 @@ class DndSyncTest {
 
     @Test fun ringSwapNoneToAlarmsIsNoTransition() = runTest {
         connected(INTERRUPTION_FILTER_NONE)
-        val ring = RingController(SilentAudio(), dnd, NoNotifier) {}
+        val ring = RingController(SilentAudio(), dnd, NoNotifier, sdkInt = 34) {}
         ring.start() // Total silence blocks the alarm: Find my phone switches NONE to ALARMS
         assertEquals(INTERRUPTION_FILTER_ALARMS, dnd.current)
         sync.onLocalChange()
@@ -188,6 +188,60 @@ class DndSyncTest {
         assertEquals(INTERRUPTION_FILTER_NONE, dnd.current)
         sync.onLocalChange()
         assertTrue(sent.isEmpty())
+    }
+
+    @Test fun macChangeDuringRingIsAppliedAfterRestore() = runTest {
+        connected(INTERRUPTION_FILTER_NONE)
+        val ring = RingController(SilentAudio(), dnd, NoNotifier, sdkInt = 34) {}
+        ring.start()
+        assertEquals(INTERRUPTION_FILTER_ALARMS, dnd.current)
+        // The Mac's Focus goes off, then on, then off while ringing: shown, not applied (applying
+        // could silence the ring, and the ring's restore would undo it).
+        sync.deferMacState(state(false))
+        sync.deferMacState(state(true))
+        sync.deferMacState(state(false))
+        sync.deferMacState(state(true, snapshot = true)) // not a transition: not kept
+        sync.deferMacState(state(true, origin = DndOrigin.DND_ORIGIN_SYNC)) // nor an echo
+        assertEquals(listOf(INTERRUPTION_FILTER_ALARMS), dnd.sets)
+        assertEquals(true, sync.macOn.value)
+        ring.stop()
+        assertEquals(INTERRUPTION_FILTER_NONE, dnd.current)
+        // After the restore, the latest USER change is applied against the filter now.
+        sync.applyDeferred()
+        assertEquals(INTERRUPTION_FILTER_ALL, dnd.current)
+        assertEquals(listOf(INTERRUPTION_FILTER_ALARMS, INTERRUPTION_FILTER_NONE, INTERRUPTION_FILTER_ALL), dnd.sets)
+        // Once.
+        sync.applyDeferred()
+        assertEquals(3, dnd.sets.size)
+        // Its broadcast is the echo, not sent back.
+        sync.onLocalChange()
+        assertTrue(sent.isEmpty())
+
+        // Already in that state after the restore: nothing to do.
+        ring.start()
+        sync.deferMacState(state(false))
+        ring.stop()
+        sync.applyDeferred()
+        assertEquals(INTERRUPTION_FILTER_ALL, dnd.current)
+        assertEquals(3, dnd.sets.size)
+
+        // A disconnect drops what was deferred.
+        ring.start()
+        sync.deferMacState(state(true))
+        sync.onDisconnected()
+        ring.stop()
+        sync.applyDeferred()
+        assertEquals(INTERRUPTION_FILTER_ALL, dnd.current)
+
+        // So does the feature closing before the ring ends (the switch went off).
+        connected()
+        ring.start()
+        sync.deferMacState(state(true))
+        ring.stop()
+        sync.dropDeferred()
+        sync.applyDeferred()
+        assertEquals(INTERRUPTION_FILTER_ALL, dnd.current)
+        assertEquals(3, dnd.sets.size)
     }
 
     @Test fun connectSendsSnapshotWhenSending() = runTest {

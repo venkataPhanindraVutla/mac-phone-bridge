@@ -349,7 +349,12 @@ private fun DndRow(on: Boolean, access: Boolean, mac: DndAvailability?, onToggle
             Text(stringResource(line), style = MaterialTheme.typography.bodyMedium)
         }
         if (on && !access) {
-            OutlinedButton(onClick = openAccess, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.home_dnd_needs_access), style = MaterialTheme.typography.bodyMedium)
+            val allowDescription = stringResource(R.string.home_dnd_allow_description)
+            OutlinedButton(
+                onClick = openAccess,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = allowDescription },
+            ) {
                 Text(stringResource(R.string.home_find_allow))
             }
         }

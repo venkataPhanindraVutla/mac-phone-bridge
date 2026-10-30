@@ -1,7 +1,9 @@
 package io.github.anmirror.feature.find
 
 import android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS
+import android.app.NotificationManager.INTERRUPTION_FILTER_ALL
 import android.app.NotificationManager.INTERRUPTION_FILTER_NONE
+import android.os.Build
 import io.github.anmirror.protocol.v1.RingState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,12 +13,18 @@ import kotlinx.coroutines.flow.asStateFlow
  * Rings the phone at full alarm volume until [stop]. Knows nothing about the connection, so a
  * dropped connection does not stop it; [onState] is only a report (the caller may fail to send it).
  * Both calls are idempotent and safe from any thread.
+ *
+ * Under Total silence it swaps the filter to ALARMS for the ring and back after (below Android 15).
+ * On Android 15+ (targetSdk 35+) `setInterruptionFilter` only turns this app's own implicit mode on
+ * or off: it can't lift the user's Total silence, and a restore would then see NONE and leave the
+ * app's ALARMS mode behind. So on 15+ it does not swap and reports "may be silent" instead.
  */
 class RingController(
     private val audio: AlarmAudio,
     private val dnd: DndOverride,
     private val notifier: RingNotifier,
     private val store: RingSavedStore = NoRingSavedStore,
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
     private val onState: (RingState) -> Unit,
 ) {
     private val lock = Any()
@@ -35,7 +43,9 @@ class RingController(
             savedFilter = null
             try {
                 if (dnd.currentFilter() == INTERRUPTION_FILTER_NONE) {
-                    if (dnd.hasAccess()) {
+                    if (sdkInt >= ANDROID_15) {
+                        maySilent = true // only our own mode could change: Total silence stays
+                    } else if (dnd.hasAccess()) {
                         savedFilter = INTERRUPTION_FILTER_NONE
                         // Persist first: if the process dies, the next start puts things back.
                         store.save(SavedRingState(savedVolume, savedFilter))
@@ -75,12 +85,20 @@ class RingController(
         onState(state)
     }
 
-    /** On service start: if a previous process died mid-ring, put the volume and filter back once. */
+    /**
+     * On service start: if a previous process died mid-ring, put the volume and filter back once.
+     * On 15+ a saved filter means this app's own ALARMS mode may still be on (an earlier build, or
+     * a ring before an OS update): setting ALL turns off only that mode.
+     */
     fun restoreLeftover() {
         synchronized(lock) {
             if (_ringing.value) return
             val saved = store.load() ?: return
-            restoreFilter(saved.filter)
+            if (sdkInt >= ANDROID_15) {
+                if (saved.filter != null) dnd.setFilter(INTERRUPTION_FILTER_ALL)
+            } else {
+                restoreFilter(saved.filter)
+            }
             audio.setVolume(saved.volume)
             store.clear()
         }
@@ -103,4 +121,9 @@ class RingController(
 
     private fun current(): RingState =
         RingState.newBuilder().setRinging(_ringing.value).setMayBeSilent(maySilent).build()
+
+    private companion object {
+        /** Build.VERSION_CODES.VANILLA_ICE_CREAM. */
+        const val ANDROID_15 = 35
+    }
 }
