@@ -1,7 +1,9 @@
+import AMProtocol
 import AppKit
 import FeatureCalls
 import FeatureFiles
 import FeatureFind
+import FeatureMedia
 import FeatureStatus
 import SwiftUI
 
@@ -86,6 +88,13 @@ struct MenuContent: View {
            !availability.enabled, availability.reason == .needsPermission || availability.reason == .partialAccess {
             Text("Turn on screenshots in the phone app.")
         }
+        if model.isConnected, model.canMedia, let availability = model.media.phoneAvailability,
+           let notice = MediaNotice.text(availability),
+           // Same words as the notify notice: shown once.
+           !(availability.reason == .needsPermission && notifyNeedsPermission) {
+            Text(notice)
+        }
+        mediaSection
         if model.isConnected {
             sendSection
         }
@@ -107,6 +116,60 @@ struct MenuContent: View {
             Text(StatusFormatter.detail(status))
                 .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))
         }
+    }
+
+    /// Whether the notify notice "Turn on notification access in the phone app." is showing.
+    private var notifyNeedsPermission: Bool {
+        guard model.isConnected, model.canNotify, let availability = model.notifications.phoneAvailability else { return false }
+        return !availability.enabled && availability.reason == .needsPermission
+    }
+
+    /// What the phone is playing and its buttons (connected, media.v1 shared, something active).
+    @ViewBuilder private var mediaSection: some View {
+        if let state = model.nowPlaying {
+            let title = NowPlayingText.title(state)
+            Button {} label: {
+                if let image = ArtworkImage.image(model.media.artwork, side: 32) {
+                    Label { Text(verbatim: title) } icon: { Image(nsImage: image) }
+                } else {
+                    Text(verbatim: title)
+                }
+            }
+            .disabled(true)
+            .accessibilityLabel(Text(verbatim: title))
+            if let byline = NowPlayingText.byline(state) {
+                byline
+            }
+            if state.playing {
+                Button("Pause") { mediaCommand(.pause) }
+                    .disabled(!state.canPause)
+                    .accessibilityLabel(Text("Pause"))
+            } else {
+                Button("Play") { mediaCommand(.play) }
+                    .disabled(!state.canPlay)
+                    .accessibilityLabel(Text("Play"))
+            }
+            Button("Previous") { mediaCommand(.previous) }
+                .disabled(!state.canPrevious)
+                .accessibilityLabel(Text("Previous"))
+            Button("Next") { mediaCommand(.next) }
+                .disabled(!state.canNext)
+                .accessibilityLabel(Text("Next"))
+            if state.hasVolume, !state.volume.fixed, state.volume.max > 0 {
+                let volume = state.volume
+                Button("Volume Up") { mediaCommand(.setVolume, volume: min(volume.current + 1, volume.max)) }
+                    .disabled(volume.current >= volume.max)
+                    .accessibilityLabel(Text("Volume Up"))
+                Button("Volume Down") { mediaCommand(.setVolume, volume: volume.current > 0 ? volume.current - 1 : 0) }
+                    .disabled(volume.current == 0)
+                    .accessibilityLabel(Text("Volume Down"))
+            }
+        }
+    }
+
+    private func mediaCommand(_ kind: AMMediaCommandKind, volume: UInt32 = 0) {
+        let media = model.media
+        Task { await media.command(kind, volume: volume) }
     }
 
     /// Sending to the phone and the transfers under way (connected only).

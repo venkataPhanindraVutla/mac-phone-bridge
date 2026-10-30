@@ -18,6 +18,7 @@ let package = Package(
         .library(name: "FeatureScreenshots", targets: ["FeatureScreenshots"]),
         .library(name: "FeaturePhotos", targets: ["FeaturePhotos"]),
         .library(name: "FeatureBrowse", targets: ["FeatureBrowse"]),
+        .library(name: "FeatureMedia", targets: ["FeatureMedia"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         // The Full build's extensions and the app's FULL_BUILD code only (docs/ARCHITECTURE.md section 4).
         .library(name: "FileProviderShared", targets: ["FileProviderShared"]),
@@ -93,6 +94,11 @@ let package = Package(
             ]
         ),
         .target(
+            name: "FeatureMedia",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
+            linkerSettings: [.linkedFramework("MediaPlayer")]
+        ),
+        .target(
             name: "AppSession",
             dependencies: ["AMProtocol", "ConnectionCore", "FeatureNotify", "FeatureContacts", "FeatureCalls"]
         ),
@@ -107,7 +113,7 @@ let package = Package(
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
-                "AMProtocol", "ConnectionCore", "FeatureFiles",
+                "AMProtocol", "ConnectionCore", "FeatureFiles", "FeatureMedia",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
@@ -171,6 +177,10 @@ let package = Package(
                 "FeatureBrowse", "FeatureFiles", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
+        ),
+        .testTarget(
+            name: "FeatureMediaTests",
+            dependencies: ["FeatureMedia", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .testTarget(name: "FileProviderSharedTests", dependencies: ["FileProviderShared"]),
         .testTarget(

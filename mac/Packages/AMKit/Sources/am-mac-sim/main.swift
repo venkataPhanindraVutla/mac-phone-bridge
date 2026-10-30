@@ -14,17 +14,21 @@
 //   EVENT files-received bytes=<n> sha256=<hex> mbps=<x>   (--files: a file from the phone, phone to Mac rate)
 //   EVENT files-sent bytes=<n> mbps=<x>                     (--files: that file sent back, Mac to phone rate)
 //   EVENT files-failed <transfer-id> <reason>               (--files)
+//   EVENT media-roundtrip ms=<n>                            (--media-toggle: a TOGGLE to the next media.state)
 //   EVENT rejected <reason>
 //   EVENT disconnected <phone-id>
 //   EVENT unpaired <phone-id>
 // stdin commands (optional): confirm, decline, pair, ring, stop, forget <phone-id>, quit.
 // With --files <dir> it also runs the bulk listener and the transfer engine: files from the phone
 // are saved into <dir>, and each one received is sent straight back.
+// With --media-toggle it advertises media.v1 and runs the media model with no Now Playing: on the
+// first active media.state it sends TOGGLE, prints the round trip, then sends a second TOGGLE.
 
 import AMProtocol
 import ConnectionCore
 import CryptoKit
 import FeatureFiles
+import FeatureMedia
 import Foundation
 import SwiftProtobuf
 
@@ -33,7 +37,7 @@ setvbuf(stdout, nil, _IOLBF, 0)
 let usage = """
     usage: am-mac-sim --identity <p12> --state-dir <dir> [--port <n|0>] [--password <pw>]
                       [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--echo-notify] [--no-bonjour]
-                      [--files <dir>]
+                      [--files <dir>] [--media-toggle]
     """
 
 struct Options {
@@ -47,6 +51,7 @@ struct Options {
     var echoNotify = false
     var bonjour = true
     var filesDir: String?
+    var mediaToggle = false
 }
 
 func fail(_ message: String) -> Never {
@@ -75,6 +80,7 @@ func parse(_ args: [String]) -> Options {
         case "--echo-notify": o.echoNotify = true
         case "--no-bonjour": o.bonjour = false
         case "--files": o.filesDir = value(arg)
+        case "--media-toggle": o.mediaToggle = true
         case "-h", "--help":
             print(usage)
             exit(0)
@@ -197,6 +203,7 @@ do {
 var capabilities: Set<String> = ["status.v1", "find.v1"]
 if options.echoNotify { capabilities.insert("notify.v1") }
 if options.filesDir != nil { capabilities.insert("files.v1") }
+if options.mediaToggle { capabilities.insert("media.v1") }
 
 let server = MacServer(
     identity: identityProvider,
@@ -273,6 +280,46 @@ let transfers: TransferEngine? = options.filesDir.map { path in
     return engine
 }
 
+// MARK: media (--media-toggle)
+
+/// Now Playing for a command-line tool: nothing to show, no remote commands.
+@MainActor
+final class NoNowPlaying: NowPlayingCenter {
+    var onCommand: ((AMMediaCommandKind, Double?) -> Void)?
+    func show(_ info: NowPlayingInfo, playing: Bool, commands: RemoteCommands) {}
+    func clear() {}
+}
+
+/// Drives the toggle round trips: the first TOGGLE on the first active state, the second once
+/// the first is answered.
+@MainActor
+final class MediaToggle {
+    let model: MediaModel
+    private var started = false
+    private var answered = 0
+
+    init() {
+        model = MediaModel(
+            center: NoNowPlaying(),
+            send: { type, message in try? await server.send(type, message, channel: .media) })
+        model.onRoundTrip = { [unowned self] _, rtt in
+            let ms = rtt.components.seconds * 1000 + rtt.components.attoseconds / 1_000_000_000_000_000
+            emit("EVENT media-roundtrip ms=\(ms)")
+            answered += 1
+            if answered == 1 { Task { await self.model.command(.toggle) } }
+        }
+    }
+
+    func message(_ envelope: AMEnvelope) async {
+        await model.message(envelope)
+        guard !started, model.state?.active == true else { return }
+        started = true
+        await model.command(.toggle)
+    }
+}
+
+let media: MediaToggle? = options.mediaToggle ? MainActor.assumeIsolated { MediaToggle() } : nil
+
 var announced = false
 server.onEvent = { event in
     switch event {
@@ -295,12 +342,16 @@ server.onEvent = { event in
         if let transfers {
             featureWork.yield { await transfers.connected(phoneID: phone.id, phoneName: phone.name, shared: shared) }
         }
+        if let media {
+            featureWork.yield { await media.model.connected(phoneID: phone.id, phoneName: phone.name, shared: shared) }
+        }
         if options.ringAfterConnect, shared.contains("find.v1") {
             Task { try? await server.send(.findRing, AMRingRequest(), channel: .find) }
         }
     case let .disconnected(phone):
         emit("EVENT disconnected \(phone.id)")
         if let transfers { featureWork.yield { transfers.disconnected() } }
+        if let media { featureWork.yield { media.model.disconnected() } }
     case let .unpaired(phone):
         emit("EVENT unpaired \(phone.id)")
     case let .rejected(reason):
@@ -315,6 +366,10 @@ server.onMessage = { envelope in
             transferStarts[offer.transferID] = .now
         }
         featureWork.yield { await transfers.message(envelope) }
+        return
+    }
+    if let media, media.model.messagePrefixes.contains(where: { envelope.type.hasPrefix($0) }) {
+        featureWork.yield { await media.message(envelope) }
         return
     }
     switch envelope.type {

@@ -9,6 +9,7 @@ import FeatureClipboard
 import FeatureContacts
 import FeatureFiles
 import FeatureFind
+import FeatureMedia
 import FeatureNotify
 import FeaturePhotos
 import FeatureScreenshots
@@ -25,7 +26,7 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
-        "screenshots.v1", "photos.v1", "browse.v1",
+        "screenshots.v1", "photos.v1", "browse.v1", "media.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -46,6 +47,8 @@ final class AppModel {
     let photos: PhotosModel
     /// The phone's files for the Phone window's Files tab.
     let browse: BrowseModel
+    /// The phone's media session, in macOS Now Playing, the menu and the Phone window's Now Playing tab.
+    let media: MediaModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -254,12 +257,22 @@ final class AppModel {
             }
         )
         self.share = share
+        let media = MediaModel(
+            center: SystemNowPlaying(),
+            send: { type, message in
+                // Only a phone that shares media.v1 gets media messages.
+                guard server.activePhone?.shared.contains("media.v1") == true else { return }
+                try? await server.send(type, message, channel: .media)
+            }
+        )
+        self.media = media
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
         notifyWork.register(screenshots)
         notifyWork.register(photos)
         notifyWork.register(browse)
+        notifyWork.register(media)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -361,6 +374,15 @@ final class AppModel {
 
     /// Phone photos are browsed only while the connected phone shares `photos.v1`.
     var canPhotos: Bool { server.activePhone?.shared.contains("photos.v1") ?? false }
+
+    /// The phone's media is shown and controlled only while the connected phone shares `media.v1`.
+    var canMedia: Bool { server.activePhone?.shared.contains("media.v1") ?? false }
+
+    /// What the phone is playing, for the menu and the Now Playing tab; nil when nothing is.
+    var nowPlaying: AMMediaState? {
+        guard isConnected, canMedia, let state = media.state, state.active else { return nil }
+        return state
+    }
 
     /// Why the last thing the user sent (dropped, picked, or the clipboard) did not all go.
     /// Shown in the menu and the Send tab until the next send, connect or disconnect.
