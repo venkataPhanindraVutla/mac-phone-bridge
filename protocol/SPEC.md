@@ -281,14 +281,20 @@ Initial values (battery tuning is planned for 0.9):
 **With `liveness.v1` shared** (both sides listed it in `Hello.capabilities`). An idle phone must
 not need its own timer, because its CPU may be suspended; it wakes on an incoming packet.
 
-- The Mac sends `system.ping` (channel SYSTEM, empty `Ping`) every **30 s**, the first one 30 s
-  after the hello. It counts any incoming envelope as proof of life, drops the phone when **3**
-  consecutive intervals pass with nothing received, and does not apply the 75 s silence rule to
-  that session.
-- The phone answers each `system.ping` at once with `system.pong`, `reply_to` set to the ping's
-  `id`. It sends its own ping only after **45 s** with nothing received, measured on monotonic
-  uptime (which stops in deep sleep), and drops the connection if nothing arrives within **10 s**
-  of that ping.
+- The Mac sends `system.ping` (channel SYSTEM, empty `Ping`) every **30 s**. The first ping goes
+  **30 s after the hello exchange completes**, that is, 30 s after the Mac sends its own
+  `system.hello` in reply to the phone's `system.hello`.
+- Drop rule. An *interval* is one 30 s Mac ping tick. Any envelope received from the phone
+  (a `system.pong` or any other message) resets the Mac's silent-tick count to 0. At each tick the
+  Mac counts the interval as silent if nothing was received during it. The Mac drops the phone at
+  the **third consecutive silent tick**, so detection takes **90 to 120 s** after the last message
+  received. The 75 s silence rule does not apply to that session.
+- The phone MUST answer each Mac `system.ping` immediately with `system.pong`, `reply_to` set to
+  the ping's `id`, without waiting for any timer. This is what makes the Mac's drop rule safe.
+- The phone sends its own `system.ping` only after **45 s** with nothing received, measured on
+  monotonic uptime (which stops in deep sleep). The Mac MUST answer it with `system.pong`, as in
+  0.1. The phone's 10 s wait is satisfied by **any** incoming envelope, not only the pong; if
+  nothing arrives within **10 s** of its ping, the phone drops the connection.
 - A Mac MUST NOT ping a phone that did not list `liveness.v1` (section 3).
 
 Both modes:
@@ -300,7 +306,7 @@ Both modes:
 What the user sees (builder's call, recorded in 0.1; shorter detection is tracked for 0.9):
 "connected/disconnected" updates **immediately when the connection closes** (app quit, Mac
 sleep/wake, phone app stopped). When the phone vanishes (Wi-Fi off, out of range, app frozen) it
-updates **within 2 minutes** for a `liveness.v1` phone, and **within 75 s** for a phone without it.
+updates **within 2 minutes** (90 to 120 s) for a `liveness.v1` phone, and **within 75 s** for a phone without it.
 
 `StatusUpdate.background_restricted` (field 5) is `true` when the phone is not exempt from
 battery optimisation, so it may disconnect while locked. Older phones leave it `false`.
