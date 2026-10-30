@@ -7,12 +7,17 @@ public struct PhoneStatus: Equatable, Sendable {
     public var charging: Bool
     public var signalLevel: Int
     public var network: AMNetworkKind
+    /// The phone is not exempt from battery optimisation, so it may disconnect while locked.
+    /// Phones from before the keep-alive fix never set it.
+    public var backgroundRestricted: Bool
 
-    public init(batteryPercent: Int, charging: Bool, signalLevel: Int, network: AMNetworkKind) {
+    public init(batteryPercent: Int, charging: Bool, signalLevel: Int, network: AMNetworkKind,
+                backgroundRestricted: Bool = false) {
         self.batteryPercent = batteryPercent
         self.charging = charging
         self.signalLevel = signalLevel
         self.network = network
+        self.backgroundRestricted = backgroundRestricted
     }
 }
 
@@ -29,7 +34,8 @@ public final class PhoneStatusModel {
             batteryPercent: min(max(Int(update.batteryPercent), 0), 100),
             charging: update.charging,
             signalLevel: min(max(Int(update.signalLevel), -1), 4),
-            network: update.network
+            network: update.network,
+            backgroundRestricted: update.backgroundRestricted
         )
     }
 

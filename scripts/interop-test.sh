@@ -172,7 +172,7 @@ case2() {
   local pstate; pstate="$(new_dir c2-phone)"
   start_mac c2 --auto-confirm || return 1
   start_phone c2 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --status 55,true,3,wifi
-  need "$MAC_LOG" '^EVENT status battery=55 charging=true signal=3 network=wifi$' "mac EVENT status battery=55 charging=true signal=3 network=wifi" || return 1
+  need "$MAC_LOG" '^EVENT status battery=55 charging=true signal=3 network=wifi restricted=false$' "mac EVENT status battery=55 charging=true signal=3 network=wifi restricted=false" || return 1
 }
 
 case3() {

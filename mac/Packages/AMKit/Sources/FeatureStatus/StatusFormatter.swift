@@ -21,6 +21,12 @@ public enum StatusFormatter {
         return [battery, networkName(s.network), signal].joined(separator: " · ")
     }
 
+    /// The menu line under the status line while the phone may be stopped when locked; nil when
+    /// it is exempt from battery optimisation (or too old to say).
+    public static func backgroundNote(_ s: PhoneStatus) -> String? {
+        s.backgroundRestricted ? String(localized: "Phone may disconnect when locked", bundle: .main) : nil
+    }
+
     /// Full words, no symbols, for VoiceOver.
     public static func accessibilityLabel(_ s: PhoneStatus) -> String {
         let battery = s.charging
