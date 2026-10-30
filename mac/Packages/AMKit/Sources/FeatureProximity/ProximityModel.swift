@@ -14,9 +14,14 @@ import SwiftProtobuf
 ///
 /// It won't lock (`blockers`) while the setting is off, the phone or key is missing, Bluetooth is
 /// off or not allowed, locking isn't available, the screen is locked or asleep, the phone's last
-/// `proximity.availability` wasn't enabled (kept per phone across sessions; nil is off), or the
+/// `proximity.availability` wasn't enabled (kept per phone across sessions; nil is off), the
 /// phone has had no LAN session with this Mac now or in the last 30 minutes (ruling R32: this Mac
-/// can't hear that the phone stopped advertising without one).
+/// can't hear that the phone stopped advertising without one), the scanner has heard nothing from
+/// any device for 20 s, or something keeps the screen awake (ruling R33). A stalled scan is
+/// restarted at most every 30 s.
+///
+/// The monitor runs on a monotonic clock (`uptime`); the wall clock (`now`) is used only for the
+/// beacon epoch and the session stamps.
 ///
 /// Bluetooth access is asked for only by `setEnabled(true)` (or at launch with the setting on).
 /// The `proximity` log has one line per lock, with the smoothed RSSI, and nothing else.
@@ -25,6 +30,10 @@ import SwiftProtobuf
 public final class ProximityModel: SessionFeature {
     /// Ruling R32: how long after a LAN session with the phone ends it may still lock.
     nonisolated public static let sessionGrace: TimeInterval = 30 * 60
+    /// Ruling R33: no advertisement from any device for this long means the scan has stalled.
+    nonisolated public static let stallAfter: TimeInterval = 20
+    /// Ruling R33: a stalled scan is restarted at most this often.
+    nonisolated public static let rescanEvery: TimeInterval = 30
     nonisolated static let enabledKey = "autoLockEnabled"
     nonisolated static let phoneKey = "autoLockPhoneID"
     nonisolated static let thresholdKey = "autoLockThreshold"
@@ -68,28 +77,35 @@ public final class ProximityModel: SessionFeature {
     @ObservationIgnored private let activity: any MacActivity
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let uptime: () -> TimeInterval
     @ObservationIgnored private let tickInterval: Duration?
     @ObservationIgnored private(set) var monitor: ProximityMonitor
     @ObservationIgnored private var phones: [PairedPhone] = []
     @ObservationIgnored private var discoveryKey: Data?
     @ObservationIgnored private var matcher: BeaconMatcher?
-    /// The chosen phone's fingerprint the matcher was made for.
+    /// The chosen phone's fingerprint and the key the matcher was made for.
     @ObservationIgnored private var matcherFingerprint: Data?
+    @ObservationIgnored private var matcherKey: Data?
+    /// When the scanner last reported any advertisement (monotonic), and last restarted the scan.
+    @ObservationIgnored private var lastHeard: TimeInterval?
+    @ObservationIgnored private var lastRescan: TimeInterval?
     /// The phone in session now, whatever it shares.
     @ObservationIgnored private var sessionPhoneID: String?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
 
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "proximity")
 
-    /// `tickInterval` nil runs no timer (tests call `tick()`).
+    /// `uptime` is a monotonic clock in seconds. `tickInterval` nil runs no timer (tests call `tick()`).
     public init(scanner: any BeaconScanner, locker: any ScreenLocker, activity: any MacActivity,
                 defaults: UserDefaults, now: @escaping () -> Date = Date.init,
+                uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 tickInterval: Duration? = .seconds(1)) {
         self.scanner = scanner
         self.locker = locker
         self.activity = activity
         self.defaults = defaults
         self.now = now
+        self.uptime = uptime
         self.tickInterval = tickInterval
         let phoneID = defaults.string(forKey: Self.phoneKey)
         self.phoneID = phoneID
@@ -103,8 +119,12 @@ public final class ProximityModel: SessionFeature {
         phoneAvailabilityReason = phoneID.flatMap { Self.storedReason($0, defaults) }
         scanner.onState = { [weak self] state in self?.scannerChanged(state) }
         scanner.onBeacon = { [weak self] data, rssi in self?.beacon(data, rssi: rssi) }
+        scanner.onHeartbeat = { [weak self] in self?.heard() }
         activity.onWake = { [weak self] in self?.monitor.reset() }
-        if enabled { scanner.start() }
+        if enabled {
+            lastHeard = uptime()
+            scanner.start()
+        }
         updateTicking()
         updateBlockers()
     }
@@ -132,6 +152,9 @@ public final class ProximityModel: SessionFeature {
         defaults.set(on, forKey: Self.enabledKey)
         updateMatcher()
         monitor.reset()
+        // A fresh start gets the stall window before it counts as stalled.
+        lastHeard = on ? uptime() : nil
+        lastRescan = nil
         if on { scanner.start() } else { scanner.stop() }
         updateTicking()
         updateBlockers()
@@ -180,41 +203,70 @@ public final class ProximityModel: SessionFeature {
 
     /// One evaluation; every second while the setting is on.
     public func tick() {
-        let date = now()
+        let time = uptime()
         idleSeconds = activity.idleSeconds()
-        updateBlockers(at: date)
-        smoothedRSSI = monitor.smoothedRSSI(at: date)
-        zone = monitor.zone(at: date)
+        updateBlockers()
+        if blockers.contains(.scannerStalled), lastRescan.map({ time - $0 >= Self.rescanEvery }) ?? true {
+            lastRescan = time
+            scanner.rescan()
+        }
+        smoothedRSSI = monitor.smoothedRSSI(at: time)
+        zone = monitor.zone(at: time)
         let farSince = monitor.farSince
-        decision = monitor.evaluate(now: date, idle: idleSeconds, blockers: blockers, testMode: testMode)
+        decision = monitor.evaluate(now: time, idle: idleSeconds, blockers: blockers, testMode: testMode)
         guard decision == .lock, !testMode else { return }
         let rssi = smoothedRSSI.map(String.init) ?? "none"
-        let far = Int(farSince.map { date.timeIntervalSince($0) } ?? 0)
+        let far = Int(farSince.map { time - $0 } ?? 0)
         let idle = Int(idleSeconds)
-        Self.log.notice("lock rssi=\(rssi, privacy: .public) far=\(far, privacy: .public)s idle=\(idle, privacy: .public)s")
-        if !locker.lock() { Self.log.error("lock failed") }
+        let rc = locker.lock().map(String.init) ?? "none"
+        Self.log.notice(
+            "lock rssi=\(rssi, privacy: .public) far=\(far, privacy: .public)s idle=\(idle, privacy: .public)s rc=\(rc, privacy: .public)")
+    }
+
+    /// Whether a session that ended at `ended` (unix seconds) is recent at `now`. A stamp in the
+    /// future (the wall clock stepped back) is not.
+    nonisolated static func isRecent(sessionEnded ended: Double?, now: Date) -> Bool {
+        guard let ended else { return false }
+        let elapsed = now.timeIntervalSince1970 - ended
+        return elapsed >= 0 && elapsed <= sessionGrace
+    }
+
+    /// Whether a scan last heard at `lastHeard` has stalled at `time` (both monotonic).
+    nonisolated static func isStalled(lastHeard: TimeInterval?, at time: TimeInterval) -> Bool {
+        guard let lastHeard else { return true }
+        return time - lastHeard > stallAfter
     }
 
     // MARK: private
 
     private func beacon(_ data: Data, rssi: Int) {
-        guard enabled, let matcher else { return }
-        let date = now()
-        guard matcher.matches(data, unixSeconds: Int64(date.timeIntervalSince1970.rounded(.down))) else { return }
-        monitor.sample(rssi: rssi, at: date)
+        guard enabled else { return }
+        heard()
+        guard let matcher,
+              matcher.matches(data, unixSeconds: Int64(now().timeIntervalSince1970.rounded(.down))) else { return }
+        monitor.sample(rssi: rssi, at: uptime())
+    }
+
+    private func heard() {
+        guard enabled else { return }
+        lastHeard = uptime()
     }
 
     private func scannerChanged(_ state: ScannerState) {
         scannerState = state
+        // Scanning (re)starts now: give it the stall window.
+        if state == .poweredOn, enabled { lastHeard = uptime() }
         updateBlockers()
     }
 
     private func updateMatcher() {
         let phone = phones.first { $0.id == phoneID }
         let new = phone.flatMap { p in discoveryKey.map { BeaconMatcher(discoveryKey: $0, phoneFingerprint: p.fingerprint) } }
-        let changed = (matcher == nil) != (new == nil) || phone?.fingerprint != matcherFingerprint
+        let key = new == nil ? nil : discoveryKey
+        let changed = (matcher == nil) != (new == nil) || phone?.fingerprint != matcherFingerprint || key != matcherKey
         matcher = new
         matcherFingerprint = phone?.fingerprint
+        matcherKey = key
         if changed { monitor.reset() }
         updateBlockers()
     }
@@ -239,28 +291,28 @@ public final class ProximityModel: SessionFeature {
         defaults.set(now().timeIntervalSince1970, forKey: Self.sessionKey(id))
     }
 
-    private func recentSession(_ id: String, at date: Date) -> Bool {
-        if sessionPhoneID == id { return true }
-        guard let ended = defaults.object(forKey: Self.sessionKey(id)) as? Double else { return false }
-        return date.timeIntervalSince1970 - ended <= Self.sessionGrace
+    private func recentSession(_ id: String) -> Bool {
+        sessionPhoneID == id
+            || Self.isRecent(sessionEnded: defaults.object(forKey: Self.sessionKey(id)) as? Double, now: now())
     }
 
-    private func updateBlockers(at date: Date? = nil) {
-        let date = date ?? now()
+    private func updateBlockers() {
         var b = Set<Blocker>()
         if !enabled { b.insert(.featureOff) }
         if phoneID == nil || matcher == nil { b.insert(.noPhone) }
         switch scanner.state {
-        case .poweredOn: break
+        case .poweredOn:
+            if enabled, Self.isStalled(lastHeard: lastHeard, at: uptime()) { b.insert(.scannerStalled) }
         case .unauthorized: b.insert(.bluetoothUnauthorized)
         case .poweredOff, .unsupported, .unknown: b.insert(.bluetoothOff)
         }
         if !locker.available { b.insert(.lockUnavailable) }
         if activity.screenLocked { b.insert(.screenLocked) }
         if activity.asleep { b.insert(.asleep) }
+        if activity.screenKeptAwake { b.insert(.macInUse) }
         if let id = phoneID {
             if defaults.object(forKey: Self.availabilityKey(id)) as? Bool != true { b.insert(.phoneNotAdvertising) }
-            if !recentSession(id, at: date) { b.insert(.noRecentSession) }
+            if !recentSession(id) { b.insert(.noRecentSession) }
         }
         if b != blockers { blockers = b }
     }

@@ -52,3 +52,14 @@ private func id(_ phone: Data, _ epoch: Int64) -> Data {
     let padded = Data([9, 9]) + good
     #expect(m.matches(padded.suffix(8), unixSeconds: unix))
 }
+
+@Test func idsAreComputedOncePerEpoch() {
+    let m = BeaconMatcher(discoveryKey: key, phoneFingerprint: phoneA)
+    for _ in 0..<100 { _ = m.matches(id(phoneA, epoch), unixSeconds: unix) }
+    #expect(m.computedCount == 3)
+    // The next epoch needs one more.
+    _ = m.matches(id(phoneA, epoch + 1), unixSeconds: unix + 900)
+    #expect(m.computedCount == 4)
+    // Hours later the old ones are dropped and it keeps working.
+    for step in Int64(2)...20 { #expect(m.matches(id(phoneA, epoch + step), unixSeconds: unix + step * 900)) }
+}

@@ -23,6 +23,19 @@ public struct ProximityConfig: Equatable, Sendable {
         self.delay = Self.clamp(delay)
     }
 
+    // Ruling R33: stricter than "FAR for the delay", for no false locks at the desk.
+
+    /// A phone that vanishes while its signal was at least this far above the threshold didn't walk
+    /// away (it would have faded first).
+    public static let closeMargin = 5
+    /// The Mac must be idle this long: the delay, but never under 60 s.
+    public var idleRequired: TimeInterval { max(delay, 60) }
+    /// Still heard but below the threshold: FAR must hold this long.
+    public var weakHold: TimeInterval { max(2 * delay, 60) }
+    /// Vanished from close range: the absence counts as FAR only after max(4 × delay, 120 s), and
+    /// then the delay runs, so this is the whole hold from when the absence began.
+    public var vanishHold: TimeInterval { max(4 * delay, 120) + delay }
+
     static func clamp(_ dBm: Int) -> Int {
         min(max(dBm, thresholdRange.lowerBound), thresholdRange.upperBound)
     }
@@ -41,6 +54,12 @@ public enum Blocker: Hashable, Sendable {
     /// Ruling R32: the phone has had no LAN session with this Mac now or in the last 30 minutes, so
     /// this Mac can't know whether it is still advertising.
     case noRecentSession
+    /// Ruling R33: the scanner has reported no advertisement from any device for 20 s, so silence
+    /// from the phone means nothing.
+    case scannerStalled
+    /// Ruling R33: something keeps the screen awake (a video call, video playback, a presentation),
+    /// so someone is likely watching without touching the Mac.
+    case macInUse
 }
 
 public enum Decision: Equatable, Sendable {
@@ -51,13 +70,18 @@ public enum Decision: Equatable, Sendable {
 }
 
 /// Decides when to lock from the phone's beacon signal (SPEC section 22; PRD F-15). Pure: the
-/// caller hands it samples, the time and the Mac's idle time.
+/// caller hands it samples, the time and the Mac's idle time. Times are seconds on a monotonic
+/// clock (a wall-clock step must not shorten a hold).
 ///
 /// Conservative by design, since a false lock at the desk is the failure that matters:
 /// - It arms only once the phone has been NEAR since launch, `reset()` (wake, a setting or phone
 ///   change) or the last lock.
-/// - It locks only when the phone has been FAR for the delay *and* nobody has touched the Mac for
-///   the delay.
+/// - It locks only when the phone has been FAR for the hold *and* nobody has touched the Mac for
+///   `idleRequired`. The hold depends on how the phone went FAR (ruling R33), and a FAR stretch
+///   keeps the longest hold any part of it needed:
+///   - not heard, the last signal under threshold + 5 dB: the delay;
+///   - still heard but under the threshold: `weakHold`;
+///   - not heard, the last signal at least threshold + 5 dB (vanished from close range): `vanishHold`.
 /// - Any blocker disarms it and restarts the FAR clock, so the phone must be seen NEAR again after,
 ///   say, Bluetooth comes back on.
 public struct ProximityMonitor {
@@ -65,9 +89,13 @@ public struct ProximityMonitor {
     /// False until the first NEAR, and again after a lock, a blocker or `reset()`.
     public private(set) var armed = false
     /// When the current FAR stretch began, while armed.
-    public private(set) var farSince: Date?
+    public private(set) var farSince: TimeInterval?
+    /// When the last FAR stretch began; kept after a lock (for the log and tests).
+    public private(set) var lastFarStart: TimeInterval?
+    /// The longest hold the current FAR stretch has needed.
+    public private(set) var farHold: TimeInterval = 0
     /// In time order; the last is the newest, and none is more than `window` older than it.
-    private var samples: [(at: Date, rssi: Int)] = []
+    private var samples: [(at: TimeInterval, rssi: Int)] = []
 
     public init(config: ProximityConfig) {
         self.config = config
@@ -76,61 +104,77 @@ public struct ProximityMonitor {
     /// One sighting of the phone's beacon, which becomes the newest: samples dated after it (the
     /// clock went back) are dropped with those more than `window` older. A non-negative RSSI
     /// (CoreBluetooth's 127 = none) is ignored.
-    public mutating func sample(rssi: Int, at date: Date) {
+    public mutating func sample(rssi: Int, at time: TimeInterval) {
         guard rssi < 0 else { return }
-        samples.removeAll { $0.at > date || date.timeIntervalSince($0.at) > ProximityConfig.window }
-        samples.append((date, rssi))
+        samples.removeAll { $0.at > time || time - $0.at > ProximityConfig.window }
+        samples.append((time, rssi))
     }
 
     /// Wake, a setting change or a phone change: forget the samples and wait for NEAR again.
     public mutating func reset() {
         samples.removeAll()
-        farSince = nil
-        armed = false
+        disarm()
     }
 
     /// The median of the kept samples (the upper middle for an even count); nil when the newest
     /// is older than `absentAfter`.
-    public func smoothedRSSI(at date: Date) -> Int? {
-        guard let newest = samples.last?.at,
-              date.timeIntervalSince(newest) <= ProximityConfig.absentAfter else { return nil }
+    public func smoothedRSSI(at time: TimeInterval) -> Int? {
+        guard let newest = samples.last?.at, time - newest <= ProximityConfig.absentAfter else { return nil }
+        return median
+    }
+
+    public func zone(at time: TimeInterval) -> Zone {
+        guard let rssi = smoothedRSSI(at: time), rssi >= config.thresholdDBm else { return .far }
+        return .near
+    }
+
+    /// The median of the kept samples, heard recently or not: while absent, the last smoothed value.
+    private var median: Int? {
+        guard !samples.isEmpty else { return nil }
         let sorted = samples.map(\.rssi).sorted()
         return sorted[sorted.count / 2]
     }
 
-    public func zone(at date: Date) -> Zone {
-        guard let rssi = smoothedRSSI(at: date), rssi >= config.thresholdDBm else { return .far }
-        return .near
+    /// How long FAR must hold right now; nil when NEAR.
+    private func hold(at time: TimeInterval) -> TimeInterval? {
+        if let rssi = smoothedRSSI(at: time) {
+            return rssi >= config.thresholdDBm ? nil : config.weakHold
+        }
+        if let last = median, last >= config.thresholdDBm + ProximityConfig.closeMargin { return config.vanishHold }
+        return config.delay
+    }
+
+    private mutating func disarm() {
+        armed = false
+        farSince = nil
+        farHold = 0
     }
 
     /// Called every second while the feature is on.
     ///
     /// `testMode` skips the idle check and never disarms, so Settings can show "Would lock now"
-    /// while someone sits at the Mac. The caller must not lock in test mode.
-    public mutating func evaluate(now: Date, idle: TimeInterval, blockers: Set<Blocker>, testMode: Bool) -> Decision {
+    /// while someone sits at the Mac; the holds are the same. The caller must not lock in test mode.
+    public mutating func evaluate(now: TimeInterval, idle: TimeInterval, blockers: Set<Blocker>, testMode: Bool) -> Decision {
         guard blockers.isEmpty else {
-            armed = false
-            farSince = nil
+            disarm()
             return .none
         }
-        switch zone(at: now) {
-        case .near:
+        guard let hold = hold(at: now) else {
             armed = true
             farSince = nil
+            farHold = 0
             return .none
-        case .far:
-            guard armed else { return .none }
-            let since = farSince ?? now
-            farSince = since
-            let remaining = config.delay - now.timeIntervalSince(since)
-            if remaining > 0 || (!testMode && idle < config.delay) {
-                return .countdown(max(remaining, 0))
-            }
-            if !testMode {
-                armed = false
-                farSince = nil
-            }
-            return .lock
         }
+        guard armed else { return .none }
+        let since = farSince ?? now
+        if farSince == nil { lastFarStart = now }
+        farSince = since
+        farHold = max(farHold, hold)
+        let remaining = farHold - (now - since)
+        if remaining > 0 || (!testMode && idle < config.idleRequired) {
+            return .countdown(max(remaining, 0))
+        }
+        if !testMode { disarm() }
+        return .lock
     }
 }

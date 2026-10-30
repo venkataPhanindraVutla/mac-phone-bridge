@@ -5,8 +5,8 @@ import Foundation
 public protocol ScreenLocker: AnyObject {
     /// Whether this macOS can lock this way; false shows "Locking isn't available on this macOS version".
     var available: Bool { get }
-    /// Locks now. False when locking isn't available.
-    func lock() -> Bool
+    /// Locks now, returning the call's result code (for the log); nil when locking isn't available.
+    func lock() -> Int32?
 }
 
 /// Locks through `SACLockScreenImmediate` in the private login framework, the call behind the
@@ -28,11 +28,9 @@ public final class LoginFrameworkLocker: ScreenLocker {
 
     public var available: Bool { lockFunction != nil }
 
-    public func lock() -> Bool {
-        guard let lockFunction else { return false }
-        // Its result isn't documented; asking for the lock is what counts.
-        _ = lockFunction()
-        return true
+    /// The result code isn't documented; it is logged as is.
+    public func lock() -> Int32? {
+        lockFunction?()
     }
 
     /// The handle stays open for the life of the process.

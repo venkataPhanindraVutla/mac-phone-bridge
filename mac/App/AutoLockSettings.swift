@@ -53,7 +53,6 @@ struct AutoLockSettings: View {
             }
             Text("This Mac never unlocks itself.").foregroundStyle(.secondary)
         }
-        .onDisappear { proximity.testMode = false }
     }
 
     @ViewBuilder private var readouts: some View {
@@ -78,14 +77,17 @@ struct AutoLockSettings: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// One line per reason it can't lock that the user can act on. The screen being locked or
-    /// asleep needs no line, nor Bluetooth before it has reported.
+    /// One line per reason it can't lock that the user can act on or should know about (shown in
+    /// test mode too). The screen being locked or asleep needs no line, nor Bluetooth before it has
+    /// reported.
     private var blockerLines: [LocalizedStringResource] {
         let b = proximity.blockers
         var lines: [LocalizedStringResource] = []
         if b.contains(.bluetoothOff), proximity.scannerState != .unknown { lines.append("Turn on Bluetooth on this Mac.") }
         if b.contains(.bluetoothUnauthorized) { lines.append("Allow Bluetooth for Android Mirroring in System Settings.") }
         if b.contains(.lockUnavailable) { lines.append("Locking isn't available on this macOS version") }
+        if b.contains(.scannerStalled) { lines.append("Bluetooth on this Mac stopped reporting nearby devices.") }
+        if b.contains(.macInUse) { lines.append("Not locking while a video or call keeps the screen awake.") }
         if b.contains(.phoneNotAdvertising) {
             lines.append(proximity.phoneAvailabilityReason == .unavailable
                 ? "Bluetooth is off on the phone, or it can't advertise."

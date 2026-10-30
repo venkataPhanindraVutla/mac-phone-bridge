@@ -2410,6 +2410,28 @@
           }
         }
       }
+    },
+    "Bluetooth on this Mac stopped reporting nearby devices.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth on this Mac stopped reporting nearby devices."
+          }
+        }
+      }
+    },
+    "Not locking while a video or call keeps the screen awake.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not locking while a video or call keeps the screen awake."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

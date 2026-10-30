@@ -81,10 +81,10 @@ private var serviceUUID: CBUUID { CBUUID(string: PairingCrypto.bleServiceUUID) }
 @MainActor @Test func missingLockSymbolIsUnavailable() {
     let noSymbol = LoginFrameworkLocker(symbol: "AMNoSuchLockSymbol")
     #expect(!noSymbol.available)
-    #expect(!noSymbol.lock())
+    #expect(noSymbol.lock() == nil)
     let noFramework = LoginFrameworkLocker(path: "/System/Library/PrivateFrameworks/AMNoSuch.framework/AMNoSuch")
     #expect(!noFramework.available)
-    #expect(!noFramework.lock())
+    #expect(noFramework.lock() == nil)
 }
 
 /// NSWorkspace posts sleep and wake on the main thread, but nothing guarantees it: a post from
@@ -113,6 +113,57 @@ private var serviceUUID: CBUUID { CBUUID(string: PairingCrypto.bleServiceUUID) }
     let activity = SystemMacActivity(center: NotificationCenter())
     #expect(activity.idleSeconds() >= 0)
     _ = activity.screenLocked
+    _ = activity.screenKeptAwake
+}
+
+@Test func displaySleepAssertionsCountAsInUse() {
+    #expect(SystemMacActivity.keepsScreenAwake(["PreventUserIdleDisplaySleep": 1]))
+    #expect(SystemMacActivity.keepsScreenAwake(["NoDisplaySleepAssertion": 2]))
+    #expect(!SystemMacActivity.keepsScreenAwake(["PreventUserIdleDisplaySleep": 0, "NoDisplaySleepAssertion": 0]))
+    // Keeping the system (not the screen) awake is not someone watching.
+    #expect(!SystemMacActivity.keepsScreenAwake(["PreventUserIdleSystemSleep": 1]))
+    #expect(!SystemMacActivity.keepsScreenAwake([:]))
+}
+
+/// Any advertisement, ours or not, is a heartbeat, forwarded at most once a second however many
+/// sightings arrive.
+@MainActor @Test func heartbeatIsCoalescedToOncePerSecond() async {
+    let scanner = CoreBluetoothScanner()
+    let delegate = scanner.delegate
+    let clock = TestUptime()
+    delegate.uptime = { clock.value }
+    var heartbeats = 0
+    scanner.onHeartbeat = { heartbeats += 1 }
+    scanner.wantsScan = true
+    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().async {
+            let other: [String: Any] = [CBAdvertisementDataLocalNameKey: "headphones"]
+            for _ in 0..<50 { delegate.deliver(advertisementData: other, rssi: -70) }
+            clock.value = 0.5
+            delegate.deliver(advertisementData: other, rssi: -70)
+            clock.value = 1.0
+            delegate.deliver(advertisementData: other, rssi: -70)
+            // A sighting without an RSSI is still a sign the scan is running.
+            clock.value = 2.5
+            delegate.deliver(advertisementData: other, rssi: 127)
+            DispatchQueue.main.async { done.resume() }
+        }
+    }
+    #expect(heartbeats == 3)
+}
+
+@MainActor @Test func appNapActivityIsHeldOnlyWhileScanning() {
+    let scanner = CoreBluetoothScanner()
+    #expect(!scanner.holdsActivity)
+    scanner.holdActivity(true)
+    #expect(scanner.holdsActivity)
+    scanner.holdActivity(true) // idempotent
+    scanner.stop()
+    #expect(!scanner.holdsActivity)
+}
+
+private final class TestUptime: @unchecked Sendable {
+    var value: TimeInterval = 0
 }
 
 private func post(_ name: Notification.Name, on center: NotificationCenter) async {

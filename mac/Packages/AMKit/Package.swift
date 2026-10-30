@@ -108,7 +108,7 @@ let package = Package(
         .target(
             name: "FeatureProximity",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
-            linkerSettings: [.linkedFramework("CoreBluetooth")]
+            linkerSettings: [.linkedFramework("CoreBluetooth"), .linkedFramework("IOKit")]
         ),
         .target(
             name: "AppSession",

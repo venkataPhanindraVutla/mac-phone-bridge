@@ -14,19 +14,22 @@ private final class FakeScanner: BeaconScanner {
     }
     var onState: ((ScannerState) -> Void)?
     var onBeacon: ((Data, Int) -> Void)?
+    var onHeartbeat: (() -> Void)?
     private(set) var starts = 0
     private(set) var stops = 0
+    private(set) var rescans = 0
     func start() { starts += 1 }
     func stop() { stops += 1 }
+    func rescan() { rescans += 1 }
 }
 
 @MainActor
 private final class FakeLocker: ScreenLocker {
     var available = true
     private(set) var locks = 0
-    func lock() -> Bool {
+    func lock() -> Int32? {
         locks += 1
-        return true
+        return 0
     }
 }
 
@@ -35,14 +38,23 @@ private final class FakeActivity: MacActivity {
     var idle: TimeInterval = 1_000
     var screenLocked = false
     var asleep = false
+    var screenKeptAwake = false
     var onWake: (() -> Void)?
     func idleSeconds() -> TimeInterval { idle }
 }
 
+/// The wall clock and the monotonic one, advanced together unless a test steps the wall clock.
 private final class Clock: @unchecked Sendable {
     var now = Date(timeIntervalSince1970: 1_800_000_000)
-    func advance(_ s: TimeInterval) { now = now.addingTimeInterval(s) }
+    var uptime: TimeInterval = 10_000
+    func advance(_ s: TimeInterval) {
+        now = now.addingTimeInterval(s)
+        uptime += s
+    }
 }
+
+/// NEAR at the default −80 dBm, but within 5 dB of it: losing it is plain absence (the delay).
+private let near = -78
 
 private let key = Data(repeating: 0x42, count: 32)
 private let phoneA = PairedPhone(id: "phone-a", name: "Pixel", model: "P", certificateDER: Data([1, 2, 3]),
@@ -65,7 +77,7 @@ private struct Rig {
         self.defaults = d
         let clock = clock
         model = ProximityModel(scanner: scanner, locker: locker, activity: activity, defaults: d,
-                               now: { clock.now }, tickInterval: nil)
+                               now: { clock.now }, uptime: { clock.uptime }, tickInterval: nil)
         model.setPhones([phoneA, phoneB], discoveryKey: key)
         if enable { model.setEnabled(true, phoneID: phoneA.id) }
         if connect { await model.connected(phoneID: phoneA.id, phoneName: phoneA.name, shared: ["proximity.v1"]) }
@@ -96,10 +108,12 @@ private struct Rig {
         scanner.onBeacon?(id, rssi)
     }
 
-    /// `seconds` ticks, one a second, with the phone at `rssi` (nil: nothing heard).
-    func ticks(_ seconds: Int, rssi: Int?, phone: PairedPhone = phoneA) {
+    /// `seconds` ticks, one a second, with the phone at `rssi` (nil: not heard). `heard` is whether
+    /// the scanner reports any advertisement at all (other devices nearby) that second.
+    func ticks(_ seconds: Int, rssi: Int?, phone: PairedPhone = phoneA, heard: Bool = true) {
         for _ in 0..<seconds {
             clock.advance(1)
+            if heard { scanner.onHeartbeat?() }
             if let rssi { beacon(phone, rssi: rssi) }
             model.tick()
         }
@@ -107,7 +121,7 @@ private struct Rig {
 
     /// Near for 5 s, then gone for long enough to lock at the default 30 s delay.
     func walkAway() {
-        ticks(5, rssi: -60)
+        ticks(5, rssi: near)
         ticks(80, rssi: nil)
     }
 }
@@ -172,9 +186,9 @@ private struct Rig {
 
 @MainActor @Test func availabilityBackToEnabledRequiresNearAgain() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60) // armed
+    rig.ticks(5, rssi: near) // armed
     await rig.availability(false)
-    rig.ticks(1, rssi: -60)
+    rig.ticks(1, rssi: near)
     await rig.availability(true)
     // Away from here on: never seen near since the switch came back on.
     rig.ticks(120, rssi: nil)
@@ -186,12 +200,12 @@ private struct Rig {
 
 @MainActor @Test func noLockWhenNoSessionFor30Minutes() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     rig.model.disconnected()
     // 31 minutes at the desk with no LAN session, then away.
     for _ in 0..<(31 * 60) {
         rig.clock.advance(1)
-        rig.beacon(rssi: -60)
+        rig.beacon(rssi: near)
         rig.model.tick()
     }
     rig.ticks(120, rssi: nil)
@@ -205,7 +219,7 @@ private struct Rig {
 
 @MainActor @Test func sessionThatJustEndedStillLocks() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     // Walking out of Wi-Fi range drops the session as the phone leaves.
     rig.model.disconnected()
     rig.ticks(80, rssi: nil)
@@ -228,7 +242,7 @@ private struct Rig {
     #expect(rig.model.smoothedRSSI == nil)
     #expect(rig.locker.locks == 0)
     // A is near, then leaves while B stays: B's beacons don't keep the Mac unlocked.
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     rig.ticks(80, rssi: -50, phone: phoneB)
     #expect(rig.locker.locks == 1)
 }
@@ -237,11 +251,11 @@ private struct Rig {
     let rig = await Rig()
     for _ in 0..<5 {
         rig.clock.advance(1)
-        rig.beacon(rssi: -60, epochOffset: -1)
+        rig.beacon(rssi: near, epochOffset: -1)
         rig.model.tick()
     }
     #expect(rig.model.zone == .near)
-    #expect(rig.model.smoothedRSSI == -60)
+    #expect(rig.model.smoothedRSSI == near)
 }
 
 @MainActor @Test func neverLocksWhileTheMacIsInUseInTheModel() async {
@@ -269,7 +283,7 @@ private struct Rig {
 @MainActor @Test func bluetoothOffOrUnauthorizedNeverLocks() async {
     for state in [ScannerState.poweredOff, .unauthorized, .unsupported, .unknown] {
         let rig = await Rig()
-        rig.ticks(5, rssi: -60)
+        rig.ticks(5, rssi: near)
         rig.scanner.state = state
         rig.ticks(120, rssi: nil)
         #expect(rig.locker.locks == 0, "state \(state)")
@@ -279,7 +293,7 @@ private struct Rig {
 
 @MainActor @Test func wakeClearsSamplesInTheModel() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     rig.activity.onWake?()
     rig.model.tick()
     #expect(rig.model.smoothedRSSI == nil)
@@ -325,7 +339,7 @@ private struct Rig {
 
 @MainActor @Test func turningOnRequiresNearAgain() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     rig.model.setEnabled(false, phoneID: phoneA.id)
     rig.model.setEnabled(true, phoneID: phoneA.id)
     rig.ticks(120, rssi: nil)
@@ -379,7 +393,7 @@ private struct Rig {
 
 @MainActor @Test func configIsSavedAndResetsTheMonitor() async {
     let rig = await Rig()
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     rig.model.config.thresholdDBm = -70
     rig.model.config.delay = 600
     #expect(rig.model.config.delay == 120)
@@ -401,6 +415,127 @@ private struct Rig {
 
 @MainActor @Test func beaconsAreIgnoredWhileOff() async {
     let rig = await Rig(enable: false)
-    rig.ticks(5, rssi: -60)
+    rig.ticks(5, rssi: near)
     #expect(rig.model.smoothedRSSI == nil)
+}
+
+// MARK: ruling R33
+
+@MainActor @Test func stalledScannerNeverLocks() async {
+    let rig = await Rig()
+    rig.ticks(5, rssi: near)
+    // The scanner stops reporting anything at all: that is not the phone leaving.
+    rig.ticks(300, rssi: nil, heard: false)
+    #expect(rig.locker.locks == 0)
+    #expect(rig.model.blockers.contains(.scannerStalled))
+    // It asks for a fresh scan, at most once every 30 s: stalled from about 21 s, so 9 or 10 times.
+    #expect((9...10).contains(rig.scanner.rescans))
+}
+
+@MainActor @Test func heartbeatClearsStalled() async {
+    let rig = await Rig()
+    rig.ticks(5, rssi: near)
+    rig.ticks(25, rssi: nil, heard: false)
+    #expect(rig.model.blockers.contains(.scannerStalled))
+    // Other devices are heard again, but the phone is not: stalled clears, and the stall disarmed
+    // it, so no lock follows.
+    rig.ticks(1, rssi: nil)
+    #expect(!rig.model.blockers.contains(.scannerStalled))
+    rig.ticks(300, rssi: nil)
+    #expect(rig.locker.locks == 0)
+    // The phone near again, then away: locks.
+    rig.walkAway()
+    #expect(rig.locker.locks == 1)
+}
+
+@MainActor @Test func phoneBeaconCountsAsHeard() async {
+    let rig = await Rig()
+    // Only the phone is on the air: its own beacons keep the scanner from looking stalled.
+    rig.ticks(60, rssi: near, heard: false)
+    #expect(!rig.model.blockers.contains(.scannerStalled))
+    #expect(rig.scanner.rescans == 0)
+}
+
+@MainActor @Test func notStalledRightAfterTurningOn() async {
+    let rig = await Rig(enable: false)
+    rig.ticks(100, rssi: nil, heard: false)
+    rig.model.setEnabled(true, phoneID: phoneA.id)
+    rig.model.tick()
+    #expect(!rig.model.blockers.contains(.scannerStalled))
+}
+
+@MainActor @Test func powerAssertionBlocksLock() async {
+    let rig = await Rig()
+    // A video call keeps the screen awake while the person sits still with the phone in a bag.
+    rig.activity.screenKeptAwake = true
+    rig.walkAway()
+    #expect(rig.locker.locks == 0)
+    #expect(rig.model.blockers.contains(.macInUse))
+    // Shown in test mode too.
+    rig.model.testMode = true
+    rig.walkAway()
+    #expect(rig.model.decision == .none)
+    #expect(rig.model.blockers.contains(.macInUse))
+}
+
+@MainActor @Test func idleBelowSixtySecondsNeverLocksInTheModel() async {
+    let rig = await Rig()
+    rig.activity.idle = 59
+    rig.walkAway()
+    rig.ticks(300, rssi: nil)
+    #expect(rig.locker.locks == 0)
+    rig.activity.idle = 60
+    rig.ticks(1, rssi: nil)
+    #expect(rig.locker.locks == 1)
+}
+
+@MainActor @Test func futureSessionStampIsNotRecent() async {
+    let rig = await Rig()
+    rig.model.disconnected()
+    // The wall clock steps back an hour: the stored end is now in the future.
+    rig.clock.now = rig.clock.now.addingTimeInterval(-3_600)
+    rig.walkAway()
+    #expect(rig.locker.locks == 0)
+    #expect(rig.model.blockers.contains(.noRecentSession))
+}
+
+@MainActor @Test func wallClockStepDoesNotMoveTheHolds() async {
+    let rig = await Rig()
+    rig.ticks(5, rssi: near)
+    // Away; ten seconds in, the wall clock jumps forward a day. The holds run on the monotonic
+    // clock, so the lock still comes at the plain-absence time, not at once.
+    rig.ticks(30, rssi: nil)
+    rig.clock.now = rig.clock.now.addingTimeInterval(86_400)
+    rig.ticks(20, rssi: nil)
+    #expect(rig.locker.locks == 0)
+    rig.ticks(10, rssi: nil)
+    #expect(rig.locker.locks == 1)
+}
+
+@MainActor @Test func discoveryKeyChangeResets() async {
+    let rig = await Rig()
+    rig.ticks(5, rssi: near)
+    // A new discovery key: beacons made with the old one no longer match, and the monitor starts over.
+    rig.model.setPhones([phoneA, phoneB], discoveryKey: Data(repeating: 0x43, count: 32))
+    #expect(!rig.model.monitor.armed)
+    rig.ticks(120, rssi: nil)
+    #expect(rig.locker.locks == 0)
+}
+
+// MARK: the pure time rules
+
+@Test func sessionRecencyRules() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let t = now.timeIntervalSince1970
+    #expect(ProximityModel.isRecent(sessionEnded: t, now: now))
+    #expect(ProximityModel.isRecent(sessionEnded: t - 30 * 60, now: now))
+    #expect(!ProximityModel.isRecent(sessionEnded: t - 30 * 60 - 1, now: now))
+    #expect(!ProximityModel.isRecent(sessionEnded: t + 1, now: now)) // the clock stepped back
+    #expect(!ProximityModel.isRecent(sessionEnded: nil, now: now))
+}
+
+@Test func stallRules() {
+    #expect(!ProximityModel.isStalled(lastHeard: 100, at: 120))
+    #expect(ProximityModel.isStalled(lastHeard: 100, at: 120.5))
+    #expect(ProximityModel.isStalled(lastHeard: nil, at: 0))
 }

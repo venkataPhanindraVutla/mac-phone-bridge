@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import IOKit.pwr_mgt
 
 /// What the Mac is doing: whether someone is using it, and whether its screen is locked or asleep.
 @MainActor
@@ -9,6 +10,8 @@ public protocol MacActivity: AnyObject {
     func idleSeconds() -> TimeInterval
     var screenLocked: Bool { get }
     var asleep: Bool { get }
+    /// Some process keeps the screen from idle sleep: a video call, video playback, a presentation.
+    var screenKeptAwake: Bool { get }
     /// Called on the main actor when the Mac or its screens wake.
     var onWake: (() -> Void)? { get set }
 }
@@ -43,6 +46,21 @@ public final class SystemMacActivity: MacActivity {
         if (session["CGSSessionScreenIsLocked"] as? Bool) == true { return true }
         if let onConsole = session["kCGSSessionOnConsoleKey"] as? Bool, !onConsole { return true }
         return false
+    }
+
+    /// Any `PreventUserIdleDisplaySleep` or `NoDisplaySleepAssertion` power assertion, from any
+    /// process. If the status can't be read, it reads as kept awake.
+    public var screenKeptAwake: Bool {
+        var status: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsStatus(&status) == kIOReturnSuccess,
+              let counts = status?.takeRetainedValue() as? [String: Any] else { return true }
+        return Self.keepsScreenAwake(counts.compactMapValues { ($0 as? NSNumber)?.intValue })
+    }
+
+    /// Whether assertion counts by type include one that keeps the screen awake.
+    nonisolated static func keepsScreenAwake(_ counts: [String: Int]) -> Bool {
+        [kIOPMAssertionTypePreventUserIdleDisplaySleep, kIOPMAssertionTypeNoDisplaySleep]
+            .contains { (counts[$0] ?? 0) > 0 }
     }
 
     /// Every wake notification counts, even one whose sleep went unseen: a reset is harmless.

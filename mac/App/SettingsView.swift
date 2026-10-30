@@ -80,6 +80,8 @@ struct SettingsView: View {
             reloadNotify()
         }
         .onChange(of: model.currentPhone?.id) { _, _ in reloadNotify() }
+        // Test mode never locks: it must not stay on once Settings closes.
+        .onDisappear { model.proximity.testMode = false }
     }
 
     private var apps: [(package: String, name: String)] {
