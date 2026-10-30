@@ -78,6 +78,8 @@
     <string name="home_dnd_mac_to_phone">Your Mac\'s Focus turns on Do Not Disturb here.</string>
     <string name="home_dnd_needs_shortcuts">Install the two Shortcuts on your Mac to let your phone turn on Focus.</string>
     <string name="home_dnd_mac_off">Turn on Focus sync in your Mac\'s settings.</string>
+    <string name="home_dnd_mac_needs_focus_access">Allow Focus status access in your Mac\'s settings.</string>
+    <string name="home_dnd_mac_cant_read_focus">Your Mac can\'t read Focus status in this build.</string>
     <string name="home_dnd_needs_access">Android Mirroring needs Do Not Disturb access to apply your Mac\'s Focus here. Allow it in Settings.</string>
     <!-- TalkBack for the row's Allow button, so it is told apart from Find my phone's. -->
     <string name="home_dnd_allow_description">Allow Do Not Disturb access for Focus sync</string>

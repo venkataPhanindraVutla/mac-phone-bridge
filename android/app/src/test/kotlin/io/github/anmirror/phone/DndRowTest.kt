@@ -4,6 +4,7 @@ import io.github.anmirror.protocol.v1.AvailabilityReason
 import io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_NEEDS_PERMISSION
 import io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP
 import io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_OFF_BY_USER
+import io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE
 import io.github.anmirror.protocol.v1.DndAvailability
 import io.github.anmirror.protocol.v1.FeatureAvailability
 import kotlin.test.Test
@@ -94,10 +95,19 @@ class DndRowTest {
         )
     }
 
-    @Test fun macThatCannotReadFocusShowsOnlyTheOtherDirection() {
+    @Test fun macThatCannotReadFocusSaysWhy() {
         assertEquals(
-            listOf(R.string.home_dnd_phone_to_mac),
+            listOf(R.string.home_dnd_phone_to_mac, R.string.home_dnd_mac_needs_focus_access),
             dndRowLines(on = true, access = true, mac = mac(sends = AVAILABILITY_REASON_NEEDS_PERMISSION, applies = null)),
+        )
+        assertEquals(
+            listOf(R.string.home_dnd_phone_to_mac, R.string.home_dnd_mac_cant_read_focus),
+            dndRowLines(on = true, access = true, mac = mac(sends = AVAILABILITY_REASON_UNAVAILABLE, applies = null)),
+        )
+        // Said even without access here: the Mac side has to be fixed first.
+        assertEquals(
+            listOf(R.string.home_dnd_phone_to_mac, R.string.home_dnd_mac_needs_focus_access),
+            dndRowLines(on = true, access = false, mac = mac(sends = AVAILABILITY_REASON_NEEDS_PERMISSION, applies = null)),
         )
     }
 }

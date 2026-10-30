@@ -2,6 +2,7 @@ package io.github.anmirror.phone.remote
 
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -25,6 +26,7 @@ import io.github.anmirror.feature.input.TrackpadGestures
 import io.github.anmirror.feature.input.TrackpadMath
 import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.AppTheme
+import io.github.anmirror.phone.TAG
 import io.github.anmirror.phone.inputOpen
 import io.github.anmirror.phone.trackpadLine
 import io.github.anmirror.phone.ui.TrackpadScreen
@@ -92,7 +94,12 @@ class TrackpadActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        sender = InputSender(scope = graph.scope, send = graph::sendInput, clock = SystemClock::uptimeMillis)
+        sender = InputSender(
+            scope = graph.scope,
+            send = graph::sendInput,
+            clock = SystemClock::uptimeMillis,
+            log = { Log.w(TAG, it) },
+        )
     }
 
     override fun onPause() {

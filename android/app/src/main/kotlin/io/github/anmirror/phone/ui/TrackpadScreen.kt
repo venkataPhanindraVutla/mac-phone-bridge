@@ -37,8 +37,10 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import io.github.anmirror.feature.input.PointerSnapshot
 import io.github.anmirror.feature.input.Touch
 import io.github.anmirror.feature.input.TouchFrame
+import io.github.anmirror.feature.input.isPointerCancel
 import io.github.anmirror.phone.R
 
 enum class TrackpadTab { TRACKPAD, REMOTE }
@@ -108,12 +110,9 @@ fun TrackpadScreen(
     }
 }
 
-/**
- * Compose's ACTION_CANCEL: every pointer up and already consumed (a real lift is not), so it is
- * not taken for a lift, which could click.
- */
+/** Compose's ACTION_CANCEL ([isPointerCancel]), so it is not taken for a lift, which could click. */
 private fun PointerEvent.isCancel(): Boolean =
-    type == PointerEventType.Release && changes.isNotEmpty() && changes.all { !it.pressed && it.isConsumed }
+    isPointerCancel(type == PointerEventType.Release, changes.map { PointerSnapshot(it.pressed, it.previousPressed, it.isConsumed) })
 
 @Composable
 private fun TrackpadSurface(onFrame: (TouchFrame) -> Boolean, onCancel: () -> Unit, modifier: Modifier) {

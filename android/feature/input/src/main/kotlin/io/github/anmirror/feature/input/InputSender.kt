@@ -37,6 +37,7 @@ class InputSender(
     private val minIntervalMs: Long = 8,
     private val keepaliveMs: Long = KEEPALIVE_MS,
     private val clock: () -> Long,
+    private val log: (String) -> Unit = {},
 ) {
     private val lock = Any()
     private var moveDx = 0f
@@ -51,6 +52,9 @@ class InputSender(
     private var closed = false
     /** When (ms) the loop last took a frame to send. */
     private var lastSentAt = Long.MIN_VALUE
+
+    /** A failed send was logged; only the loop touches it. */
+    private var failureLogged = false
 
     // Slots are counted in 1/120 ms, so the 120 Hz cadence (8⅓ ms) adds up exactly.
     private val slotUnits = maxOf(minIntervalMs * UNITS_PER_MS, 1_000L * UNITS_PER_MS / MAX_PER_SECOND)
@@ -136,8 +140,13 @@ class InputSender(
                     send(step.type, step.message)
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     // A failed send is a dropped frame, like a closed gate; the loop goes on.
+                    // Logged once per sender, by class only (a message could carry content).
+                    if (!failureLogged) {
+                        failureLogged = true
+                        log("input: send failed (${e.javaClass.simpleName})")
+                    }
                 }
                 is Step.Wait -> withTimeoutOrNull(step.ms) { wake.receive() }
                 Step.Idle -> wake.receive()

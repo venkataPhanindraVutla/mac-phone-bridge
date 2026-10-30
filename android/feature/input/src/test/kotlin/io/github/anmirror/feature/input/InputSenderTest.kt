@@ -222,6 +222,27 @@ class InputSenderTest {
         assertEquals(listOf(MessageType.INPUT_BUTTON, MessageType.INPUT_BUTTON), types())
     }
 
+    @Test fun failedSendIsLoggedOnceByClassOnly() = runTest {
+        val logs = mutableListOf<String>()
+        var calls = 0
+        val s = InputSender(
+            scope = backgroundScope,
+            send = { _, _ ->
+                calls++
+                throw IllegalStateException("secret detail")
+            },
+            clock = { testScheduler.currentTime },
+            log = { logs += it },
+        )
+        s.click(MOUSE_BUTTON_LEFT, 1)
+        s.key(RemoteKey.REMOTE_KEY_NEXT_SLIDE)
+        runCurrent()
+        s.move(1f, 0f)
+        runCurrent()
+        assertEquals(3, calls) // the loop goes on
+        assertEquals(listOf("input: send failed (IllegalStateException)"), logs)
+    }
+
     @Test fun nothingSentWhenGateIsClosed() = runTest {
         var attempts = 0
         val s = sender { type, m ->

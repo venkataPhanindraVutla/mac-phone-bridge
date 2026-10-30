@@ -76,9 +76,15 @@ fun dndRowLines(on: Boolean, access: Boolean, mac: DndAvailability?): List<Int> 
     return listOfNotNull(phoneToMac, macToPhone).distinct()
 }
 
+/**
+ * Why the Mac doesn't do its part: shortcuts missing (applying), Focus status not allowed or not
+ * readable in that build (sending), or its setting off (either).
+ */
 private fun FeatureAvailability.macReasonLine(): Int? = when (reason) {
     AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP -> R.string.home_dnd_needs_shortcuts
     AvailabilityReason.AVAILABILITY_REASON_OFF_BY_USER -> R.string.home_dnd_mac_off
+    AvailabilityReason.AVAILABILITY_REASON_NEEDS_PERMISSION -> R.string.home_dnd_mac_needs_focus_access
+    AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE -> R.string.home_dnd_mac_cant_read_focus
     else -> null
 }
 
