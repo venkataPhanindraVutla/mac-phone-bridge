@@ -238,13 +238,22 @@ class TransferEngine(
         x.complete.complete(null)
     }
 
-    /** [interrupt], and for a transfer whose worker has not begun, finishes it right here. */
+    /**
+     * [interrupt], and for a transfer whose worker has not begun, finishes it right here. A send
+     * answering a Mac request (`request_id` set) that is stopped here before its offer went says
+     * `files.failed` with that request ID, so the Mac does not wait out its deadline. Nothing is
+     * sent when the peer itself ended it ([Notify.NONE]: a disconnect, its cancel or failure).
+     */
     private fun stop(x: Xfer, reason: TransferError, notify: Notify) {
         interrupt(x, reason, notify)
         if (!x.started && x.concluded.compareAndSet(false, true)) {
             val abort = x.abort.get()!!
             finish(x, stateFor(abort.reason), abort.reason)
-            if (abort.notify != Notify.NONE && x.peerKnows) scope.launch { notifyPeer(x, abort.notify, abort.reason) }
+            if (abort.notify != Notify.NONE && x.peerKnows) {
+                scope.launch { notifyPeer(x, abort.notify, abort.reason) }
+            } else if (abort.notify != Notify.NONE && x.direction == Direction.SEND && x.requestId != 0L) {
+                scope.launch { notifyPeer(x, Notify.FAILED, abort.reason) }
+            }
         }
     }
 

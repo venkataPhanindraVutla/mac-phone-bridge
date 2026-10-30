@@ -350,8 +350,9 @@ class AppGraph private constructor(context: Context) {
 
     /**
      * Sends a `files.*` message when [transferShared]; false (and nothing sent) otherwise. A
-     * screenshot offer also needs [screenshotsOpen], a photo offer [photosOpen], and a browse.read
-     * answer [browseOpen] (R5): the transfer fails before the Mac hears of it.
+     * screenshot offer also needs [screenshotsOpen], a photo offer [photosOpen], a browse.read
+     * answer [browseOpen], and a file the user shared [filesShared] (R5): the transfer fails
+     * before the Mac hears of it.
      */
     suspend fun sendTransfer(type: String, payload: MessageLite): Boolean {
         if (!transferShared()) return false
@@ -359,6 +360,7 @@ class AppGraph private constructor(context: Context) {
             !phoneOfferAllowed(
                 payload.kind, payload.requestId,
                 screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen(), browseOpen = browseOpen(),
+                filesShared = filesShared(),
             )
         ) {
             return false
@@ -652,6 +654,16 @@ class AppGraph private constructor(context: Context) {
             if (size >= KEEP_CANCELLED) remove(first())
             return super.add(element)
         }
+    }
+
+    /**
+     * Photos or screenshots closed (the Mac stopped sharing it, the switch went off, or access
+     * was withdrawn): its sends still queued or under way stop, and the Mac is told.
+     */
+    fun stopSends(kind: TransferKind) {
+        val ids = sendsToStop(kind, transfers.transfers.value)
+        ids.forEach(transfers::cancel)
+        if (ids.isNotEmpty()) Log.i(TAG, "transfers: stopped ${ids.size} sends of $kind")
     }
 
     /** The notification's Cancel. */

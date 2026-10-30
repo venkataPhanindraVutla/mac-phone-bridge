@@ -707,4 +707,41 @@ class TransferEngineTest {
         assertFalse(h.status("w2").browseTarget)
         assertEquals(0L, h.status("w1").requestId)
     }
+
+    @Test
+    fun requestedSendStoppedBeforeItsOfferSaysFailedWithTheRequest() {
+        // M1: a send answering a Mac request, stopped here while queued, must not leave the Mac
+        // waiting for an offer that never comes.
+        val h = harness(Harness())
+        val first = h.engine.send(listOf(MemSource("a.bin", ByteArray(1)))).single()
+        h.awaitState(first, TransferState.WAITING) // holds the send queue
+        val read = h.engine.send(listOf(MemSource("b.bin", ByteArray(1))), requestId = 9).single()
+        val plain = h.engine.send(listOf(MemSource("c.bin", ByteArray(1)))).single()
+        h.engine.cancel(read)
+        h.engine.cancel(plain)
+        h.awaitState(read, TransferState.CANCELLED)
+        h.awaitState(plain, TransferState.CANCELLED)
+        h.awaitSent(MessageType.FILES_FAILED)
+        val failed = h.last<TransferFailed>(MessageType.FILES_FAILED)
+        assertEquals(read, failed.transferId)
+        assertEquals(9L, failed.requestId)
+        assertEquals(TransferError.TRANSFER_ERROR_CANCELLED, failed.reason)
+        Thread.sleep(100)
+        // The plain one the Mac never heard of: nothing. Neither was ever offered.
+        assertEquals(1, h.types().count { it == MessageType.FILES_FAILED })
+        assertFalse(MessageType.FILES_CANCEL in h.types())
+        assertEquals(listOf(first), h.sent.filter { it.first == MessageType.FILES_OFFER }.map { (it.second as TransferOffer).transferId })
+    }
+
+    @Test
+    fun requestedSendDroppedByADisconnectSendsNothing() {
+        val h = harness(Harness())
+        val first = h.engine.send(listOf(MemSource("a.bin", ByteArray(1)))).single()
+        h.awaitState(first, TransferState.WAITING)
+        val read = h.engine.send(listOf(MemSource("b.bin", ByteArray(1))), requestId = 9).single()
+        h.engine.onDisconnected()
+        h.awaitState(read, TransferState.FAILED)
+        Thread.sleep(100)
+        assertFalse(MessageType.FILES_FAILED in h.types())
+    }
 }

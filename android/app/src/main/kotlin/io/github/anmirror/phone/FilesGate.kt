@@ -2,6 +2,7 @@ package io.github.anmirror.phone
 
 import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.protocol.v1.TransferKind
+import io.github.anmirror.transfer.Direction
 import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
 
@@ -25,9 +26,9 @@ fun offerRefusal(hasTarget: Boolean, shared: Set<String>, browseOpen: Boolean): 
 /**
  * R5 for the phone's own offers, on top of [bulkShared]: a screenshot goes only while its
  * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable), a
- * photo only while photos is (photos.v1, the switch, some photos readable), and a file answering a
- * browse.read ([requestId] set) only while browse is; any other bulk capability is not enough. A
- * file the user shared (no request) needs nothing more.
+ * photo only while photos is (photos.v1, the switch, some photos readable), a file answering a
+ * browse.read ([requestId] set) only while browse is, and a file the user shared (no request) only
+ * while the Mac shares files.v1 ([filesShared]); any other bulk capability is not enough.
  */
 fun phoneOfferAllowed(
     kind: TransferKind,
@@ -35,11 +36,19 @@ fun phoneOfferAllowed(
     screenshotsOpen: Boolean,
     photosOpen: Boolean,
     browseOpen: Boolean,
+    filesShared: Boolean,
 ): Boolean = when (kind) {
     TransferKind.TRANSFER_KIND_SCREENSHOT -> screenshotsOpen
     TransferKind.TRANSFER_KIND_PHOTO -> photosOpen
-    else -> requestId == 0L || browseOpen
+    else -> if (requestId == 0L) filesShared else browseOpen
 }
+
+/**
+ * The phone's sends of [kind] still queued, waiting or under way: when photos or screenshots
+ * close, these stop (a queued one would otherwise go out later, the feature off).
+ */
+fun sendsToStop(kind: TransferKind, fresh: List<TransferStatus>): List<String> =
+    fresh.filter { it.direction == Direction.SEND && it.kind == kind && it.state.isOngoing() }.map { it.id }
 
 /**
  * Which tracked shared files can be closed: those whose transfer ended, or dropped off the

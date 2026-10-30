@@ -41,7 +41,11 @@ class FilesGateTest {
         screenshotsOpen: Boolean = false,
         photosOpen: Boolean = false,
         browseOpen: Boolean = false,
-    ) = phoneOfferAllowed(kind, requestId, screenshotsOpen = screenshotsOpen, photosOpen = photosOpen, browseOpen = browseOpen)
+        filesShared: Boolean = true,
+    ) = phoneOfferAllowed(
+        kind, requestId,
+        screenshotsOpen = screenshotsOpen, photosOpen = photosOpen, browseOpen = browseOpen, filesShared = filesShared,
+    )
 
     @Test fun screenshotOfferNeedsScreenshotsOpen() {
         // files.v1 (or any bulk feature) shared is not enough for a screenshot.
@@ -78,5 +82,32 @@ class FilesGateTest {
         // "dropped" ended and fell off the engine's recent list.
         val tracked = listOf("queued", "waiting", "active", "done", "failed", "cancelled", "dropped")
         assertEquals(setOf("done", "failed", "cancelled", "dropped"), sharesToRelease(tracked, fresh).toSet())
+    }
+
+    @Test fun sharedFileOfferNeedsFilesV1() {
+        // A file the user shared (no request) needs files.v1; another bulk feature is not enough.
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_FILE, filesShared = false, screenshotsOpen = true, photosOpen = true, browseOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_FILE, filesShared = true))
+        // A browse.read answer needs browse open, not files.v1.
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_FILE, requestId = 5, browseOpen = true, filesShared = false))
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_FILE, requestId = 5, browseOpen = false, filesShared = true))
+    }
+
+    @Test fun closingAFeatureStopsItsOngoingSendsOnly() {
+        fun st(id: String, kind: TransferKind, state: TransferState, dir: Direction = Direction.SEND) =
+            TransferStatus(id, dir, "n", 1, 0, kind, state)
+        val fresh = listOf(
+            st("p-queued", TransferKind.TRANSFER_KIND_PHOTO, TransferState.QUEUED),
+            st("p-waiting", TransferKind.TRANSFER_KIND_PHOTO, TransferState.WAITING),
+            st("p-active", TransferKind.TRANSFER_KIND_PHOTO, TransferState.ACTIVE),
+            st("p-done", TransferKind.TRANSFER_KIND_PHOTO, TransferState.DONE),
+            st("p-failed", TransferKind.TRANSFER_KIND_PHOTO, TransferState.FAILED),
+            st("s-queued", TransferKind.TRANSFER_KIND_SCREENSHOT, TransferState.QUEUED),
+            st("f-active", TransferKind.TRANSFER_KIND_FILE, TransferState.ACTIVE),
+            st("r-photo", TransferKind.TRANSFER_KIND_PHOTO, TransferState.ACTIVE, Direction.RECEIVE),
+        )
+        assertEquals(listOf("p-queued", "p-waiting", "p-active"), sendsToStop(TransferKind.TRANSFER_KIND_PHOTO, fresh))
+        assertEquals(listOf("s-queued"), sendsToStop(TransferKind.TRANSFER_KIND_SCREENSHOT, fresh))
+        assertTrue(sendsToStop(TransferKind.TRANSFER_KIND_SCREENSHOT, emptyList()).isEmpty())
     }
 }

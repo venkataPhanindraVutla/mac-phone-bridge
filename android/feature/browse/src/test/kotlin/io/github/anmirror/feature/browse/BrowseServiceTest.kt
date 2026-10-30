@@ -59,6 +59,11 @@ private open class MemSink : IncomingFile {
     override fun abort() { aborted = true }
 }
 
+/** A sink whose volume can't say how much room it has. */
+private class BlindSink : MemSink(), SpaceAware {
+    override fun freeBytes(): Long = throw IllegalStateException("statvfs")
+}
+
 /** A sink on a nearly full volume. */
 private class TightSink(private val free: Long) : MemSink(), SpaceAware {
     override fun freeBytes(): Long = free
@@ -566,6 +571,30 @@ class BrowseServiceTest {
         // m3 then gets its turn (this test's sinks refuse a plain offer, so it fails): it was not cancelled.
         awaitUntil("m3 ran") { state("m3") != TransferState.QUEUED }
         assertTrue(state("m3") != TransferState.CANCELLED)
+    }
+
+    @Test fun readDescriptorIsClosedWhenHandingItOverThrows() {
+        val f = ClosableFile("a.txt")
+        trees.add(FakeTree(picked, readable = mapOf("a.txt" to f)))
+        val browse = BrowseService(
+            roots = { trees.toList() },
+            send = { type, payload -> sent.add(type to payload) },
+            transfers = engine,
+            onQueued = { _, _ -> throw IllegalStateException("tracking failed") },
+            scope = scope,
+            io = Dispatchers.IO,
+        )
+        val thrown = runCatching { runBlocking { browse.onRead(path(3, picked.id, "a.txt")) } }.exceptionOrNull()
+        assertIs<IllegalStateException>(thrown)
+        assertTrue(f.closed, "the descriptor is not leaked")
+    }
+
+    @Test fun freeSpaceThatCantBeReadIsUnknownRoom() {
+        val sink = BlindSink()
+        val browse = service(FakeTree(picked, sink = sink))
+        val result = runCatching { browse.sinkFor(writeOffer(picked.id, "")) }
+        assertIs<SinkResult.Ready>(result.getOrNull(), "the write goes ahead, as with no figure")
+        assertFalse(sink.aborted)
     }
 
     private fun TransferOfferPlain(id: String) = TransferOffer.newBuilder()

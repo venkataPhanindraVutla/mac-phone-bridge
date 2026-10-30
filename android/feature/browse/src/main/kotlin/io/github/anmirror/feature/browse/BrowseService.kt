@@ -156,23 +156,30 @@ class BrowseService(
             }
             is TreeResult.Ok -> {
                 val file = result.value
-                // The engine only queues here: starting the transfer and tracking it happen together.
-                val id = synchronized(lock) {
-                    pending -= mine
-                    if (mine.cancelled != null) {
-                        null
-                    } else {
-                        transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
-                            .also { tracked[it] = Tracked(p.rootId, write = false, dir = emptyList()) }
+                // The descriptor is closed here unless [onQueued] took it (it closes it when the
+                // transfer ends): queueing or handing it over may throw.
+                var handedOver = false
+                try {
+                    // The engine only queues here: starting the transfer and tracking it happen together.
+                    val id = synchronized(lock) {
+                        pending -= mine
+                        if (mine.cancelled != null) {
+                            null
+                        } else {
+                            transfers.send(listOf(file), TransferKind.TRANSFER_KIND_FILE, p.requestId).single()
+                                .also { tracked[it] = Tracked(p.rootId, write = false, dir = emptyList()) }
+                        }
                     }
+                    if (id == null) {
+                        log("browse: read ${p.requestId} cancelled while opening")
+                        return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND)))
+                    }
+                    onQueued(id, file)
+                    handedOver = true
+                    log("browse: read ${p.requestId} queued as $id")
+                } finally {
+                    if (!handedOver) (file as? Closeable)?.let { runCatching { it.close() } }
                 }
-                if (id == null) {
-                    (file as? Closeable)?.close()
-                    log("browse: read ${p.requestId} cancelled while opening")
-                    return answer("read", p.requestId, Ran(null, TreeResult.Err(BrowseOutcome.BROWSE_OUTCOME_NOT_FOUND)))
-                }
-                onQueued(id, file)
-                log("browse: read ${p.requestId} queued as $id")
             }
         }
     }
@@ -256,21 +263,29 @@ class BrowseService(
         return when (val r = tree.openWrite(target.dirPath, offer.name, target.overwrite)) {
             is TreeResult.Ok -> {
                 val file = r.value
-                // Off the primary volume the engine can't know the room; the part's own volume can.
-                if (!fitsFreeSpace(offer.size, (file as? SpaceAware)?.freeBytes())) {
+                try {
+                    // Off the primary volume the engine can't know the room; the part's own volume
+                    // can. A volume that can't say is unknown room (the write goes ahead).
+                    val free = runCatching { (file as? SpaceAware)?.freeBytes() }.getOrNull()
+                    if (!fitsFreeSpace(offer.size, free)) {
+                        runCatching { file.abort() }
+                        log("browse: write ${offer.transferId} refused NO_SPACE")
+                        return SinkResult.Refused(TransferError.TRANSFER_ERROR_NO_SPACE)
+                    }
+                    val cancelled = synchronized(lock) {
+                        mine.cancelled.also { if (it == null) tracked[offer.transferId] = Tracked(tree.root.id, write = true, dir = mine.dir) }
+                    }
+                    if (cancelled != null) {
+                        runCatching { file.abort() }
+                        log("browse: write ${offer.transferId} cancelled while opening")
+                        return SinkResult.Refused(cancelled)
+                    }
+                    SinkResult.Ready(file)
+                } catch (e: Throwable) {
+                    // Whatever went wrong, the part does not stay behind.
                     runCatching { file.abort() }
-                    log("browse: write ${offer.transferId} refused NO_SPACE")
-                    return SinkResult.Refused(TransferError.TRANSFER_ERROR_NO_SPACE)
+                    throw e
                 }
-                val cancelled = synchronized(lock) {
-                    mine.cancelled.also { if (it == null) tracked[offer.transferId] = Tracked(tree.root.id, write = true, dir = mine.dir) }
-                }
-                if (cancelled != null) {
-                    runCatching { file.abort() }
-                    log("browse: write ${offer.transferId} cancelled while opening")
-                    return SinkResult.Refused(cancelled)
-                }
-                SinkResult.Ready(file)
             }
             is TreeResult.Err -> {
                 if (r.outcome == BrowseOutcome.BROWSE_OUTCOME_REVOKED) {

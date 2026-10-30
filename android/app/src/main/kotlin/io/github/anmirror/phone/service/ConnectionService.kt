@@ -76,6 +76,7 @@ import io.github.anmirror.protocol.v1.PhotosListRequest
 import io.github.anmirror.protocol.v1.PhotosThumbsRequest
 import io.github.anmirror.protocol.v1.SharedLink
 import io.github.anmirror.protocol.v1.SharedText
+import io.github.anmirror.protocol.v1.TransferKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -462,7 +463,13 @@ class ConnectionService : LifecycleService() {
                         val availability = mediaFeatureAvailability(access, on, partialWorks = false)
                         graph.manager.send(Channel.CHANNEL_SCREENSHOTS, MessageType.SCREENSHOTS_AVAILABILITY, availability)
                     }
-                    if (shared && on && access == MediaAccess.FULL) startScreenshotObserver() else stopScreenshotObserver()
+                    if (shared && on && access == MediaAccess.FULL) {
+                        startScreenshotObserver()
+                    } else {
+                        stopScreenshotObserver()
+                        // Screenshots found while it was open but not yet sent go no further.
+                        graph.stopSends(TransferKind.TRANSFER_KIND_SCREENSHOT)
+                    }
                 }
         }
     }
@@ -499,7 +506,11 @@ class ConnectionService : LifecycleService() {
                         val availability = mediaFeatureAvailability(access, on, partialWorks = true)
                         graph.manager.send(Channel.CHANNEL_PHOTOS, MessageType.PHOTOS_AVAILABILITY, availability)
                     }
-                    if (!(shared && on && access != MediaAccess.NONE)) graph.photos.stop()
+                    if (!(shared && on && access != MediaAccess.NONE)) {
+                        graph.photos.stop()
+                        // Fetches queued or under way stop too (the Mac is told).
+                        graph.stopSends(TransferKind.TRANSFER_KIND_PHOTO)
+                    }
                 }
         }
     }
