@@ -26,13 +26,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  * key, laser) is sent in the order it came, right after the pending move and scroll it flushes.
  *
  * It tracks the held buttons and the laser: [close] sends an up for each and the laser off, then
- * stops. [send] does the gating (it returns false and sends nothing while the feature is closed).
+ * stops. While a button is held or the laser is on and nothing has been sent for [keepaliveMs]
+ * (2 s), it sends `input.button{down}` for each held button and `input.laser{on}` again (ruling
+ * R35, SPEC 23), so the Mac's 5 s silence release doesn't drop a still drag or hide the laser. [send] does the gating (it returns false and sends nothing while the feature is closed).
  * The methods may be called from any thread.
  */
 class InputSender(
     private val scope: CoroutineScope,
     private val send: suspend (String, MessageLite) -> Boolean,
     private val minIntervalMs: Long = 8,
+    private val keepaliveMs: Long = KEEPALIVE_MS,
     private val clock: () -> Long,
 ) {
     private val lock = Any()
@@ -46,6 +49,8 @@ class InputSender(
     private val held = LinkedHashSet<MouseButton>()
     private var laserOn = false
     private var closed = false
+    /** When (ms) the loop last took a frame to send. */
+    private var lastSentAt = Long.MIN_VALUE
 
     // Slots are counted in 1/120 ms, so the 120 Hz cadence (8⅓ ms) adds up exactly.
     private val slotUnits = maxOf(minIntervalMs * UNITS_PER_MS, 1_000L * UNITS_PER_MS / MAX_PER_SECOND)
@@ -122,7 +127,11 @@ class InputSender(
 
     private suspend fun run() {
         while (true) {
-            when (val step = synchronized(lock) { next(clock()) }) {
+            val step = synchronized(lock) {
+                val now = clock()
+                next(now).also { if (it is Step.Send) lastSentAt = now }
+            }
+            when (step) {
                 is Step.Send -> try {
                     send(step.type, step.message)
                 } catch (e: CancellationException) {
@@ -137,7 +146,10 @@ class InputSender(
         }
     }
 
-    /** What to do now, under [lock]: the queue in order, then a move or scroll whose slot has come. */
+    /**
+     * What to do now, under [lock]: the queue in order, then a move or scroll whose slot has come,
+     * then the keepalive once it is due; else wait for the earliest of those.
+     */
     private fun next(now: Long): Step {
         queue.removeFirstOrNull()?.let { (type, message) -> return Step.Send(type, message) }
         val nowUnits = now * UNITS_PER_MS
@@ -145,7 +157,13 @@ class InputSender(
         val scrollDue = if (scrollDx != 0f || scrollDy != 0f) nextScrollAt else null
         if (moveDue != null && nowUnits >= moveDue) return takeMove(now)!!.let { (t, m) -> Step.Send(t, m) }
         if (scrollDue != null && nowUnits >= scrollDue) return takeScroll(now)!!.let { (t, m) -> Step.Send(t, m) }
-        val due = listOfNotNull(moveDue, scrollDue).minOrNull()
+        val keepaliveDue = if (!closed && (held.isNotEmpty() || laserOn)) lastSentAt + keepaliveMs else null
+        if (keepaliveDue != null && now >= keepaliveDue) {
+            for (b in held) queue.addLast(MessageType.INPUT_BUTTON to InputButton.newBuilder().setButton(b).setDown(true).build())
+            if (laserOn) queue.addLast(MessageType.INPUT_LASER to InputLaser.newBuilder().setOn(true).build())
+            return queue.removeFirst().let { (type, message) -> Step.Send(type, message) }
+        }
+        val due = listOfNotNull(moveDue, scrollDue, keepaliveDue?.times(UNITS_PER_MS)).minOrNull()
         return when {
             due != null -> Step.Wait(ceilDiv(due - nowUnits, UNITS_PER_MS).coerceAtLeast(1))
             closed -> Step.Stop
@@ -188,5 +206,7 @@ class InputSender(
     private companion object {
         const val MAX_PER_SECOND = 120L
         const val UNITS_PER_MS = MAX_PER_SECOND
+        /** SPEC 23: a held button or the laser is repeated at least this often (the Mac lets go after 5 s). */
+        const val KEEPALIVE_MS = 2_000L
     }
 }

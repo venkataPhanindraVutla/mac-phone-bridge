@@ -18,6 +18,14 @@ import SwiftProtobuf
 ///   once on disconnect, on switch-off, on quit and when Accessibility is revoked;
 /// - an up for a button this Mac isn't holding posts nothing.
 ///
+/// Keepalive (ruling R35): while a button is held or the laser is on, the phone repeats that frame
+/// at least every 2 s. A `down` for the button already held only stamps the frame time (no second
+/// press, click state kept); `laser{on}` shows the dot again if it was hidden. A `down` while
+/// nothing is held is always a new press, even when it is a keepalive after a 5 s silence release:
+/// frames arrive in order, so the phone still holds that button (it would have sent the up first
+/// otherwise). The pressed-again button can't stick: the phone's up on lift, its close, or the next
+/// 5 s silence lets go of it.
+///
 /// Accessibility is asked for (with the system prompt) only in `setEnabled(true)`; it is checked
 /// again every 2 s while on and connected, and on `recheckTrust()`. Handlers stay trivial: they
 /// post through `poster` and never wait on anything, so the ordered queue keeps flowing. Nothing
@@ -263,6 +271,7 @@ public final class InputModel: SessionFeature {
         if down {
             // One button at a time: a different one held is let go first.
             if let h = held, h.button != b { release(at: p, byPhone: false) }
+            // The same one again is the phone's keepalive (R35): admit() stamped it; nothing else.
             guard held == nil else { return }
             let count = pressCount(b, at: p)
             poster.button(b, down: true, at: p, clickCount: count)

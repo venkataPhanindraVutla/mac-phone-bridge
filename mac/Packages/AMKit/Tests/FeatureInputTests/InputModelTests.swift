@@ -376,6 +376,69 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     #expect(r.poster.ups == 1)
 }
 
+// R35: the phone repeats `down` for a held button (and `laser{on}`) at least every 2 s while
+// the finger is still.
+@MainActor @Test func repeatedDownDoesNotPressTwice() async {
+    let r = Rig()
+    await r.connect()
+    await r.button(.left, down: true)
+    // A still finger for 12 s, kept alive every 2 s: one press, no release, and the drag's
+    // click state is unchanged.
+    for _ in 1...6 {
+        r.advance(2)
+        r.model.tick()
+        await r.button(.left, down: true)
+    }
+    r.advance(2)
+    r.model.tick()
+    #expect(r.poster.calls == [.button(.left, down: true, CGPoint(x: 100, y: 100), count: 1)])
+    await r.move(4, 0)
+    #expect(r.poster.calls.last == .move(CGPoint(x: 104, y: 100), .left, 1))
+    await r.button(.left, down: false)
+    #expect(r.poster.ups == 1)
+
+    // After a 5 s silence release (a stalled link), the next keepalive presses again — the
+    // finger is still down — and the phone's up on lift lets go; nothing is ever left held.
+    await r.button(.left, down: true)
+    r.advance(5)
+    r.model.tick()
+    #expect(r.poster.ups == 2)
+    await r.button(.left, down: true)
+    #expect(r.poster.calls.last == .button(.left, down: true, CGPoint(x: 104, y: 100), count: 1))
+    await r.button(.left, down: false)
+    #expect(r.poster.ups == 3)
+    // And with no up at all, silence releases it again.
+    await r.button(.left, down: true)
+    r.advance(5)
+    r.model.tick()
+    #expect(r.poster.ups == 4)
+    #expect(!r.model.isTicking)
+}
+
+@MainActor @Test func repeatedLaserOnReshowsDot() async {
+    let r = Rig()
+    await r.connect()
+    await r.laserFrame(true)
+    // Kept alive every 2 s: never hidden.
+    for _ in 1...4 {
+        r.advance(2)
+        r.model.tick()
+        await r.laserFrame(true)
+    }
+    #expect(r.laser.hides == 0)
+    #expect(r.laser.visible)
+
+    // Hidden after a 5 s silence; the next keepalive shows it again where the pointer is.
+    r.advance(5)
+    r.model.tick()
+    #expect(!r.laser.visible)
+    #expect(!r.model.isTicking)
+    await r.laserFrame(true)
+    #expect(r.laser.visible)
+    #expect(r.laser.shown.last == CGPoint(x: 100, y: 100))
+    #expect(r.model.isTicking)
+}
+
 @MainActor @Test func longDragWithMovesIsNotReleased() async {
     let r = Rig()
     await r.connect()

@@ -541,7 +541,12 @@ Channel `INPUT`.
   the Mac applies its Natural scrolling setting.
 - The phone coalesces moves and scrolls to at most 120 Hz: deltas are summed, never queued.
 - `input.click.count` is the click count (2 = double-click).
-- A button held 5 s after the last `input.*` frame, or at disconnect, is released by the Mac.
+- A button held 5 s after the last `input.*` frame, or at disconnect, is released by the Mac, and
+  the laser is hidden.
+- While a button is held or the laser is on, the phone repeats that frame at least every 2 s
+  (`input.button{down: true}` for each held button, `input.laser{on: true}`). A `down` for the
+  button the Mac already holds only counts as a frame; `laser{on: true}` shows the dot again if it
+  was hidden.
 - The Mac drops frames beyond 240 in any 1 s window, except button-up and laser-off.
 - `REMOTE_KEY_PREV_SLIDE` and `REMOTE_KEY_NEXT_SLIDE` are the Left and Right arrow keys.
 

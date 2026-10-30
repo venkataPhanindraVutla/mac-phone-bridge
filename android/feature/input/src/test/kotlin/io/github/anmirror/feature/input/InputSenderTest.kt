@@ -163,6 +163,65 @@ class InputSenderTest {
         assertEquals(emptyList(), sent)
     }
 
+    @Test fun keepaliveRepeatsHeldFramesEvery2s() = runTest {
+        val s = sender()
+        val down = InputButton.newBuilder().setButton(MOUSE_BUTTON_LEFT).setDown(true).build()
+        val laserOn = InputLaser.newBuilder().setOn(true).build()
+        s.button(MOUSE_BUTTON_LEFT, down = true)
+        s.laser(true)
+        runCurrent()
+        // A still finger for 7 s: both repeated every 2 s from the last frame sent.
+        advanceTimeBy(7_001)
+        assertEquals(
+            listOf(
+                Sent(0, MessageType.INPUT_BUTTON, down), Sent(0, MessageType.INPUT_LASER, laserOn),
+                Sent(2_000, MessageType.INPUT_BUTTON, down), Sent(2_000, MessageType.INPUT_LASER, laserOn),
+                Sent(4_000, MessageType.INPUT_BUTTON, down), Sent(4_000, MessageType.INPUT_LASER, laserOn),
+                Sent(6_000, MessageType.INPUT_BUTTON, down), Sent(6_000, MessageType.INPUT_LASER, laserOn),
+            ),
+            sent,
+        )
+
+        // Any frame counts: while moves keep going nothing is repeated, and the 2 s run from the last one.
+        sent.clear()
+        repeat(30) {
+            s.move(1f, 0f)
+            advanceTimeBy(100)
+        }
+        runCurrent()
+        assertTrue(sent.all { it.type == MessageType.INPUT_MOVE }, "${types()}")
+        val lastMove = sent.last().atMs
+        advanceTimeBy(2_001)
+        assertEquals(
+            listOf(Sent(lastMove + 2_000, MessageType.INPUT_BUTTON, down), Sent(lastMove + 2_000, MessageType.INPUT_LASER, laserOn)),
+            sent.drop(30),
+        )
+
+        // Only what is still on: after the laser goes off, only the held button is repeated.
+        sent.clear()
+        s.laser(false)
+        runCurrent()
+        advanceTimeBy(2_001)
+        assertEquals(listOf(MessageType.INPUT_LASER, MessageType.INPUT_BUTTON), types())
+        assertEquals(down, sent.last().message)
+
+        // Nothing held and no laser: nothing is repeated.
+        sent.clear()
+        s.button(MOUSE_BUTTON_LEFT, down = false)
+        runCurrent()
+        advanceTimeBy(10_000)
+        assertEquals(listOf(MessageType.INPUT_BUTTON), types())
+
+        // Closed: no keepalive after the releases.
+        sent.clear()
+        s.button(MOUSE_BUTTON_RIGHT, down = true)
+        runCurrent()
+        s.close()
+        runCurrent()
+        advanceTimeBy(10_000)
+        assertEquals(listOf(MessageType.INPUT_BUTTON, MessageType.INPUT_BUTTON), types())
+    }
+
     @Test fun nothingSentWhenGateIsClosed() = runTest {
         var attempts = 0
         val s = sender { type, m ->
