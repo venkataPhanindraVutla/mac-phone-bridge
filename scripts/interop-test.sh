@@ -275,6 +275,21 @@ case7() {
 
 case8() { files_case 8 "files 0 bytes both ways" 0; }
 
+MEDIA_MS=""
+case9() {
+  begin_case "9 media toggle round trip"
+  local pstate; pstate="$(new_dir c9-phone)"
+  start_mac c9 --auto-confirm --media-toggle || return 1
+  start_phone c9 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --media
+  need "$MAC_LOG" '^EVENT media-roundtrip ms=[0-9]+$' "mac EVENT media-roundtrip ms=<n>" || return 1
+  need "$PHONE_LOG" '^EVENT media-command kind=TOGGLE playing=true$' "phone EVENT media-command kind=TOGGLE playing=true" || return 1
+  MEDIA_MS="$(extract "$MAC_LOG" '^EVENT media-roundtrip ms=([0-9]+)$')"
+  [[ "$MEDIA_MS" -lt 300 ]] || { fail_reason="media round trip $MEDIA_MS ms, expected < 300"; return 1; }
+  wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit after the second TOGGLE"; return 1; }
+  [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
+  echo "interop: media toggle round trip $MEDIA_MS ms"
+}
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -289,10 +304,11 @@ run_case case5
 run_case case6
 run_case case7
 run_case case8
+run_case case9
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 8 cases passed"
+  echo "interop: all 9 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1
