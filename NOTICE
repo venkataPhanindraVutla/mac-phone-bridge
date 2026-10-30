@@ -2,3 +2,19 @@ Android Mirroring
 Copyright 2026 The Android Mirroring contributors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes scrcpy-server 5.0.1 (https://github.com/Genymobile/scrcpy), Copyright (C) 2018 Genymobile and Copyright (C) 2018-2026 Romain Vimont, licensed under the Apache License, Version 2.0, built from source with the changes listed in android/helper/UPSTREAM.md. The Mac app's scrcpy stream and control code is a new implementation of that protocol.
+
+Third-party components (versions, sources and licence texts: docs/licenses.md):
+
+- libadb-android 3.1.1 (https://github.com/MuntashirAkon/libadb-android), dual licensed GPL-3.0-or-later OR Apache-2.0, used under the Apache License, Version 2.0.
+- spake2-android 2.2.1, licensed under the GNU LGPL v3.0, used unmodified as a separate library; source: https://github.com/MuntashirAkon/spake2-java
+- Conscrypt (conscrypt-android 2.5.3, https://github.com/google/conscrypt), licensed under the Apache License, Version 2.0; it includes BoringSSL, under the OpenSSL, SSLeay and ISC licences.
+- Bouncy Castle (bcpkix, bcutil and bcprov jdk18on 1.86, https://www.bouncycastle.org), licensed under the Bouncy Castle Licence (MIT).
+- AndroidX and Jetpack Compose (https://developer.android.com/jetpack), licensed under the Apache License, Version 2.0.
+- Kotlin standard library and JetBrains annotations (https://github.com/JetBrains), licensed under the Apache License, Version 2.0.
+- kotlinx.coroutines and kotlinx.serialization (https://github.com/Kotlin), licensed under the Apache License, Version 2.0.
+- Protocol Buffers (https://github.com/protocolbuffers/protobuf), licensed under the BSD 3-Clause License.
+- ZXing and ZXing Android Embedded (https://github.com/zxing/zxing, https://github.com/journeyapps/zxing-android-embedded), licensed under the Apache License, Version 2.0.
+- Guava listenablefuture (https://github.com/google/guava) and JSpecify (https://jspecify.dev), licensed under the Apache License, Version 2.0.
+- swift-protobuf, swift-crypto, swift-certificates and swift-asn1 (https://github.com/apple), licensed under the Apache License, Version 2.0; swift-crypto includes BoringSSL, under the OpenSSL, SSLeay and ISC licences.

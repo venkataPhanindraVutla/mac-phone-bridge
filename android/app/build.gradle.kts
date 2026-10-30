@@ -1,7 +1,23 @@
+import com.android.build.api.variant.BuildConfigField
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Full mode's helper: scrcpy-server 5.0.1-am1, built from source by :helper (android/helper/UPSTREAM.md).
+// Its unsigned release APK is the jar the app pushes to the phone; the app checks the pushed copy
+// against BuildConfig.HELPER_SHA256.
+val helperApk = rootProject.layout.projectDirectory.file("helper/build/outputs/apk/release/helper-release-unsigned.apk")
+val helperAssets = layout.buildDirectory.dir("generated/helperAssets")
+val copyHelper = tasks.register<Copy>("copyHelper") {
+    dependsOn(":helper:assembleRelease")
+    from(helperApk)
+    into(helperAssets)
+    rename { "anmirror-helper.jar" }
+}
+val helperJar = copyHelper.map { it.destinationDir.resolve("anmirror-helper.jar") }
 
 android {
     namespace = "io.github.anmirror.phone"
@@ -18,6 +34,7 @@ android {
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "HELPER_VERSION", "\"5.0.1-am1\"")
     }
 
     // One flavor today (GitHub and F-Droid). A later `play` flavor can drop Play-restricted
@@ -35,6 +52,8 @@ android {
             buildConfigField("boolean", "FEATURE_ALL_FILES", (!playLike).toString())
         }
     }
+
+    sourceSets.getByName("main").assets.directories.add(helperAssets.get().asFile.path)
 
     buildTypes {
         getByName("release") {
@@ -57,6 +76,20 @@ android {
         compose = true
         buildConfig = true
     }
+}
+
+androidComponents {
+    onVariants { variant ->
+        // Computed when BuildConfig is generated, after copyHelper ran; never at configuration time.
+        variant.buildConfigFields?.put("HELPER_SHA256", helperJar.map { jar ->
+            val digest = MessageDigest.getInstance("SHA-256").digest(jar.readBytes())
+            BuildConfigField("String", "\"" + digest.joinToString("") { "%02x".format(it) } + "\"", "SHA-256 of assets/anmirror-helper.jar")
+        })
+    }
+}
+
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(copyHelper)
 }
 
 dependencies {

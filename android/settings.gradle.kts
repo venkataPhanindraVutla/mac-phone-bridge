@@ -11,6 +11,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // libadb-android is published on JitPack only; nothing else may resolve from there.
+        maven("https://jitpack.io") { content { includeGroupByRegex("com\\.github\\.MuntashirAkon.*") } }
     }
 }
 
@@ -20,6 +22,7 @@ include(":app")
 include(":core:protocol")
 include(":core:connection")
 include(":core:transfer")
+include(":core:adb")
 include(":feature:status")
 include(":feature:find")
 include(":feature:notify")
@@ -35,3 +38,4 @@ include(":feature:dnd")
 include(":feature:proximity")
 include(":feature:input")
 include(":tools:phone-sim")
+include(":helper")

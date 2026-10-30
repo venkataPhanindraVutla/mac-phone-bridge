@@ -564,13 +564,15 @@ def build_filenames() -> dict:
 # A reference encoder for the helper's three sockets, read from upstream scrcpy at tag v5.0.1
 # (app/src/control_msg.c, app/src/device_msg.c, server/.../control/*). Everything is big endian.
 #
-# NOT YET VERIFIED: the control type numbers above 4 (GET_CLIPBOARD 8, SET_CLIPBOARD 9,
-# SET_DISPLAY_POWER 10, ROTATE_DEVICE 11, RESET_VIDEO 17), the text limits (300 and 262,130
-# bytes), the device message layouts and the audio codec IDs were written from memory of
-# upstream. Task 2 checks every entry against the vendored ControlMessageReader and
-# DeviceMessageWriter and fixes this generator if they differ. Entries carry "verified": false
-# until then, and "source" says where the layout came from: "spike" = the 0.1 spike used it
-# against the real v5.0.1 server; "memory" = not exercised yet.
+# VERIFIED (Task 2 of 0.5): every entry and the limits are checked against the vendored v5.0.1
+# server by android/helper/src/test/java/com/genymobile/scrcpy/anmirror/ScrcpyFixturesTest.java:
+# the real ControlMessageReader parses each control entry (and consumes exactly its bytes), the real
+# DeviceMessageWriter writes each device entry, and the stream entries match the server's codec IDs,
+# packet flags and 64-byte device-name field. No entry needed a correction. "source" still says where
+# the layout first came from: "spike" = the 0.1 spike used it against the real v5.0.1 server;
+# "memory" = written from memory before the check; "vendored" = written from the vendored source.
+# Scroll: upstream's C client (control_msg.c, sc_float_to_i16fp) converts float to int, so the
+# wire value is truncated toward zero, not rounded or floored: 0.1 -> 204 and -0.1 -> -204.
 SC_INJECT_KEYCODE, SC_INJECT_TEXT, SC_INJECT_TOUCH, SC_INJECT_SCROLL, SC_BACK_OR_SCREEN_ON = 0, 1, 2, 3, 4
 SC_GET_CLIPBOARD, SC_SET_CLIPBOARD, SC_SET_DISPLAY_POWER, SC_ROTATE_DEVICE = 8, 9, 10, 11
 SC_RESET_VIDEO = 17
@@ -595,7 +597,7 @@ def sc_string(text: str, limit: int) -> bytes:
 
 
 def sc_scroll_i16(v: float) -> int:
-    """scrcpy's sc_float_to_i16fp(clamp(v / 16, -1, 1)): times 2^15, truncated, 1.0 -> 32767."""
+    """scrcpy's sc_float_to_i16fp(clamp(v / 16, -1, 1)): times 2^15, truncated toward zero, 1.0 -> 32767."""
     n = max(-1.0, min(1.0, v / 16))
     return max(-32768, min(32767, int(n * 32768)))
 
@@ -678,6 +680,9 @@ def build_scrcpy() -> dict:
                                               "hscroll_i16": 0, "vscroll_i16": sc_scroll_i16(-1.0)}),
         ("inject_scroll_clamped", "memory", {**scroll, "hscroll": 32.0, "vscroll": -16.0,
                                              "hscroll_i16": sc_scroll_i16(32.0), "vscroll_i16": sc_scroll_i16(-16.0)}),
+        # not whole: v / 16 x 32768 = -204.8 and 204.8, truncated toward zero (rounding would give -205 / 205)
+        ("inject_scroll_fractional", "vendored", {**scroll, "hscroll": -0.1, "vscroll": 0.1,
+                                                  "hscroll_i16": sc_scroll_i16(-0.1), "vscroll_i16": sc_scroll_i16(0.1)}),
         ("back_or_screen_on_down", "memory", {"type": SC_BACK_OR_SCREEN_ON, "action": 0}),
         ("back_or_screen_on_up", "memory", {"type": SC_BACK_OR_SCREEN_ON, "action": 1}),
         ("get_clipboard_copy", "memory", {"type": SC_GET_CLIPBOARD, "copy_key": 1}),
@@ -724,27 +729,29 @@ def build_scrcpy() -> dict:
     ]
 
     def entry(name, source, fields, raw):
-        return {"name": name, "verified": False, "source": source, "fields": fields, "hex": raw.hex()}
+        return {"name": name, "verified": True, "source": source, "fields": fields, "hex": raw.hex()}
 
     return {
         "upstream": "scrcpy v5.0.1: app/src/control_msg.c, app/src/device_msg.c, "
                     "server/src/main/java/com/genymobile/scrcpy/control/*",
         "notes": [
             "All integers are big endian. Each control and device entry starts with its type byte.",
-            "verified = false: not yet checked against the vendored scrcpy server (Task 2 of 0.5 does it). "
-            "source = spike: the 0.1 spike used this layout against the real v5.0.1 server; "
-            "source = memory: written from memory of upstream, including the control types above 4, "
-            "the limits and the device messages.",
+            "verified = true: checked against the vendored scrcpy-server v5.0.1 by "
+            "android/helper/src/test/java/com/genymobile/scrcpy/anmirror/ScrcpyFixturesTest.java. "
+            "source says where the layout first came from: spike = the 0.1 spike used it against the real "
+            "v5.0.1 server; memory = written from memory before the check; vendored = from the vendored source.",
             "Touch: pointer_id -2 is the generic finger; width and height are the current video size; "
             "pressure is u16 fixed point (65535 = 1.0).",
             "Scroll: hscroll and vscroll are the encoder's input; on the wire they are "
-            "i16 = clamp(v / 16, -1, 1) x 32768, clamped to -32768..32767.",
+            "i16 = clamp(v / 16, -1, 1) x 32768, truncated toward zero (not rounded), clamped to -32768..32767. "
+            "The server reads i16 / 32768 x 16 (32767 = 16.0), so 0.1 arrives as 204 / 2048 = 0.099609375.",
+            "Touch pressure is read as u16 / 65536 (65535 = 1.0); the server's ControlMessage holds both as floats.",
             "Text and clipboard strings: u32 byte length, then UTF-8.",
             "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is "
             "u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; "
             "a session packet sets bit 63 and carries the width and height.",
         ],
-        "limits": {"verified": False, "inject_text_max_bytes": SC_INJECT_TEXT_MAX,
+        "limits": {"verified": True, "inject_text_max_bytes": SC_INJECT_TEXT_MAX,
                    "set_clipboard_text_max_bytes": SC_CLIPBOARD_TEXT_MAX,
                    "device_name_bytes": SC_DEVICE_NAME_BYTES},
         "control": [entry(n, src, f, sc_control(f)) for n, src, f in control],

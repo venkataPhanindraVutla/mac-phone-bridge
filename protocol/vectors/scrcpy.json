@@ -2,14 +2,15 @@
   "upstream": "scrcpy v5.0.1: app/src/control_msg.c, app/src/device_msg.c, server/src/main/java/com/genymobile/scrcpy/control/*",
   "notes": [
     "All integers are big endian. Each control and device entry starts with its type byte.",
-    "verified = false: not yet checked against the vendored scrcpy server (Task 2 of 0.5 does it). source = spike: the 0.1 spike used this layout against the real v5.0.1 server; source = memory: written from memory of upstream, including the control types above 4, the limits and the device messages.",
+    "verified = true: checked against the vendored scrcpy-server v5.0.1 by android/helper/src/test/java/com/genymobile/scrcpy/anmirror/ScrcpyFixturesTest.java. source says where the layout first came from: spike = the 0.1 spike used it against the real v5.0.1 server; memory = written from memory before the check; vendored = from the vendored source.",
     "Touch: pointer_id -2 is the generic finger; width and height are the current video size; pressure is u16 fixed point (65535 = 1.0).",
-    "Scroll: hscroll and vscroll are the encoder's input; on the wire they are i16 = clamp(v / 16, -1, 1) x 32768, clamped to -32768..32767.",
+    "Scroll: hscroll and vscroll are the encoder's input; on the wire they are i16 = clamp(v / 16, -1, 1) x 32768, truncated toward zero (not rounded), clamped to -32768..32767. The server reads i16 / 32768 x 16 (32767 = 16.0), so 0.1 arrives as 204 / 2048 = 0.099609375.",
+    "Touch pressure is read as u16 / 65536 (65535 = 1.0); the server's ControlMessage holds both as floats.",
     "Text and clipboard strings: u32 byte length, then UTF-8.",
     "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; a session packet sets bit 63 and carries the width and height."
   ],
   "limits": {
-    "verified": false,
+    "verified": true,
     "inject_text_max_bytes": 300,
     "set_clipboard_text_max_bytes": 262130,
     "device_name_bytes": 64
@@ -17,7 +18,7 @@
   "control": [
     {
       "name": "inject_keycode_home_down",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 0,
@@ -30,7 +31,7 @@
     },
     {
       "name": "inject_keycode_home_up",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 0,
@@ -43,7 +44,7 @@
     },
     {
       "name": "inject_keycode_ctrl_a_down",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 0,
@@ -56,7 +57,7 @@
     },
     {
       "name": "inject_text_ascii",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 1,
@@ -66,7 +67,7 @@
     },
     {
       "name": "inject_text_300_bytes",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 1,
@@ -76,7 +77,7 @@
     },
     {
       "name": "inject_touch_down",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "type": 2,
@@ -94,7 +95,7 @@
     },
     {
       "name": "inject_touch_move",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "type": 2,
@@ -112,7 +113,7 @@
     },
     {
       "name": "inject_touch_up",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "type": 2,
@@ -130,7 +131,7 @@
     },
     {
       "name": "inject_scroll_down_one",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 3,
@@ -148,7 +149,7 @@
     },
     {
       "name": "inject_scroll_clamped",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 3,
@@ -165,8 +166,26 @@
       "hex": "030000021c000004b0043809607fff800000000000"
     },
     {
+      "name": "inject_scroll_fractional",
+      "verified": true,
+      "source": "vendored",
+      "fields": {
+        "type": 3,
+        "x": 540,
+        "y": 1200,
+        "width": 1080,
+        "height": 2400,
+        "buttons": 0,
+        "hscroll": -0.1,
+        "vscroll": 0.1,
+        "hscroll_i16": -204,
+        "vscroll_i16": 204
+      },
+      "hex": "030000021c000004b004380960ff3400cc00000000"
+    },
+    {
       "name": "back_or_screen_on_down",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 4,
@@ -176,7 +195,7 @@
     },
     {
       "name": "back_or_screen_on_up",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 4,
@@ -186,7 +205,7 @@
     },
     {
       "name": "get_clipboard_copy",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 8,
@@ -196,7 +215,7 @@
     },
     {
       "name": "set_clipboard_ascii",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 9,
@@ -208,7 +227,7 @@
     },
     {
       "name": "set_clipboard_paste_emoji",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 9,
@@ -220,7 +239,7 @@
     },
     {
       "name": "set_display_power_off",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 10,
@@ -230,7 +249,7 @@
     },
     {
       "name": "set_display_power_on",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 10,
@@ -240,7 +259,7 @@
     },
     {
       "name": "rotate_device",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 11
@@ -249,7 +268,7 @@
     },
     {
       "name": "reset_video",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 17
@@ -260,7 +279,7 @@
   "device": [
     {
       "name": "clipboard_ascii",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 0,
@@ -270,7 +289,7 @@
     },
     {
       "name": "clipboard_emoji",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 0,
@@ -280,7 +299,7 @@
     },
     {
       "name": "ack_clipboard",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 1,
@@ -290,7 +309,7 @@
     },
     {
       "name": "uhid_output",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "type": 2,
@@ -303,7 +322,7 @@
   "stream": [
     {
       "name": "video_prelude_h264",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "dummy_byte": true,
@@ -315,7 +334,7 @@
     },
     {
       "name": "video_prelude_h265_utf8_name",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "dummy_byte": true,
@@ -327,7 +346,7 @@
     },
     {
       "name": "session_packet",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "session": true,
@@ -338,7 +357,7 @@
     },
     {
       "name": "config_packet_header",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "config": true,
@@ -350,7 +369,7 @@
     },
     {
       "name": "key_frame_packet_header",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "config": false,
@@ -362,7 +381,7 @@
     },
     {
       "name": "plain_packet_header",
-      "verified": false,
+      "verified": true,
       "source": "spike",
       "fields": {
         "config": false,
@@ -374,7 +393,7 @@
     },
     {
       "name": "audio_prelude_opus",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "codec": "opus",
@@ -384,7 +403,7 @@
     },
     {
       "name": "audio_prelude_aac",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "codec": "aac",
@@ -394,7 +413,7 @@
     },
     {
       "name": "audio_prelude_disabled",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "codec": "disabled",
@@ -404,7 +423,7 @@
     },
     {
       "name": "audio_prelude_error",
-      "verified": false,
+      "verified": true,
       "source": "memory",
       "fields": {
         "codec": "error",
