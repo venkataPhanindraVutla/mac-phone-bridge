@@ -626,7 +626,8 @@ public final class MacServer {
         session.pinger = Task { [weak self, weak session] in
             while true {
                 do { try await clock.sleep(for: interval) } catch { return }
-                guard let self, let session, self.livenessTick(session) else { return }
+                // A sleep can finish just as a wake re-arm cancels this pinger; don't tick then.
+                guard !Task.isCancelled, let self, let session, self.livenessTick(session) else { return }
             }
         }
     }
