@@ -155,6 +155,46 @@ enum class SessionEnd {
 }
 
 /**
+ * Content-free codes for why a session ended, for the phone's event log ([PhoneSession.endCode]).
+ * Only enum names and exception class names, never a message, host or name.
+ */
+object SessionEndCode {
+    /** The Mac closed the connection (FIN). */
+    const val EOF = "EOF"
+
+    /** This phone closed it (stop, forget, a switch to another Mac). */
+    const val LOCAL_CLOSE = "LOCAL_CLOSE"
+
+    /** No answer within the pong timeout (SPEC 7). */
+    const val PING_TIMEOUT = "PING_TIMEOUT"
+
+    /** The session's coroutine was cancelled (the manager stopped). */
+    const val CANCELLED = "CANCELLED"
+
+    /** A session that lived this long counts as matured in the log (the immediate-redial threshold). */
+    const val MATURED_MS = 60_000L
+
+    fun goodbye(reason: GoodbyeReason?): String =
+        "GOODBYE_" + (reason?.name?.removePrefix("GOODBYE_REASON_") ?: "UNKNOWN")
+
+    fun error(code: ErrorCode?): String = "ERROR_" + (code?.name?.removePrefix("ERROR_CODE_") ?: "UNKNOWN")
+
+    /** `TLS_<Class>`, `IO_<Class>` or `ERR_<Class>`; the message is never included. */
+    fun of(e: Throwable): String {
+        val name = e.javaClass.simpleName.ifEmpty { "Unknown" }
+        return when (e) {
+            is SSLException -> "TLS_$name"
+            is IOException -> "IO_$name"
+            else -> "ERR_$name"
+        }
+    }
+
+    /** The event-log detail: `<reason>,matured=<bool>,liveness=<bool>,s=<seconds connected>`. */
+    fun logDetail(reason: String, connectedMs: Long, liveness: Boolean): String =
+        "$reason,matured=${connectedMs >= MATURED_MS},liveness=$liveness,s=${connectedMs / 1000}"
+}
+
+/**
  * A connected control channel after a successful hello: keep-alive plus message dispatch.
  *
  * Keep-alive follows SPEC 7, through [PhoneLiveness]:
@@ -173,12 +213,16 @@ class PhoneSession(
     private val pingIntervalMs: Long = 30_000,
     private val pongTimeoutMs: Long = 10_000,
     private val fallbackIdleMs: Long = 45_000,
-    private val uptimeMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val uptimeMs: () -> Long = monotonicUptimeMs,
 ) {
+    /** Why [run] ended, as a [SessionEndCode]; null while it runs. */
+    @Volatile var endCode: String? = null
+        private set
+
     /**
      * Runs until the connection ends; the channel is closed on return or cancellation.
      * An element on [pingNow] (for example "the network changed") sends a ping right away.
-     * [onMacPing] runs after each Mac `system.ping` has been answered.
+     * [onMacPing] runs after each Mac `system.ping` whose `system.pong` was written.
      * Exceptions thrown by `onMessage` are dropped so one bad handler cannot end the session.
      */
     suspend fun run(
@@ -188,8 +232,8 @@ class PhoneSession(
     ): SessionEnd = try {
         coroutineScope {
             val end = AtomicReference<SessionEnd?>(null)
-            fun finish(reason: SessionEnd) {
-                end.compareAndSet(null, reason)
+            fun finish(reason: SessionEnd, code: String) {
+                if (end.compareAndSet(null, reason)) endCode = code
                 channel.close()
             }
 
@@ -213,7 +257,7 @@ class PhoneSession(
                             try {
                                 channel.send(Channel.CHANNEL_SYSTEM, MessageType.PING, Ping.getDefaultInstance())
                             } catch (e: IOException) {
-                                finish(SessionEnd.CLOSED)
+                                finish(SessionEnd.CLOSED, SessionEndCode.of(e))
                                 return@launch
                             }
                         }
@@ -230,16 +274,22 @@ class PhoneSession(
                             }
                         }
                         LivenessStep.Dead -> {
-                            finish(SessionEnd.PONG_TIMEOUT)
+                            finish(SessionEnd.PONG_TIMEOUT, SessionEndCode.PING_TIMEOUT)
                             return@launch
                         }
                     }
                 }
             }
 
+            var readEnd: String? = null
             try {
                 while (end.get() == null) {
-                    val env = channel.receive() ?: break
+                    val env = channel.receive()
+                    if (env == null) {
+                        // A null read is the peer's FIN, or our own close.
+                        readEnd = if (channel.isClosed) SessionEndCode.LOCAL_CLOSE else SessionEndCode.EOF
+                        break
+                    }
                     liveness.onIncoming(uptimeMs(), isPong = env.type == MessageType.PONG)
                     heard.trySend(Unit)
                     when (env.type) {
@@ -248,15 +298,17 @@ class PhoneSession(
                             // At once, whatever the timers say (SPEC 7: the Mac's drop rule relies on it).
                             runCatching {
                                 channel.send(Channel.CHANNEL_SYSTEM, MessageType.PONG, Pong.getDefaultInstance(), env.id)
-                            }
-                            onMacPing?.invoke()
+                            }.onSuccess { onMacPing?.invoke() }
                         }
                         MessageType.HELLO -> Unit
                         MessageType.GOODBYE -> {
                             val reason = parseOrNull { Goodbye.parseFrom(env.payload) }?.reason
-                            finish(if (reason == GoodbyeReason.GOODBYE_REASON_UNPAIRED) SessionEnd.UNPAIRED else SessionEnd.GOODBYE)
+                            finish(
+                                if (reason == GoodbyeReason.GOODBYE_REASON_UNPAIRED) SessionEnd.UNPAIRED else SessionEnd.GOODBYE,
+                                SessionEndCode.goodbye(reason),
+                            )
                         }
-                        MessageType.ERROR -> finish(SessionEnd.ERROR)
+                        MessageType.ERROR -> finish(SessionEnd.ERROR, SessionEndCode.error(parseOrNull { ProtoError.parseFrom(env.payload) }?.code))
                         else -> try {
                             onMessage(env)
                         } catch (e: CancellationException) {
@@ -270,11 +322,15 @@ class PhoneSession(
                 throw e
             } catch (e: Exception) {
                 // TLS, I/O or framing error: the connection is gone.
+                readEnd = SessionEndCode.of(e)
             }
-            finish(SessionEnd.CLOSED)
+            finish(SessionEnd.CLOSED, readEnd ?: SessionEndCode.EOF)
             pinger.cancel()
             end.get() ?: SessionEnd.CLOSED
         }
+    } catch (e: CancellationException) {
+        if (endCode == null) endCode = SessionEndCode.CANCELLED
+        throw e
     } finally {
         channel.close()
     }

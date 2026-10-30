@@ -75,6 +75,11 @@ data class ConnectionTiming(
     val notRecognizedRetryMs: Long = 15 * 60_000,
     /** Consecutive attempts ending in a heuristic (TLS) refusal before `NotRecognized`. */
     val heuristicRefusalsForNotRecognized: Int = 2,
+    /**
+     * A session connected at least this long (wall time, sleep included) that the Mac closed or
+     * said goodbye on is dialed again at once, inside the wake-up the FIN gave a locked phone.
+     */
+    val redialNowAfterMs: Long = SessionEndCode.MATURED_MS,
 ) {
     fun backoff(attempt: Int): Long = backoffMs[attempt.coerceIn(0, backoffMs.lastIndex)]
 }
@@ -105,8 +110,14 @@ data class ConnectionTiming(
  *   answer (that ping's 10 s deadline stands). Discovery is not subscribed while
  *   connected, so other paired Macs appearing change nothing.
  * - Saves `lastHost`/`lastPort`/`lastConnectedAt` on every successful connect. The backoff
- *   starts over after a session that lived at least one ping interval.
+ *   starts over after a session that lived at least one ping interval (awake or wall time) or
+ *   answered a Mac ping.
+ * - A session connected for 60 s or more ([ConnectionTiming.redialNowAfterMs]) that the Mac
+ *   closed (EOF) or said goodbye on is dialed again at once, then with the backoff. A locked
+ *   phone is awake only briefly after the Mac's FIN (Mac wake, Mac app restart).
  * - `system.goodbye UNPAIRED` removes the Mac, then moves on to the next Mac or `NotPaired`.
+ *   This phone says goodbye UNPAIRED only for a Mac it removed itself ([forget]); a Mac that is
+ *   missing from an unreadable store read is closed without a goodbye and retried.
  *   Any other goodbye (`SHUTDOWN` when the Mac app quits, ...) is a normal disconnect: the Mac
  *   stays paired and is retried with the backoff above.
  * - A store write that fails at connect is logged; the session goes on. Any other unexpected
@@ -128,7 +139,14 @@ class ConnectionManager(
     private val log: (String, Throwable?) -> Unit = { message, e ->
         System.err.println("ConnectionManager: $message${e?.let { ": $it" } ?: ""}")
     },
-    private val uptimeMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val uptimeMs: () -> Long = monotonicUptimeMs,
+    /** Time since boot including deep sleep (the app passes `SystemClock.elapsedRealtime`). */
+    private val elapsedMs: () -> Long = clock,
+    /**
+     * Each session that reached Connected, when it ends: a [SessionEndCode], how long it was
+     * connected ([elapsedMs]) and whether it shared `liveness.v1`. Content-free; for the event log.
+     */
+    private val onSessionEnd: (reason: String, connectedMs: Long, liveness: Boolean) -> Unit = { _, _, _ -> },
 ) {
     private val _state = MutableStateFlow<PhoneConnectionState>(PhoneConnectionState.NotPaired)
     val state: StateFlow<PhoneConnectionState> = _state.asStateFlow()
@@ -143,6 +161,13 @@ class ConnectionManager(
 
     /** Serialises [forget] with connection setup (presence check, save, publish). */
     private val setupLock = Mutex()
+
+    /**
+     * Lowercase ids of Macs this process removed ([forget], or the Mac's goodbye UNPAIRED). A Mac
+     * missing from a store read is "forgotten" only if it is here; otherwise the store could not
+     * be read just now (Keystore busy), and the Mac must not be told to forget this phone.
+     */
+    private val forgotten: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private val stateLock = Any()
     private var job: Job? = null
@@ -194,6 +219,8 @@ class ConnectionManager(
      * setup while this channel waits yields to it. Kicks.
      */
     fun adopt(channel: ControlChannel) {
+        // Paired again: no longer forgotten.
+        channel.peerFingerprintHex?.let { forgotten.remove(it.lowercase()) }
         adopted.getAndSet(channel)?.takeIf { it !== channel }?.close()
         // Switching Macs: tell the old one (it keeps this phone paired), then close. The loop
         // kicks again once that session has ended (the session takes kicks as pings).
@@ -247,6 +274,7 @@ class ConnectionManager(
             setupLock.withLock {
                 val fp = store.all().firstOrNull { it.id == macId }?.fingerprintHex ?: macId
                 store.remove(macId)
+                forgotten += macId.lowercase()
                 // A pairing connection to this Mac waiting to be used goes too.
                 adopted.get()
                     ?.takeIf { it.peerFingerprintHex.equals(fp, ignoreCase = true) && adopted.compareAndSet(it, null) }
@@ -379,23 +407,31 @@ class ConnectionManager(
             val wake: Wake = when (result) {
                 is Attempt.Connected -> {
                     watch.stop()
-                    val (end, matured) = runConnected(gen, mac, result)
+                    val ended = runConnected(gen, mac, result)
                     // adopt() ended this session for another Mac; its kick went to the session.
                     if (adopted.get() != null) kick()
-                    if (end == SessionEnd.UNPAIRED) removeQuietly(mac)
-                    // A Mac no longer paired (goodbye UNPAIRED, forget) is not retried.
+                    if (ended.end == SessionEnd.UNPAIRED) removeQuietly(mac)
+                    // A Mac no longer paired (goodbye UNPAIRED, forget) is not retried. One missing
+                    // from an unreadable store read is kept and retried after the backoff.
                     val still = store.all().firstOrNull { it.id == mac.id }
-                    if (still == null) {
+                    if (still == null && mac.isForgotten()) {
                         attempt = 0
                         continue
                     }
+                    val next = still ?: mac
                     // Only a session that lived a while proves the link is good again.
-                    if (matured) attempt = 0
-                    setState(gen, PhoneConnectionState.Connecting(still))
-                    watch.target(still)
-                    // After a short session the new subscription's replay must not end the wait.
-                    backedOff = true
-                    backoffWait(attempt, listenToDiscovery = matured)
+                    if (ended.matured) attempt = 0
+                    setState(gen, PhoneConnectionState.Connecting(next))
+                    watch.target(next)
+                    if (ended.redialNow) {
+                        // The Mac closed a long session (it woke, or its app restarted): dial now,
+                        // inside the wake-up its FIN gave a locked phone. Then the usual backoff.
+                        Wake.TIMEOUT
+                    } else {
+                        // After a short session the new subscription's replay must not end the wait.
+                        backedOff = true
+                        backoffWait(attempt, listenToDiscovery = ended.matured)
+                    }
                 }
                 Attempt.Unpaired -> {
                     removeQuietly(mac)
@@ -544,20 +580,29 @@ class ConnectionManager(
 
     /** A failed write (the store was unreadable and was left alone) is not fatal: it is retried on the next goodbye or connect. */
     private suspend fun removeQuietly(mac: PairedMac) {
+        forgotten += mac.id.lowercase()
         runCatching { store.remove(mac.id) }.onFailure { e ->
             if (e is CancellationException) throw e
             log("could not remove the Mac", e)
         }
     }
 
-    /** Returns how the session ended and whether it lived at least one ping interval. */
-    private suspend fun runConnected(gen: Int, mac: PairedMac, a: Attempt.Connected): Pair<SessionEnd, Boolean> {
+    private fun PairedMac.isForgotten(): Boolean = id.lowercase() in forgotten
+
+    /**
+     * How a connection ended. [matured]: it lived one ping interval, or answered a Mac ping.
+     * [redialNow]: the Mac closed it (EOF or goodbye) after [ConnectionTiming.redialNowAfterMs].
+     */
+    private class Ended(val end: SessionEnd, val matured: Boolean = false, val redialNow: Boolean = false)
+
+    private suspend fun runConnected(gen: Int, mac: PairedMac, a: Attempt.Connected): Ended {
         val channel = a.channel
         try {
             val session = setupLock.withLock {
                 val stored = store.all()
-                // Forgotten while we were dialing: do not bring it back.
-                if (stored.none { it.id == mac.id }) return@withLock null
+                // Forgotten while we were dialing: do not bring it back. Missing but not
+                // forgotten: the read failed (an unreadable store reads as none).
+                if (stored.none { it.id == mac.id }) return@withLock if (mac.isForgotten()) FORGOTTEN else UNREADABLE
                 // A just-paired Mac's connection is waiting (this attempt read the store before it
                 // was saved): yield to it. No save, no session, no goodbye; the loop picks it next.
                 val waiting = adopted.get()
@@ -587,33 +632,55 @@ class ConnectionManager(
                 setState(gen, PhoneConnectionState.Connected(updated, a.shared))
                 session
             }
-            if (session === YIELD) {
+            if (session === YIELD || session === UNREADABLE) {
+                // No goodbye: an unreadable store must never make the Mac forget this phone.
                 channel.close()
-                return SessionEnd.CLOSED to false
+                return Ended(SessionEnd.CLOSED)
             }
             if (session === SWITCH) {
                 runCatching { channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, goodbye(GoodbyeReason.GOODBYE_REASON_SWITCHING_MAC)) }
                 channel.close()
-                return SessionEnd.CLOSED to false
+                return Ended(SessionEnd.CLOSED)
             }
             if (session === HANDLED) {
                 // adopt() saw this session too; it sends the goodbye, then closes the channel.
-                return SessionEnd.CLOSED to false
+                return Ended(SessionEnd.CLOSED)
             }
             if (session !is PhoneSession) {
+                // FORGOTTEN
                 runCatching { channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, unpairedGoodbye()) }
                 channel.close()
-                return SessionEnd.CLOSED to false
+                return Ended(SessionEnd.CLOSED)
             }
-            return coroutineScope {
-                val matured = AtomicBoolean(false)
-                val timer = launch {
-                    delay(timing.pingIntervalMs)
-                    matured.set(true)
+            val liveness = LIVENESS_CAPABILITY in a.shared
+            val connectedAt = elapsedMs()
+            fun report() = runCatching {
+                onSessionEnd(session.endCode ?: SessionEndCode.CANCELLED, elapsedMs() - connectedAt, liveness)
+            }
+            return try {
+                coroutineScope {
+                    val matured = AtomicBoolean(false)
+                    // Awake time: a locked phone's delay barely runs, so wall time and an answered
+                    // Mac ping count too.
+                    val timer = launch {
+                        delay(timing.pingIntervalMs)
+                        matured.set(true)
+                    }
+                    val end = session.run(pingNow = userKicks, onMacPing = { matured.set(true) }) { env ->
+                        handlers[env.type]?.invoke(env)
+                    }
+                    timer.cancel()
+                    val connectedMs = elapsedMs() - connectedAt
+                    val code = session.endCode
+                    val closedByMac = code == SessionEndCode.EOF || end == SessionEnd.GOODBYE
+                    Ended(
+                        end,
+                        matured = matured.get() || connectedMs >= timing.pingIntervalMs,
+                        redialNow = closedByMac && connectedMs >= timing.redialNowAfterMs,
+                    )
                 }
-                val end = session.run(pingNow = userKicks) { env -> handlers[env.type]?.invoke(env) }
-                timer.cancel()
-                end to matured.get()
+            } finally {
+                report()
             }
         } catch (t: Throwable) {
             channel.close()
@@ -637,5 +704,9 @@ class ConnectionManager(
         val YIELD = Any()
         val SWITCH = Any()
         val HANDLED = Any()
+
+        /** The Mac is missing from the store read: [FORGOTTEN] by this process (goodbye UNPAIRED), or the read failed. */
+        val FORGOTTEN = Any()
+        val UNREADABLE = Any()
     }
 }

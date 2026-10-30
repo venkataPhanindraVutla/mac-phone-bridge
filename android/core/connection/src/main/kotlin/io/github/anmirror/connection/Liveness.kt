@@ -3,6 +3,12 @@ package io.github.anmirror.connection
 /** The Mac-driven keep-alive capability (SPEC 7). */
 const val LIVENESS_CAPABILITY = "liveness.v1"
 
+/**
+ * The keep-alive timers' default clock: monotonic ms. On Android `System.nanoTime` is
+ * CLOCK_MONOTONIC, which stops in deep sleep, like coroutine `delay`; time asleep never counts.
+ */
+val monotonicUptimeMs: () -> Long = { System.nanoTime() / 1_000_000 }
+
 /** What a [PhoneSession]'s pinger does next. */
 sealed interface LivenessStep {
     /** Send `system.ping` now, then call [PhoneLiveness.onPingSent]. */
