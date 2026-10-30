@@ -9,6 +9,9 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/** The blob cannot be one this cipher wrote: permanently unreadable, not a Keystore hiccup. */
+class CiphertextTooShortException : GeneralSecurityException("ciphertext too short")
+
 /**
  * AES-256-GCM with a key that stays in the AndroidKeyStore. Output is the 12-byte IV followed by
  * the ciphertext and 16-byte tag. The Keystore picks a fresh random IV for every [encrypt].
@@ -26,7 +29,7 @@ class KeystoreCipher : BlobCipher {
 
     /** Throws [GeneralSecurityException] if [blob] was not made by this key or was changed. */
     override fun decrypt(blob: ByteArray): ByteArray {
-        if (blob.size < IV_BYTES + TAG_BITS / 8) throw GeneralSecurityException("ciphertext too short")
+        if (blob.size < IV_BYTES + TAG_BITS / 8) throw CiphertextTooShortException()
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, blob, 0, IV_BYTES))
         return cipher.doFinal(blob, IV_BYTES, blob.size - IV_BYTES)

@@ -33,7 +33,9 @@ import io.github.anmirror.phone.ui.HomeScreen
 import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var graph: AppGraph
@@ -86,6 +88,11 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Screen { Main, Scan }
+
+/** The store could not be read just now; nothing was forgotten. */
+private suspend fun forgetFailed(context: android.content.Context) = withContext(Dispatchers.Main) {
+    android.widget.Toast.makeText(context, R.string.forget_failed, android.widget.Toast.LENGTH_LONG).show()
+}
 
 @Composable
 private fun AppRoot(graph: AppGraph) {
@@ -183,10 +190,15 @@ private fun AppRoot(graph: AppGraph) {
                         // The grant and the folder's name come from the provider: off the main thread.
                         onFolderPicked = { uri -> graph.launchQuietly("browse: add folder") { graph.pickedFolders.add(uri) } },
                         onRemoveFolder = { folder -> graph.launchQuietly("browse: remove folder") { graph.pickedFolders.remove(folder.root.id) } },
-                        onForget = { graph.scope.launch { graph.manager.forget(mac.id) } },
+                        onForget = { graph.scope.launch { if (!graph.manager.forget(mac.id)) forgetFailed(context) } },
                         onPairAgain = {
-                            graph.scope.launch { graph.manager.forget(mac.id) }
-                            screen = Screen.Scan
+                            graph.scope.launch {
+                                if (graph.manager.forget(mac.id)) {
+                                    withContext(Dispatchers.Main) { screen = Screen.Scan }
+                                } else {
+                                    forgetFailed(context)
+                                }
+                            }
                         },
                     )
                 }

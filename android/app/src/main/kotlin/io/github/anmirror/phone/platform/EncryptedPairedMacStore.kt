@@ -29,7 +29,7 @@ interface BlobFile {
     fun backUp()
 }
 
-class AtomicBlobFile(private val file: AtomicFile, private val backup: File) : BlobFile {
+class AtomicBlobFile(private val file: AtomicFile) : BlobFile {
     override fun read(): ByteArray? = try {
         file.readFully()
     } catch (e: FileNotFoundException) {
@@ -48,17 +48,30 @@ class AtomicBlobFile(private val file: AtomicFile, private val backup: File) : B
     }
 
     override fun backUp() {
-        file.baseFile.takeIf { it.exists() }?.copyTo(backup, overwrite = true)
+        BackupRotation.keep(file.baseFile, BACKUPS)
     }
 }
+
+/** Keeps `<name>.bak1` (newest) to `.bak<keep>` copies of a file that is about to be replaced. */
+object BackupRotation {
+    fun keep(source: File, keep: Int) {
+        if (!source.exists()) return
+        fun bak(n: Int) = File(source.parentFile, "${source.name}.bak$n")
+        bak(keep).delete()
+        for (n in keep - 1 downTo 1) bak(n).takeIf { it.exists() }?.renameTo(bak(n + 1))
+        source.copyTo(bak(1), overwrite = true)
+    }
+}
+
+private const val BACKUPS = 3
 
 /**
  * The paired Macs as one JSON list, encrypted as a single blob with [cipher] and written
  * atomically. The discovery keys in it are secrets (SPEC 6), so nothing is stored in clear.
  *
- * A store that cannot be read is never overwritten on a hunch. A transient failure (Keystore
- * busy, IO) makes [save] and [remove] throw [IOException] and write nothing; the caller tries
- * later. A permanent one (damaged blob, key gone) keeps the old blob as a backup and then
+ * A store that cannot be read is never overwritten on a hunch. Anything but a
+ * permanent failure (see [StoreRead.Unreadable]) makes [save] and [remove] throw [IOException] and write nothing; the caller tries
+ * later. A permanent one keeps the old blob as `.bak1` to `.bak3` (newest first) and then
  * replaces it.
  */
 class EncryptedPairedMacStore(
@@ -70,7 +83,7 @@ class EncryptedPairedMacStore(
         file: AtomicFile,
         cipher: KeystoreCipher,
         onUnreadable: (causeClass: String) -> Unit = {},
-    ) : this(AtomicBlobFile(file, File(file.baseFile.parentFile, file.baseFile.name + ".bak")), cipher, onUnreadable)
+    ) : this(AtomicBlobFile(file), cipher, onUnreadable)
 
     private val lock = Mutex()
 
@@ -102,8 +115,8 @@ class EncryptedPairedMacStore(
     private suspend fun read(): StoreRead = withContext(Dispatchers.IO) {
         val r = try {
             PairedMacsBlob.decode(file.read(), cipher::decrypt)
-        } catch (e: IOException) {
-            StoreRead.Unreadable("IOException")
+        } catch (e: Exception) {
+            StoreRead.Unreadable(e.javaClass.simpleName)
         }
         if (r is StoreRead.Unreadable) onUnreadable(r.causeClass)
         r
@@ -112,7 +125,7 @@ class EncryptedPairedMacStore(
     private suspend fun macsForWrite(): List<PairedMac> = when (val r = read()) {
         is StoreRead.Macs -> r.macs
         is StoreRead.Unreadable -> {
-            if (r.transient) throw IOException("paired Macs unreadable (${r.causeClass}); not writing")
+            if (!r.permanent) throw IOException("paired Macs unreadable (${r.causeClass}); not writing")
             Log.w(TAG, "paired Macs unreadable (${r.causeClass}); keeping a backup and replacing")
             withContext(Dispatchers.IO) { file.backUp() }
             emptyList()

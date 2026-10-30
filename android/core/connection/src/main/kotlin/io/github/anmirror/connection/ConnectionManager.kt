@@ -226,22 +226,34 @@ class ConnectionManager(
         handlers[type] = handler
     }
 
-    /** Unpairs: tells the Mac (`system.goodbye UNPAIRED`) if connected, and removes it. */
-    suspend fun forget(macId: String) {
-        val c = setupLock.withLock {
-            val fp = store.all().firstOrNull { it.id == macId }?.fingerprintHex ?: macId
-            store.remove(macId)
-            // A pairing connection to this Mac waiting to be used goes too.
-            adopted.get()
-                ?.takeIf { it.peerFingerprintHex.equals(fp, ignoreCase = true) && adopted.compareAndSet(it, null) }
-                ?.close()
-            current?.takeIf { it.mac.id == macId }
+    /**
+     * Unpairs: tells the Mac (`system.goodbye UNPAIRED`) if connected, and removes it. Returns
+     * false when the store refused the removal (it could not be read just now): nothing changed,
+     * the connection stays up, no goodbye is sent, and the caller says so and lets the user retry.
+     */
+    suspend fun forget(macId: String): Boolean {
+        val c = try {
+            setupLock.withLock {
+                val fp = store.all().firstOrNull { it.id == macId }?.fingerprintHex ?: macId
+                store.remove(macId)
+                // A pairing connection to this Mac waiting to be used goes too.
+                adopted.get()
+                    ?.takeIf { it.peerFingerprintHex.equals(fp, ignoreCase = true) && adopted.compareAndSet(it, null) }
+                    ?.close()
+                current?.takeIf { it.mac.id == macId }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("could not forget the Mac", e)
+            return false
         }
         if (c != null) {
             runCatching { c.session.channel.send(Channel.CHANNEL_SYSTEM, MessageType.GOODBYE, unpairedGoodbye()) }
             c.session.channel.close()
         }
         kick()
+        return true
     }
 
     private fun setState(gen: Int, s: PhoneConnectionState) {

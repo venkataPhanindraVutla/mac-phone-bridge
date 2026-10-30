@@ -56,6 +56,22 @@ class EncryptedPairedMacStoreTest {
     }
 
     @Test
+    fun keystoreBusyFailuresLeaveFileUntouched() = runBlocking<Unit> {
+        for (failure in listOf<Exception>(java.security.InvalidKeyException("busy"), java.security.UnrecoverableKeyException())) {
+            val file = MemFile()
+            val cipher = FakeCipher()
+            val store = EncryptedPairedMacStore(file, cipher)
+            store.save(mac("a"))
+            val before = file.blob!!.copyOf()
+            cipher.failure = failure
+            assertFailsWith<IOException> { store.save(mac("b")) }
+            assertFailsWith<IOException> { store.remove("a") }
+            assertContentEquals(before, file.blob)
+            assertNull(file.backup)
+        }
+    }
+
+    @Test
     fun permanentFailureKeepsBackupThenReplaces() = runBlocking<Unit> {
         val file = MemFile()
         val cipher = FakeCipher()

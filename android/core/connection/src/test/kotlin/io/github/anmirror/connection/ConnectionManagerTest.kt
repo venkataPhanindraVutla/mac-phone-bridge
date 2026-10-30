@@ -361,6 +361,35 @@ class ConnectionManagerTest {
     }
 
     @Test
+    fun forgetReportsFailureWhenTheStoreRefusesAndChangesNothing() = runTest {
+        val inner = InMemoryPairedMacStore(listOf(macA()))
+        var refuse = true
+        val store = object : PairedMacStore by inner {
+            override suspend fun remove(id: String) {
+                if (refuse) throw java.io.IOException("unreadable") else inner.remove(id)
+            }
+        }
+        val connector = FakeConnector { testScheduler.currentTime }
+        val manager = ConnectionManager(backgroundScope, store, StaticDiscovery(emptyList()), connector, { phoneHello() }, clock = { nowMs })
+        val mac = FakeMac(Identities.MAC_FP, backgroundScope, CAPS).also { connector.macs["10.0.0.5:4000"] = it }
+        manager.start()
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value)
+
+        assertFalse(manager.forget(Identities.MAC_FP))
+        runCurrent()
+        assertIs<PhoneConnectionState.Connected>(manager.state.value)
+        assertEquals(0, mac.received.count { it.type == MessageType.GOODBYE })
+        assertEquals(1, inner.all().size)
+
+        refuse = false
+        assertTrue(manager.forget(Identities.MAC_FP))
+        runCurrent()
+        assertEquals(1, mac.received.count { it.type == MessageType.GOODBYE })
+        assertEquals(emptyList(), inner.all())
+    }
+
+    @Test
     fun notPairedWhenStoreIsEmptyUntilKicked() = runTest {
         val r = rig(emptyList())
         r.manager.start()

@@ -1,6 +1,7 @@
 package io.github.anmirror.phone.service
 
 import io.github.anmirror.phone.platform.StoreRead
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /**
@@ -21,7 +22,14 @@ suspend fun watchNotPaired(
     onSelfStop: () -> Unit,
 ) {
     while (stillNotPaired()) {
-        val r = read()
+        // An unexpected failure is an unreadable store: never a crash, never "no Mac".
+        val r = try {
+            read()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            StoreRead.Unreadable(e.javaClass.simpleName)
+        }
         val confirmedEmpty = r is StoreRead.Macs && r.macs.isEmpty()
         if (BootDecision.shouldSelfStop(pairingUnderWay(), confirmedEmpty)) {
             onSelfStop()

@@ -51,6 +51,7 @@
     <string name="state_incompatible">Update Android Mirroring on both devices.</string>
     <string name="state_stopped">Not running.</string>
     <string name="home_retry">Try now</string>
+    <string name="forget_failed">Could not forget this Mac right now. Try again in a moment.</string>
     <string name="home_pair_again">Pair again</string>
     <string name="home_pair_again_title">Pair again with your Mac?</string>
     <string name="home_pair_again_body">This phone forgets %1$s. Then scan the new code your Mac shows.</string>

@@ -50,4 +50,23 @@ class NotPairedWatchTest {
         watchNotPaired(1, { StoreRead.Macs(emptyList()) }, { true }, { n++ < 2 }, {}, {}, { stopped = true })
         assertFalse(stopped)
     }
+
+    @Test
+    fun unexpectedReadExceptionIsLoggedAndLoopContinues() = runBlocking<Unit> {
+        var reads = 0
+        var logs = 0
+        var stopped = false
+        watchNotPaired(
+            intervalMs = 1,
+            read = { if (++reads < 3) throw IllegalStateException("boom") else StoreRead.Macs(listOf(mac)) },
+            pairingUnderWay = { false },
+            stillNotPaired = { reads < 3 },
+            kick = {},
+            onUnreadable = { logs++ },
+            onSelfStop = { stopped = true },
+        )
+        assertFalse(stopped)
+        assertEquals(2, logs)
+        assertEquals(3, reads)
+    }
 }
