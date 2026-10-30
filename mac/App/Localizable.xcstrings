@@ -2389,6 +2389,28 @@
         }
       }
     },
+    "Allow Nearby devices for Android Mirroring on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Nearby devices for Android Mirroring on the phone."
+          }
+        }
+      }
+    },
+    "Update the phone app to use Auto-Lock.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update the phone app to use Auto-Lock."
+          }
+        }
+      }
+    },
     "Auto-Lock is paused until %@ connects to this Mac again.": {
       "extractionState": "manual",
       "localizations": {

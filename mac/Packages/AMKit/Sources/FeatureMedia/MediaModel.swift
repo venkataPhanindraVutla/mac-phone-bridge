@@ -148,7 +148,7 @@ public final class MediaModel: SessionFeature {
             durationSeconds: Double(s.durationMs) / 1000, elapsedSeconds: Double(positionMs(now: now())) / 1000,
             rate: s.playing ? (s.speed > 0 ? Double(s.speed) : 1) : 0, artwork: artwork)
         let commands = RemoteCommands(
-            play: s.canPlay, pause: s.canPause, toggle: s.canPlay || s.canPause,
+            play: s.canPlay, pause: s.canPause, toggle: s.playing ? s.canPause : s.canPlay,
             next: s.canNext, previous: s.canPrevious, seek: s.canSeek)
         shown = true
         center.show(info, playing: s.playing, commands: commands)

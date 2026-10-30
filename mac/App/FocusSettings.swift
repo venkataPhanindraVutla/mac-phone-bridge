@@ -57,11 +57,11 @@ struct FocusSettings: View {
         }
     }
 
-    /// Phone to Mac: works once both shortcuts are installed.
+    /// Phone to Mac: works once both shortcuts are installed and the phone sends (its switch is on).
     private var phoneToMac: LocalizedStringResource {
-        focus.shortcutsInstalled == true
-            ? "Your phone's Do Not Disturb turns on Focus on this Mac."
-            : "Install the two Shortcuts to let your phone turn on Focus"
+        if focus.shortcutsInstalled != true { return "Install the two Shortcuts to let your phone turn on Focus" }
+        if focus.phoneAvailability?.sends.enabled == false { return "Turn on Do Not Disturb sync in the phone app." }
+        return "Your phone's Do Not Disturb turns on Focus on this Mac."
     }
 
     /// Mac to phone: needs Focus status access here and Do Not Disturb sync on the phone. Nothing

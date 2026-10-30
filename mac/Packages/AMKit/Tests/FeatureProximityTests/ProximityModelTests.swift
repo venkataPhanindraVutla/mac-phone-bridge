@@ -164,6 +164,25 @@ private struct Rig {
     #expect(rig.model.blockers.contains(.phoneNotAdvertising))
 }
 
+@MainActor @Test func phoneIssueSaysWhyThePhoneIsNotAdvertising() async {
+    let rig = await Rig()
+    #expect(rig.model.phoneIssue == nil)
+    await rig.availability(false, reason: .offByUser)
+    #expect(rig.model.phoneIssue == .switchOff)
+    await rig.availability(false, reason: .needsPermission)
+    #expect(rig.model.phoneIssue == .needsPermission)
+    await rig.availability(false, reason: .unavailable)
+    #expect(rig.model.phoneIssue == .bluetooth)
+    await rig.availability(true)
+    #expect(rig.model.phoneIssue == nil)
+    // A phone app without proximity.v1.
+    await rig.model.connected(phoneID: phoneA.id, phoneName: phoneA.name, shared: ["status.v1"])
+    #expect(rig.model.phoneIssue == .needsUpdate)
+    // Never heard: ask for the switch.
+    let never = await Rig(available: false)
+    #expect(never.model.phoneIssue == .switchOff)
+}
+
 @MainActor @Test func availabilityIsRemembered() async {
     let rig = await Rig()
     rig.model.disconnected()

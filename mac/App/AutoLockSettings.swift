@@ -88,10 +88,12 @@ struct AutoLockSettings: View {
         if b.contains(.lockUnavailable) { lines.append("Locking isn't available on this macOS version") }
         if b.contains(.scannerStalled) { lines.append("Bluetooth on this Mac stopped reporting nearby devices.") }
         if b.contains(.macInUse) { lines.append("Not locking while a video or call keeps the screen awake.") }
-        if b.contains(.phoneNotAdvertising) {
-            lines.append(proximity.phoneAvailabilityReason == .unavailable
-                ? "Bluetooth is off on the phone, or it can't advertise."
-                : "Turn on “Let your Mac lock when you walk away” in the phone app.")
+        switch proximity.phoneIssue {
+        case .switchOff: lines.append("Turn on “Let your Mac lock when you walk away” in the phone app.")
+        case .needsPermission: lines.append("Allow Nearby devices for Android Mirroring on the phone.")
+        case .bluetooth: lines.append("Bluetooth is off on the phone, or it can't advertise.")
+        case .needsUpdate: lines.append("Update the phone app to use Auto-Lock.")
+        case nil: break
         }
         if b.contains(.noRecentSession) { lines.append("Auto-Lock is paused until \(phone.name) connects to this Mac again.") }
         return lines

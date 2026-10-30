@@ -180,6 +180,27 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
     #expect(center.shows.last?.commands.play == true)
 }
 
+@MainActor @Test func toggleFollowsWhatTheStateOffersNow() async {
+    // The phone ignores TOGGLE unless the matching can_* is true: pause while playing, play while paused.
+    let (model, center, _, _) = rig()
+    await connectOn(model)
+    var s = playing(playing: true)
+    s.canPause = false
+    await model.message(envelope(.mediaState, s))
+    #expect(center.shows.last?.commands.toggle == false)
+    s.canPause = true
+    s.canPlay = false
+    await model.message(envelope(.mediaState, s))
+    #expect(center.shows.last?.commands.toggle == true)
+    s.playing = false
+    await model.message(envelope(.mediaState, s))
+    #expect(center.shows.last?.commands.toggle == false)
+    s.canPlay = true
+    s.canPause = false
+    await model.message(envelope(.mediaState, s))
+    #expect(center.shows.last?.commands.toggle == true)
+}
+
 @MainActor @Test func artworkArrivingAfterStateUpdatesNowPlaying() async {
     let (model, center, _, clock) = rig()
     await connectOn(model)

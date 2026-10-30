@@ -5,6 +5,18 @@ import Observation
 import os
 import SwiftProtobuf
 
+/// Why the chosen phone isn't advertising, as Settings words it.
+public enum PhoneAdvertisingIssue: Equatable, Sendable {
+    /// Its switch is off (or it hasn't said yet).
+    case switchOff
+    /// It lacks the Nearby devices permission.
+    case needsPermission
+    /// Bluetooth is off on it, or it can't advertise.
+    case bluetooth
+    /// Its app is too old for auto-lock (no `proximity.v1`).
+    case needsUpdate
+}
+
 /// Locks this Mac when the chosen phone goes away (PRD F-15; SPEC section 22). It never unlocks.
 ///
 /// It runs whether or not the phone is connected: it needs only the paired phones, this Mac's
@@ -71,7 +83,19 @@ public final class ProximityModel: SessionFeature {
     /// The scanner's state, for Settings (unknown is shown as nothing, though it blocks).
     public private(set) var scannerState: ScannerState
     /// Why the chosen phone last said it wasn't advertising; nil when it was, or hasn't said.
+    /// `.unspecified` is a phone app without `proximity.v1`.
     public private(set) var phoneAvailabilityReason: AMAvailabilityReason?
+
+    /// What Settings asks the user to fix while the chosen phone isn't advertising; nil otherwise.
+    public var phoneIssue: PhoneAdvertisingIssue? {
+        guard blockers.contains(.phoneNotAdvertising) else { return nil }
+        switch phoneAvailabilityReason {
+        case .needsPermission: return .needsPermission
+        case .unavailable: return .bluetooth
+        case .unspecified: return .needsUpdate
+        default: return .switchOff // off by the user, or not heard from yet
+        }
+    }
 
     @ObservationIgnored private let scanner: any BeaconScanner
     @ObservationIgnored private let locker: any ScreenLocker
