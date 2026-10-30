@@ -2,6 +2,10 @@
 /// pings every interval and the phone answers, so an idle phone needs no timer of its own.
 public enum Liveness {
     public static let capability = "liveness.v1"
+    /// The Mac's ping interval (SPEC 7).
+    public static let defaultInterval: Duration = .seconds(30)
+    /// Consecutive silent intervals before the Mac drops the phone (SPEC 7).
+    public static let defaultMissedLimit = 3
 }
 
 enum LivenessAction: Equatable {
@@ -17,7 +21,8 @@ struct LivenessMonitor {
     private var receivedSinceTick = true
     private var missed = 0
 
-    init(missedLimit: Int = 3) {
+    init(missedLimit: Int = Liveness.defaultMissedLimit) {
+        precondition(missedLimit >= 1, "missedLimit must be at least 1")
         self.missedLimit = missedLimit
     }
 

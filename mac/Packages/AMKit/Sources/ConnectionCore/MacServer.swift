@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import Network
 import Observation
+import os
 import SwiftProtobuf
 
 /// What the pairing window and the menu show. A pairing window takes precedence over a
@@ -58,6 +59,33 @@ public enum MacServerError: Error, Equatable, Sendable {
     case notConnected
 }
 
+/// Why the Mac ended a phone's session. Logged as `phone session ended: <code>`: a code only,
+/// never a name, id or address.
+enum SessionEndReason: String, Sendable {
+    /// 75 s with nothing received (a phone without `liveness.v1`, SPEC 7).
+    case silence
+    /// The third consecutive silent ping interval (`liveness.v1`, SPEC 7).
+    case liveness
+    /// The phone closed the connection.
+    case eof
+    /// A transport, TLS or framing error, or an unreadable hello.
+    case error
+    /// `system.goodbye` from the phone.
+    case goodbye
+    /// The Mac woke from sleep (a phone without `liveness.v1`).
+    case wake
+    /// The same phone connected again.
+    case replaced
+    /// The server stopped (the Mac app quits).
+    case stop
+    /// The phone was forgotten on the Mac, or said goodbye UNPAIRED on another connection.
+    case unpaired
+    /// The Mac sent `system.error` and closed (busy, protocol mismatch, pairing errors).
+    case rejected
+    /// The pairing window ended.
+    case pairing
+}
+
 /// The Mac's side of the protocol: listens for phones, runs pairing (SPEC 5.3), enforces the
 /// rules after pairing (5.4), keep-alive and wake handling (7). Serves one phone at a time.
 @MainActor
@@ -77,6 +105,12 @@ public final class MacServer {
     @ObservationIgnored public var onEvent: ((MacServerEvent) -> Void)?
     /// Test hook: sees every accepted NWConnection before the handshake.
     @ObservationIgnored var onAcceptForTesting: ((NWConnection) -> Void)?
+    /// Where the end of each phone session (one that reached `.active`) is reported: the log by
+    /// default, so a Release build can tell why a phone dropped. Tests replace it.
+    @ObservationIgnored var logSessionEnd: (SessionEndReason) -> Void = { reason in
+        MacServer.sessionLog.notice("phone session ended: \(reason.rawValue, privacy: .public)")
+    }
+    private nonisolated static let sessionLog = Logger(subsystem: "io.github.anmirror.mac", category: "connection")
 
     @ObservationIgnored private let identityProvider: any IdentityProvider
     @ObservationIgnored private let phones: any PairedPhoneStore
@@ -126,8 +160,8 @@ public final class MacServer {
     public init(identity: any IdentityProvider, phones: any PairedPhoneStore, secrets: any SecretStore,
                 macName: String, appVersion: String, capabilities: Set<String>, advertise: Bool = true,
                 silenceTimeout: Duration = .seconds(75), pairingLifetime: TimeInterval = 300,
-                confirmationTimeout: Duration = .seconds(60), pingInterval: Duration = .seconds(30),
-                missedPingLimit: Int = 3, livenessClock: any Clock<Duration> = ContinuousClock(),
+                confirmationTimeout: Duration = .seconds(60), pingInterval: Duration = Liveness.defaultInterval,
+                missedPingLimit: Int = Liveness.defaultMissedLimit, livenessClock: any Clock<Duration> = ContinuousClock(),
                 now: @escaping () -> Date = Date.init) {
         self.identityProvider = identity
         self.phones = phones
@@ -170,9 +204,9 @@ public final class MacServer {
             switch s.phase {
             case .active, .awaitingHello:
                 post(s, .goodbye, bye, channel: .system)
-                drop(s, flush: true)
+                drop(s, .stop, flush: true)
             default:
-                drop(s)
+                drop(s, .stop)
             }
         }
         listenerGeneration += 1
@@ -184,9 +218,14 @@ public final class MacServer {
         recomputeState()
     }
 
-    /// After wake from sleep: close every connection and listen again on the same port.
+    /// After wake from sleep: listen again on the same port. A session that shares `liveness.v1`
+    /// is kept and pinged at once (its silent count starts over), so a locked phone that never
+    /// noticed the sleep stays connected; the drop rule ends it if it is gone. Every other
+    /// connection is closed, as in 0.1 (SPEC 7).
     public func handleWake() {
-        for s in Array(sessions.values) { drop(s) }
+        for s in Array(sessions.values) {
+            if s.liveness != nil { startLiveness(s, pingNow: true) } else { drop(s, .wake) }
+        }
         guard identity != nil, let port else { return }
         listenerGeneration += 1
         listener?.cancel()
@@ -264,7 +303,7 @@ public final class MacServer {
             case .active, .awaitingHello: post(s, .goodbye, bye, channel: .system)
             default: break
             }
-            drop(s, flush: true)
+            drop(s, .unpaired, flush: true)
         }
         if let known { emit(.unpaired(known)) }
         recomputeState()
@@ -359,13 +398,16 @@ public final class MacServer {
         sessions[ObjectIdentifier(session)] = session
         armSilence(session)
         session.reader = Task { [weak self] in
+            var reason = SessionEndReason.eof
             do {
                 for try await envelope in conn.envelopes {
                     guard let self else { return }
                     self.handle(envelope, in: session)
                 }
-            } catch {}
-            self?.drop(session)
+            } catch {
+                reason = .error
+            }
+            self?.drop(session, reason)
         }
     }
 
@@ -507,7 +549,7 @@ public final class MacServer {
                 error.message = "pairing window closed"
                 post(s, .error, error, channel: .system)
             }
-            drop(s, flush: true)
+            drop(s, .pairing, flush: true)
         }
         refreshPolicy()
         if let rejection { emit(.rejected(rejection)) }
@@ -516,7 +558,7 @@ public final class MacServer {
 
     private func handleHello(_ env: AMEnvelope, phone: PairedPhone, in session: Session) {
         guard let remote = try? AMHello(serializedBytes: env.payload) else {
-            drop(session)
+            drop(session, .error)
             return
         }
         let local = macHello()
@@ -529,7 +571,7 @@ public final class MacServer {
                 if current.conn.peerFingerprint == session.conn.peerFingerprint {
                     // The same phone came back (new address, half-dead old socket): replace.
                     active = nil
-                    drop(current)
+                    drop(current, .replaced)
                 } else {
                     reject(session, .busy, .busy)
                     return
@@ -552,9 +594,9 @@ public final class MacServer {
             pairedCache = nil
             refreshPolicy()
             emit(.unpaired(paired))
-            for s in Array(sessions.values) where s.conn.peerFingerprint == paired.fingerprint { drop(s) }
+            for s in Array(sessions.values) where s.conn.peerFingerprint == paired.fingerprint { drop(s, .unpaired) }
         }
-        drop(session)
+        drop(session, .goodbye)
     }
 
     // MARK: sessions
@@ -565,17 +607,20 @@ public final class MacServer {
         session.silence = Task { [weak self, weak session] in
             do { try await Task.sleep(for: timeout) } catch { return }
             guard let self, let session else { return }
-            self.drop(session)
+            self.drop(session, .silence)
         }
     }
 
     /// SPEC 7 with `liveness.v1`: the 75 s silence rule no longer applies; the Mac pings every
     /// `pingInterval`, the first one an interval after its hello, and drops the phone at the
-    /// `missedPingLimit`-th consecutive interval with nothing received.
-    private func startLiveness(_ session: Session) {
+    /// `missedPingLimit`-th consecutive interval with nothing received. With `pingNow` (wake)
+    /// the count starts over and the first tick is now.
+    private func startLiveness(_ session: Session, pingNow: Bool = false) {
         session.silence?.cancel()
         session.silence = nil
+        session.pinger?.cancel()
         session.liveness = LivenessMonitor(missedLimit: missedPingLimit)
+        if pingNow, !livenessTick(session) { return }
         let interval = pingInterval
         let clock = livenessClock
         session.pinger = Task { [weak self, weak session] in
@@ -596,7 +641,7 @@ public final class MacServer {
             post(session, .ping, AMPing(), channel: .system)
             return true
         case .drop:
-            drop(session)
+            drop(session, .liveness)
             return false
         }
     }
@@ -607,18 +652,20 @@ public final class MacServer {
         error.code = code
         error.message = "\(rejection.rawValue)"
         post(session, .error, error, channel: .system)
-        drop(session, flush: true)
+        drop(session, .rejected, flush: true)
         emit(.rejected(rejection))
         recomputeState()
     }
 
-    /// Forgets a session and closes its connection. Idempotent.
-    private func drop(_ session: Session, flush: Bool = false) {
+    /// Forgets a session and closes its connection. Idempotent: the first reason is the one
+    /// logged, and only for a phone session (one that reached `.active`).
+    private func drop(_ session: Session, _ reason: SessionEndReason, flush: Bool = false) {
         guard sessions.removeValue(forKey: ObjectIdentifier(session)) != nil else { return }
         session.silence?.cancel()
         session.pinger?.cancel()
         let phase = session.phase
         session.phase = .closed
+        if case .active = phase { logSessionEnd(reason) }
         if flush { session.conn.closeAfterFlush() } else { session.conn.close() }
         if let w = window, w.session === session {
             // The phone went away mid-confirmation: the spent secret cannot be reused.

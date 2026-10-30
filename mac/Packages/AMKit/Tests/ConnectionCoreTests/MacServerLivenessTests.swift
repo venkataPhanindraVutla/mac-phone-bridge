@@ -89,7 +89,7 @@ final class ManualClock: Clock, @unchecked Sendable {
 /// SPEC 7 with `liveness.v1` shared: the Mac pings every interval and drops the phone at the
 /// third consecutive interval with nothing received; without it, the 0.1 rules hold.
 @MainActor
-@Suite struct MacServerLivenessTests {
+@Suite(.serialized) struct MacServerLivenessTests {
     @Test func macPingsLivenessPhone() async throws {
         let (phones, _) = try knownPhoneStore()
         let (server, port, _) = try await startServer(phones: phones, capabilities: livenessCaps,
@@ -245,5 +245,105 @@ final class ManualClock: Clock, @unchecked Sendable {
         }
         #expect(server.state != .idle)
         #expect(!log.events.contains { if case .disconnected = $0 { true } else { false } })
+    }
+
+    // MARK: final fix wave (I2a, I3)
+
+    /// I2(a): on wake a `liveness.v1` session stays and is pinged at once; the drop rule still applies.
+    @Test func wakeKeepsLivenessSessionAndPingsAtOnce() async throws {
+        let (phones, known) = try knownPhoneStore()
+        let clock = ManualClock()
+        let (server, port, log) = try await startServer(phones: phones, capabilities: livenessCaps,
+                                                        livenessClock: clock)
+        defer { server.stop() }
+        var ended: [SessionEndReason] = []
+        server.logSessionEnd = { ended.append($0) }
+        let (phone, _) = try await connectPhone(port: port)
+        #expect(await eventually { clock.pendingSleepers == 1 })
+        clock.advance(by: .seconds(20)) // part of an interval has passed before the sleep
+
+        server.handleWake()
+        let ping = try #require(await phone.next(timeout: .seconds(1)), "a ping at once, not 30 s later")
+        #expect(ping.type == MessageType.ping.rawValue)
+        #expect(server.activePhone?.phone == known)
+        #expect(await eventually(timeout: .seconds(5)) { server.port == port && server.isListening })
+        #expect(!log.events.contains { if case .disconnected = $0 { true } else { false } })
+
+        // The phone answers; the session goes on, and the pinger runs on its usual interval.
+        try await phone.conn.send(.pong, AMPong(), channel: .system, replyTo: ping.id)
+        #expect(await eventually { clock.pendingSleepers == 1 })
+        clock.advance(by: .seconds(30))
+        #expect(try #require(await phone.next()).type == MessageType.ping.rawValue)
+        #expect(server.state != .idle)
+
+        // A phone that stops answering is dropped by the drop rule, not by the wake: three silent
+        // ticks (four if the pong above landed just after a tick).
+        var ticks = 0
+        while !log.contains(.disconnected(known)), ticks < 5 {
+            #expect(await eventually { clock.pendingSleepers == 1 })
+            clock.advance(by: .seconds(30))
+            ticks += 1
+            _ = await phone.next(timeout: .milliseconds(300))
+        }
+        #expect(await eventually { log.contains(.disconnected(known)) })
+        #expect((3...4).contains(ticks))
+        #expect(ended == [.liveness])
+    }
+
+    /// I2(a): a phone without `liveness.v1` is closed on wake, as in 0.1.
+    @Test func wakeClosesLegacySession() async throws {
+        let (phones, known) = try knownPhoneStore()
+        let (server, port, log) = try await startServer(phones: phones, capabilities: livenessCaps)
+        defer { server.stop() }
+        var ended: [SessionEndReason] = []
+        server.logSessionEnd = { ended.append($0) }
+        let (phone, _) = try await connectPhone(port: port, capabilities: ["status.v1", "find.v1"])
+        #expect(await eventually { server.state != .idle })
+        server.handleWake()
+        #expect(await phone.ended())
+        #expect(log.contains(.disconnected(known)))
+        #expect(ended == [.wake])
+    }
+
+    /// I3: each end of a phone session is logged with its reason.
+    @Test func sessionEndReasonsAreLogged() async throws {
+        let (phones, _) = try knownPhoneStore()
+        let (server, port, _) = try await startServer(phones: phones, silenceTimeout: .milliseconds(300),
+                                                      capabilities: livenessCaps)
+        defer { server.stop() }
+        var ended: [SessionEndReason] = []
+        server.logSessionEnd = { ended.append($0) }
+
+        // The 75 s rule (here 300 ms) for a phone without liveness.v1.
+        _ = try await connectPhone(port: port, capabilities: ["status.v1", "find.v1"])
+        #expect(await eventually(timeout: .seconds(3)) { ended == [.silence] })
+
+        // The same phone connecting again replaces its old session.
+        let (first, _) = try await connectPhone(port: port)
+        #expect(await eventually { server.state != .idle })
+        _ = try await connectPhone(port: port)
+        #expect(await first.ended())
+        #expect(await eventually { ended == [.silence, .replaced] })
+
+        // A goodbye from the phone.
+        let (third, _) = try await connectPhone(port: port)
+        #expect(await eventually { ended == [.silence, .replaced, .replaced] })
+        var bye = AMGoodbye()
+        bye.reason = .shutdown
+        try await third.conn.send(.goodbye, bye, channel: .system)
+        #expect(await eventually { ended == [.silence, .replaced, .replaced, .goodbye] })
+
+        // The phone closing its socket.
+        let (fourth, _) = try await connectPhone(port: port)
+        #expect(await eventually { server.state != .idle })
+        fourth.conn.close()
+        #expect(await eventually { ended.last == .eof })
+
+        // The Mac app stopping.
+        _ = try await connectPhone(port: port)
+        #expect(await eventually { server.state != .idle })
+        server.stop()
+        #expect(ended.last == .stop)
+        #expect(ended.count == 6)
     }
 }
