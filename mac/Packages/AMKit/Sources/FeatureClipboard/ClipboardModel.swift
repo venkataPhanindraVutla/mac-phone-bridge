@@ -13,6 +13,10 @@ public enum ClipboardSendOutcome: Equatable, Sendable { case sent, empty, tooLar
 /// `clipboard.text` unless it is a password manager's item, too large, or text the phone itself
 /// put there. Text from the phone is written as plain text.
 ///
+/// Ruling R22: a copy goes only while the phone reports `clipboard.availability` enabled. Before
+/// the first availability of a connection, or while the phone's switch is off, nothing is sent,
+/// and copies made then are never sent later (only copies made after it turns on go).
+///
 /// Clipboard text is never logged, nor its size or hash.
 @MainActor
 @Observable
@@ -85,7 +89,11 @@ public final class ClipboardModel: SessionFeature {
         case .clipboardText:
             if let t = try? AMClipboardText(serializedBytes: envelope.payload) { acceptFromPhone(t.text) }
         case .clipboardAvailability:
-            if let a = try? AMFeatureAvailability(serializedBytes: envelope.payload) { phoneAvailability = a }
+            guard let a = try? AMFeatureAvailability(serializedBytes: envelope.payload) else { return }
+            // Turned on: only copies made from now on go, not one made while it was off that
+            // no poll has looked at yet (R22).
+            if a.enabled, phoneAvailability?.enabled != true { seenCount = pasteboard.changeCount }
+            phoneAvailability = a
         default:
             break
         }
@@ -101,8 +109,10 @@ public final class ClipboardModel: SessionFeature {
         let count = pasteboard.changeCount
         guard count != seenCount else { return }
         seenCount = count
-        // Switched off: the pasteboard is not read, and turning it on never sends what is there now.
-        guard sendEnabled, Set(pasteboard.types).isDisjoint(with: Self.skippedTypes) else { return }
+        // Switched off, here or on the phone (R22): the pasteboard is not read, and turning it on
+        // never sends what is there now.
+        guard sendEnabled, phoneAvailability?.enabled == true,
+              Set(pasteboard.types).isDisjoint(with: Self.skippedTypes) else { return }
         let text = pasteboard.readString()
         // Written while being read: the types checked may not be this text's (a password manager's
         // concealed item). The next tick sees the moved count and looks at it afresh.

@@ -78,6 +78,14 @@ private final class Rig {
     func connect(_ shared: Set<String> = ["clipboard.v1", "share.v1"]) async {
         await clipboard.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
         await share.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+        // The phone's clipboard switch is on: Mac copies may go (R22).
+        var on = AMFeatureAvailability()
+        on.enabled = true
+        var e = AMEnvelope()
+        e.channel = .clipboard
+        e.type = MessageType.clipboardAvailability.rawValue
+        e.payload = (try? on.serializedData()) ?? Data()
+        await clipboard.message(e)
     }
 
     func disconnect() {
