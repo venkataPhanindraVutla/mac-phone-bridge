@@ -333,6 +333,22 @@ case12() {
   if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a legacy phone within 2 s"; return 1; fi
 }
 
+# An old Mac (no liveness.v1) with a new phone: 0.1 rules. The phone pings at its sim-speed 0.1
+# cadence and the Mac answers; the Mac's silence rule (sim speed) never fires.
+case13() {
+  begin_case "13 legacy Mac, liveness phone: the phone's pings keep it up"
+  local pstate; pstate="$(new_dir c13-phone)"
+  start_mac c13 --auto-confirm --silence-ms 750 || return 1
+  start_phone c13 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --liveness --ping-interval-ms 300
+  need "$PHONE_LOG" '^EVENT connected shared=find\.v1,status\.v1$' "phone EVENT connected shared=find.v1,status.v1 (no liveness.v1)" || return 1
+  need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,status\.v1$' "mac EVENT connected shared=find.v1,status.v1" || return 1
+  # 3 x the phone's sim-speed 45 s (450 ms), and well past the Mac's sim-speed 75 s (750 ms).
+  sleep 2
+  if grep -q '^EVENT mac-ping$' "$PHONE_LOG"; then fail_reason="a Mac without liveness.v1 pinged the phone"; return 1; fi
+  if grep -Eq '^EVENT disconnected' "$PHONE_LOG"; then fail_reason="phone dropped the session (its pings unanswered?)"; return 1; fi
+  if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a phone that pings (silence rule)"; return 1; fi
+}
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -351,10 +367,11 @@ run_case case9
 run_case case10
 run_case case11
 run_case case12
+run_case case13
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 12 cases passed"
+  echo "interop: all 13 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1

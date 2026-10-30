@@ -60,11 +60,14 @@ private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> 
        phone-sim connect --state-dir <dir> --identity <p12>
                       [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [common options]
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>] [--liveness]
+                [--ping-interval-ms <n>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
   --media: advertise media.v1, send media.availability and a paused session "sim"; a TOGGLE for it flips it; exit 0 after the second TOGGLE
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
   --liveness: advertise liveness.v1 (the Mac pings; the phone answers and pings only after 45 s of quiet)
+  --ping-interval-ms <n>: sim speed for the phone's keep-alive: 0.1 pings every n ms, the liveness.v1
+    fallback ping after 3n/2 ms of quiet, and n ms to wait for an answer (default 30 s, 45 s, 10 s)
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 
 private val CAPABILITIES = listOf("find.v1", "status.v1")
@@ -98,6 +101,7 @@ private class Options(
     val media: Boolean,
     val sendBytes: Long?,
     val liveness: Boolean,
+    val pingIntervalMs: Long?,
     val name: String,
     val model: String,
 )
@@ -141,6 +145,7 @@ private fun parse(args: Array<String>): Options {
     var media = false
     var sendBytes: Long? = null
     var liveness = false
+    var pingIntervalMs: Long? = null
     var name = "phone-sim"
     var model = "phone-sim"
     var i = 1
@@ -157,6 +162,8 @@ private fun parse(args: Array<String>): Options {
             "--media" -> media = true
             "--send-bytes" -> sendBytes = value(arg).toLongOrNull()?.takeIf { it >= 0 } ?: usageError("--send-bytes needs a size in bytes")
             "--liveness" -> liveness = true
+            "--ping-interval-ms" -> pingIntervalMs = value(arg).toLongOrNull()?.takeIf { it > 0 }
+                ?: usageError("--ping-interval-ms must be a positive integer")
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
             "-h", "--help" -> {
@@ -173,7 +180,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, notify, media, sendBytes, liveness, name, model,
+        autoConfirm, status, notify, media, sendBytes, liveness, pingIntervalMs, name, model,
     )
 }
 
@@ -325,7 +332,10 @@ private suspend fun session(
     }
     val media = if (options.media && "media.v1" in shared) SimMedia(channel, ::emit) { exitProcess(0) } else null
     media?.start()
-    val end = PhoneSession(channel, shared).run(onMacPing = { emit("EVENT mac-ping") }) { env ->
+    val session = options.pingIntervalMs?.let { n ->
+        PhoneSession(channel, shared, pingIntervalMs = n, pongTimeoutMs = n, fallbackIdleMs = n * 3 / 2)
+    } ?: PhoneSession(channel, shared)
+    val end = session.run(onMacPing = { emit("EVENT mac-ping") }) { env ->
         if (transfers?.onMessage(env) == true) return@run
         if (media?.onMessage(env) == true) return@run
         when (env.type) {

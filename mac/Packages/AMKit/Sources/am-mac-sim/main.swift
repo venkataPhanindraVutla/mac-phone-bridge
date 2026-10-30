@@ -25,6 +25,7 @@
 // first active media.state it sends TOGGLE, prints the round trip, then sends a second TOGGLE.
 // With --liveness it advertises liveness.v1 (SPEC 7): when the phone lists it too, the Mac pings
 // every 30 s (or --ping-interval-ms) and drops the phone at the third consecutive silent interval.
+// --silence-ms <n> replaces the 75 s silence rule for phones without liveness.v1 (sim speed).
 
 import AMProtocol
 import ConnectionCore
@@ -39,7 +40,7 @@ setvbuf(stdout, nil, _IOLBF, 0)
 let usage = """
     usage: am-mac-sim --identity <p12> --state-dir <dir> [--port <n|0>] [--password <pw>]
                       [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--echo-notify] [--no-bonjour]
-                      [--files <dir>] [--media-toggle] [--liveness] [--ping-interval-ms <n>]
+                      [--files <dir>] [--media-toggle] [--liveness] [--ping-interval-ms <n>] [--silence-ms <n>]
     """
 
 struct Options {
@@ -56,6 +57,7 @@ struct Options {
     var mediaToggle = false
     var liveness = false
     var pingIntervalMs: Int?
+    var silenceMs: Int?
 }
 
 func fail(_ message: String) -> Never {
@@ -89,6 +91,9 @@ func parse(_ args: [String]) -> Options {
         case "--ping-interval-ms":
             guard let ms = Int(value(arg)), ms > 0 else { fail("--ping-interval-ms must be a positive integer") }
             o.pingIntervalMs = ms
+        case "--silence-ms":
+            guard let ms = Int(value(arg)), ms > 0 else { fail("--silence-ms must be a positive integer") }
+            o.silenceMs = ms
         case "-h", "--help":
             print(usage)
             exit(0)
@@ -222,7 +227,8 @@ let server = MacServer(
     appVersion: "0.1.0-sim",
     capabilities: capabilities,
     advertise: options.bonjour,
-    pingInterval: options.pingIntervalMs.map { .milliseconds($0) } ?? .seconds(30)
+    silenceTimeout: options.silenceMs.map { .milliseconds($0) } ?? .seconds(75),
+    pingInterval: options.pingIntervalMs.map { .milliseconds($0) } ?? Liveness.defaultInterval
 )
 
 // MARK: files (--files)
