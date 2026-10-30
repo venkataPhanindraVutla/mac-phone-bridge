@@ -482,8 +482,8 @@ private struct FilenamesFile: Decodable {
 
 @Test func artworkKeyVectors() {
     let file: CryptoFile = load("crypto.json")
-    #expect(file.artworkKeys.count == 3)
-    #expect(file.artworkKeys.contains { $0.jpegHex.count == 98304 * 2 })
+    #expect(file.artworkKeys.count == 6)
+    #expect(Set(file.artworkKeys.map(\.jpegHex.count)).isSuperset(of: [110, 112, 128, 130]))
     for a in file.artworkKeys {
         #expect(ArtworkKey.of(data(hex: a.jpegHex)) == a.key)
     }

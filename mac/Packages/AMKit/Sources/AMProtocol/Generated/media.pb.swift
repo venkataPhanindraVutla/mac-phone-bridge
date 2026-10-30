@@ -155,7 +155,7 @@ public nonisolated struct AMMediaState: @unchecked Sendable {
     set {_uniqueStorage()._playing = newValue}
   }
 
-  /// playback speed; the Mac uses 1.0 when playing and 0
+  /// 0 is treated as 1.0 while playing; the Mac does not extrapolate when not playing
   public var speed: Float {
     get {_storage._speed}
     set {_uniqueStorage()._speed = newValue}

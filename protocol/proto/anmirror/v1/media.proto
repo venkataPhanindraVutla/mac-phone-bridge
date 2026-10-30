@@ -23,7 +23,7 @@ message MediaState {
   int64 duration_ms = 7;      // 0 = unknown or live
   int64 position_ms = 8;      // sampled when sent
   bool playing = 9;
-  float speed = 10;           // playback speed; the Mac uses 1.0 when playing and 0
+  float speed = 10;           // 0 is treated as 1.0 while playing; the Mac does not extrapolate when not playing
   bool can_play = 11;
   bool can_pause = 12;
   bool can_next = 13;

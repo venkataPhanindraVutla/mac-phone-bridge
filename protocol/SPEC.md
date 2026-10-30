@@ -498,13 +498,19 @@ Channel `DND`.
 - "On" means the phone's interruption filter is anything but ALL, or the Mac has any Focus on.
 - Each side sends transitions only (`snapshot = false`) while its own `sends` is enabled and the
   peer's last `applies` is enabled (nil = off).
+- **Availability.** Phone `sends` = the switch is on; phone `applies` = the switch is on and the
+  Do Not Disturb policy access is granted. Mac `sends` = the setting is on and Focus status is
+  readable; Mac `applies` = the setting is on and both Shortcuts are installed.
 - Right after connect it also sends one `snapshot = true` state, whenever its `sends` is enabled.
   A snapshot is shown, never applied.
 - **Applying.** A side applies a peer transition only when `origin = USER`, and only if its own
   state differs. It then remembers (state, time).
 - **Echoes.** A local transition to that state within 10 s is not sent. A later one that matches
   the last applied state, with no other local transition in between, is sent with
-  `origin = SYNC`. `SYNC` states are never applied.
+  `origin = SYNC`. `SYNC` states are never applied. Example: the Mac turns Focus on and the phone
+  applies it. If the phone's filter then reports "on" within 10 s, that is the echo and nothing is
+  sent. If the user turns the phone's filter off and on again later, the second "on" matches the
+  last applied state with nothing in between, so it is sent with `origin = SYNC`.
 - `dnd.availability` is sent both ways on connect and on change.
 
 ## 22. Proximity (`proximity.v1`)
@@ -512,9 +518,10 @@ Channel `DND`.
 Channel `PROXIMITY`.
 
 - The BLE ID is `HMAC-SHA256(key = discovery_key, msg = "anmirror-ble-v1" || phone_fp || uint64_be(epoch))[0..8]`
-  (the first 8 bytes), with the epoch of section 6.
-- **The advertisement** is legacy, non-connectable, without the device name or TX power, and
-  carries only service data: UUID `3d30288c-0f47-4016-a6ba-44506f920431` and the 8 bytes of the
+  (the first 8 bytes), with the epoch of section 6. `phone_fp` is the 32-byte SHA-256 certificate
+  fingerprint of the paired phone, raw bytes (section 4). The Mac computes one ID per paired phone.
+- **The advertisement** is legacy (31-byte limit), non-connectable, without the device name or TX
+  power, and its only element is the service data: UUID `3d30288c-0f47-4016-a6ba-44506f920431` and the 8 bytes of the
   BLE ID. The phone restarts it at each epoch.
 - The Mac accepts `epoch - 1` to `epoch + 1`.
 - `proximity.availability` says whether the phone is advertising. It is not a protocol message
@@ -531,9 +538,10 @@ Channel `INPUT`.
 - The phone sends `input.*` only while the Mac's last `input.availability` is enabled.
 - `input.move` and `input.scroll` are relative, in Mac points. A scroll is the finger's movement;
   the Mac applies its Natural scrolling setting.
+- The phone coalesces moves and scrolls to at most 120 Hz: deltas are summed, never queued.
 - `input.click.count` is the click count (2 = double-click).
 - A button held 5 s after the last `input.*` frame, or at disconnect, is released by the Mac.
-- The Mac drops frames beyond 240 per second, except button-up and laser-off.
+- The Mac drops frames beyond 240 in any 1 s window, except button-up and laser-off.
 - `REMOTE_KEY_PREV_SLIDE` and `REMOTE_KEY_NEXT_SLIDE` are the Left and Right arrow keys.
 
 Vectors: `framing.json` `input_move`.

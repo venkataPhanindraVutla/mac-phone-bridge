@@ -374,8 +374,8 @@ class VectorTest {
     @Test
     fun artworkKeyVectors() {
         val keys = load("crypto.json").arr("artwork_keys").map { it.jsonObject }
-        assertEquals(3, keys.size)
-        assertTrue(keys.any { it.str("jpeg_hex").length == 98304 * 2 })
+        assertEquals(6, keys.size)
+        assertTrue(keys.map { it.str("jpeg_hex").length }.containsAll(listOf(110, 112, 128, 130)))
         for (a in keys) assertEquals(a.str("key"), ArtworkKey.of(a.str("jpeg_hex").unhex()))
         assertEquals("", ArtworkKey.of(ByteArray(0)))
         assertEquals(16, ArtworkKey.of("jpeg".toByteArray()).length)

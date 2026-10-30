@@ -361,14 +361,15 @@ def build_crypto(ids: list) -> dict:
                  "epoch": 1_700_000_000 // RID_EPOCH_SECONDS,
                  "rid": rotating_id(det("discovery-key/2"), 1_700_000_000)})
 
-    ble_times = [0, 899, 900, 1_700_000_000, 1_700_000_000 + 899, 1_700_000_000 + 900]
+    ble_times = [0, 899, 900, 1_700_000_000, 1_700_000_100 - 1, 1_700_000_100]
     ble_ids = []
     for fp_name, fp in (("phone", phone), ("stranger", stranger)):
         for t in ble_times:
             e = t // RID_EPOCH_SECONDS
             ble_ids.append({"key_hex": key.hex(), "phone_fp_hex": fp.hex(), "unix_seconds": t,
                             "epoch": e, "ble_id_hex": ble_id(key, fp, e).hex()})
-    artwork_inputs = [b"", b"jpeg", det("artwork", 98304)]
+    # lengths around SHA-256's 55/56 and 64/65 byte block boundaries
+    artwork_inputs = [b"", b"jpeg"] + [det("artwork", n) for n in (55, 56, 64, 65)]
     artwork_keys = [{"jpeg_hex": j.hex(), "key": artwork_key(j)} for j in artwork_inputs]
     return {"notes": "code is a zero-padded 6-digit string",
             "fingerprints": fingerprints, "proofs": proofs, "codes": codes, "rotating_ids": rids,
