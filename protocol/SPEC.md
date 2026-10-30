@@ -301,13 +301,23 @@ not need its own timer, because its CPU may be suspended; it wakes on an incomin
 
 Both modes:
 
-- On wake from sleep the Mac closes every connection and restarts its listener on the same port.
+- On wake from sleep the Mac restarts its listener on the same port and closes every connection
+  of a phone **without** `liveness.v1`. A session that shares `liveness.v1` is kept: the Mac
+  sends it a `system.ping` at once and starts its silent-tick count over (that ping is the
+  first tick; the next follows 30 s later). Only the drop rule above ends it. A locked phone
+  usually never noticed the sleep, so its connection is still up.
 - When the Mac app quits it sends `system.goodbye{SHUTDOWN}` to the connected phone first. The
   phone treats it as a normal disconnect: it keeps the pairing and reconnects with its backoff.
+- A phone whose session had been connected for **60 s** or more (wall time, sleep included) and
+  ended because the Mac closed it (end of stream) or said `system.goodbye` (other than
+  `UNPAIRED`) SHOULD dial once at once, before its backoff: a locked phone is awake only briefly
+  after the Mac's close.
+- A phone MUST NOT send `system.goodbye{UNPAIRED}` because its own store could not be read; only
+  for a Mac the user removed.
 
 What the user sees (builder's call, recorded in 0.1; shorter detection is tracked for 0.9):
 "connected/disconnected" updates **immediately when the connection closes** (app quit, Mac
-sleep/wake, phone app stopped). When the phone vanishes (Wi-Fi off, out of range, app frozen) it
+sleep/wake with a phone without `liveness.v1`, phone app stopped). When the phone vanishes (Wi-Fi off, out of range, app frozen) it
 updates **within 2 minutes** (90 to 120 s) for a `liveness.v1` phone, and **within 75 s** for a phone without it.
 
 `StatusUpdate.background_restricted` (field 5) is `true` when the phone is not exempt from

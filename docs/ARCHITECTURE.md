@@ -85,6 +85,7 @@ This document describes how the PRD gets built. Items marked **(builder's choice
   - Carries length-prefixed **Protocol Buffers** messages in an envelope: `{channel, id, reply_to, type, payload}`.
   - Used for everything small: notifications, clipboard, calls, media, status, settings.
   - Keep-alive is tuned for battery (builder's choice; it must meet the 2%/day goal): Mac-driven ping every 30 s (`liveness.v1`), phone answers, TCP keepalive on all sockets.
+  - On Mac wake a `liveness.v1` session is kept and pinged at once; other connections close as in 0.1. A phone whose long session the Mac closed dials again at once (SPEC §7).
 - **Bulk connections:** a separate TLS connection per file transfer, or per batch (F-04, F-12, F-13). Big files then never block small messages.
 - **Mirror connections (Full mode):** separate TLS connections for video, audio and input (see §6).
 - **Capabilities handshake:** on connect, both sides exchange `{protocol_version, app_version, capabilities[], setup_level}`.
