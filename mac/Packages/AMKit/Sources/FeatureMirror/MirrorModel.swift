@@ -41,7 +41,7 @@ public final class MirrorModel: SessionFeature {
     /// The deadline for RUNNING and the first frame (Global Constraints).
     public static let defaultStartDeadline: Duration = .seconds(20)
     /// The scrcpy RESET_VIDEO control message (type 17).
-    static let resetVideo = Data([17])
+    static let resetVideo = ScrcpyControl.resetVideo()
 
     public enum Phase: Equatable {
         case idle, starting
@@ -65,6 +65,15 @@ public final class MirrorModel: SessionFeature {
 
     /// The running (or starting) session; nil otherwise.
     public var session: MirrorSession? { current }
+
+    /// Lets go of held input (the mirror view's `InputMapper.releaseAll`). Called while the session
+    /// is still current, before it ends for any reason (so the UP goes out on its control link before
+    /// the links close), and after a session packet changes the video size (so the UP carries the
+    /// new size, the only one the helper accepts).
+    @ObservationIgnored public var releaseInput: (@MainActor () -> Void)?
+    /// Text the view has just set on the phone's clipboard to paste (⌘V, emoji, other scripts).
+    /// Task 8 wires it; never logged.
+    @ObservationIgnored public var onPasteSent: ((String) -> Void)?
 
     @ObservationIgnored private let bulk: any BulkGrants
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
@@ -233,11 +242,13 @@ public final class MirrorModel: SessionFeature {
             firstFrameSeen = true
             becomeRunningIfReady()
         case let .size(width, height):
+            let changed = videoSize.map { $0 != (width, height) } ?? false
             videoSize = (width, height)
             if case .running = phase {
                 phase = .running(width: width, height: height)
                 Self.log.info("session \(id, privacy: .public) size \(width, privacy: .public)x\(height, privacy: .public)")
             }
+            if changed { releaseInput?() }
         case .needsReset:
             current.sendControl(Self.resetVideo)
         case let .linkEnded(role):
@@ -288,6 +299,7 @@ public final class MirrorModel: SessionFeature {
     @discardableResult
     private func end(_ reason: MirrorEndReason?, closing: Bool = true) -> MirrorSession? {
         guard let session = current else { return nil }
+        releaseInput?()
         current = nil
         deadline?.cancel()
         deadline = nil
