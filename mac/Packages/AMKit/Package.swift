@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "FeatureFocus", targets: ["FeatureFocus"]),
         .library(name: "FeatureProximity", targets: ["FeatureProximity"]),
         .library(name: "FeatureInput", targets: ["FeatureInput"]),
+        .library(name: "FeatureMirror", targets: ["FeatureMirror"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         // The Full build's extensions and the app's FULL_BUILD code only (docs/ARCHITECTURE.md section 4).
         .library(name: "FileProviderShared", targets: ["FileProviderShared"]),
@@ -115,6 +116,14 @@ let package = Package(
             name: "FeatureInput",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
             linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit")]
+        ),
+        .target(
+            name: "FeatureMirror",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
+            linkerSettings: [
+                .linkedFramework("VideoToolbox"), .linkedFramework("CoreMedia"), .linkedFramework("CoreVideo"),
+                .linkedFramework("AVFoundation"), .linkedFramework("AudioToolbox"), .linkedFramework("AppKit"),
+            ]
         ),
         .target(
             name: "AppSession",
@@ -214,6 +223,13 @@ let package = Package(
         .testTarget(
             name: "FeatureInputTests",
             dependencies: ["FeatureInput", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .testTarget(
+            name: "FeatureMirrorTests",
+            dependencies: [
+                "FeatureMirror", "AMProtocol", "ConnectionCore", "AMTestSupport",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
         ),
         .testTarget(name: "FileProviderSharedTests", dependencies: ["FileProviderShared"]),
         .testTarget(
