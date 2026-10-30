@@ -9,8 +9,12 @@ import FeatureClipboard
 import FeatureContacts
 import FeatureFiles
 import FeatureFind
+import FeatureFocus
+import FeatureInput
+import FeatureMedia
 import FeatureNotify
 import FeaturePhotos
+import FeatureProximity
 import FeatureScreenshots
 import FeatureShare
 import FeatureStatus
@@ -25,7 +29,8 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
-        "screenshots.v1", "photos.v1", "browse.v1",
+        "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
+        "proximity.v1", "input.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -46,6 +51,15 @@ final class AppModel {
     let photos: PhotosModel
     /// The phone's files for the Phone window's Files tab.
     let browse: BrowseModel
+    /// The phone's media session, in macOS Now Playing, the menu and the Phone window's Now Playing tab.
+    let media: MediaModel
+    /// Focus on this Mac and Do Not Disturb on the phone, kept in step ("Sync Focus" in Settings).
+    let focus: FocusModel
+    /// Locks this Mac when the chosen phone is away ("Auto-Lock" in Settings). Runs whether or not
+    /// the phone is connected.
+    let proximity: ProximityModel
+    /// The phone as trackpad and remote ("Trackpad and Remote" in Settings).
+    let input: InputModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -84,11 +98,19 @@ final class AppModel {
     @ObservationIgnored private static let contactsKey = "contactsForNames"
     @ObservationIgnored private static let callsKey = "showPhoneCalls"
     @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
+    @ObservationIgnored private static let syncFocusKey = "syncFocus"
+    @ObservationIgnored private static let pointerControlKey = "allowPointerControl"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
     }
     private static var savedSendMacClipboard: Bool {
         UserDefaults.standard.object(forKey: clipboardKey) as? Bool ?? true
+    }
+    private static var savedSyncFocus: Bool {
+        UserDefaults.standard.object(forKey: syncFocusKey) as? Bool ?? false
+    }
+    private static var savedAllowPointerControl: Bool {
+        UserDefaults.standard.object(forKey: pointerControlKey) as? Bool ?? false
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
@@ -254,12 +276,51 @@ final class AppModel {
             }
         )
         self.share = share
+        let media = MediaModel(
+            center: SystemNowPlaying(),
+            send: { type, message in
+                // Only a phone that shares media.v1 gets media messages.
+                guard server.activePhone?.shared.contains("media.v1") == true else { return }
+                try? await server.send(type, message, channel: .media)
+            }
+        )
+        self.media = media
+        let focus = FocusModel(
+            reader: SystemFocusReader(), shortcuts: SystemShortcuts(), enabled: Self.savedSyncFocus,
+            send: { type, message in
+                // Only a phone that shares dnd.v1 gets dnd messages.
+                guard server.activePhone?.shared.contains("dnd.v1") == true else { return }
+                try? await server.send(type, message, channel: .dnd)
+            }
+        )
+        self.focus = focus
+        let proximity = ProximityModel(
+            scanner: CoreBluetoothScanner(), locker: LoginFrameworkLocker(), activity: SystemMacActivity(),
+            defaults: .standard
+        )
+        self.proximity = proximity
+        let input = InputModel(
+            poster: CGEventPoster(), laser: LaserOverlayPanel(), trust: SystemAccessibilityTrust(),
+            enabled: Self.savedAllowPointerControl,
+            naturalScrolling: { InputModel.naturalScrolling() },
+            send: { type, message in
+                // Only a phone that shares input.v1 gets input messages.
+                guard server.activePhone?.shared.contains("input.v1") == true else { return }
+                try? await server.send(type, message, channel: .input)
+            },
+            doubleClickInterval: NSEvent.doubleClickInterval
+        )
+        self.input = input
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
         notifyWork.register(screenshots)
         notifyWork.register(photos)
         notifyWork.register(browse)
+        notifyWork.register(media)
+        notifyWork.register(focus)
+        notifyWork.register(proximity)
+        notifyWork.register(input)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -295,12 +356,15 @@ final class AppModel {
             #endif
             await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
         }
-        // The user may allow notifications in System Settings and come back.
+        // The user may allow notifications, Focus status or Accessibility in System Settings and come back.
+        // Delivered on the main queue, so the main-actor work runs under assumeIsolated.
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
                 if model.authorized == false { Task { await model.refreshAuthorization() } }
+                Task { await focus.refreshAuthorization() }
+                Task { await input.recheckTrust() }
             }
         }
         refreshPhones()
@@ -361,6 +425,15 @@ final class AppModel {
 
     /// Phone photos are browsed only while the connected phone shares `photos.v1`.
     var canPhotos: Bool { server.activePhone?.shared.contains("photos.v1") ?? false }
+
+    /// The phone's media is shown and controlled only while the connected phone shares `media.v1`.
+    var canMedia: Bool { server.activePhone?.shared.contains("media.v1") ?? false }
+
+    /// What the phone is playing, for the menu and the Now Playing tab; nil when nothing is.
+    var nowPlaying: AMMediaState? {
+        guard isConnected, canMedia, let state = media.state, state.active else { return nil }
+        return state
+    }
 
     /// Why the last thing the user sent (dropped, picked, or the clipboard) did not all go.
     /// Shown in the menu and the Send tab until the next send, connect or disconnect.
@@ -445,6 +518,39 @@ final class AppModel {
         guard on != clipboard.sendEnabled else { return }
         clipboard.sendEnabled = on
         UserDefaults.standard.set(on, forKey: Self.clipboardKey)
+    }
+
+    /// The "Sync Focus with <phone>" switch in Settings (default off), as last clicked. Turning
+    /// it on asks for Focus status access, and only then.
+    private(set) var syncFocus: Bool = AppModel.savedSyncFocus
+
+    /// Each click applies the latest value when its task runs, so the last click wins however
+    /// quickly the switch is toggled (the model drops a call that a later one overtakes).
+    func setSyncFocus(_ on: Bool) {
+        guard on != syncFocus else { return }
+        syncFocus = on
+        UserDefaults.standard.set(on, forKey: Self.syncFocusKey)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.focus.setEnabled(self.syncFocus)
+        }
+    }
+
+    /// The "Allow <phone> to control the pointer" switch in Settings (default off), as last
+    /// clicked. Turning it on asks for Accessibility, and only then.
+    private(set) var allowPointerControl: Bool = AppModel.savedAllowPointerControl
+
+    /// Each click applies the latest value when its task runs, so the last click wins.
+    func setAllowPointerControl(_ on: Bool) {
+        guard on != allowPointerControl else { return }
+        allowPointerControl = on
+        UserDefaults.standard.set(on, forKey: Self.pointerControlKey)
+        // Off takes effect now, before anything is awaited: nothing stays held, the laser goes.
+        if !on { input.disable() }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.input.setEnabled(self.allowPointerControl)
+        }
     }
 
     /// "Save phone screenshots to" in Settings. Applies from the next screenshot offered.
@@ -550,6 +656,8 @@ final class AppModel {
     /// Transfers end here, not through the session's work queue (it never drains while the app
     /// terminates), so a receive under way leaves no part file behind.
     func shutdown() {
+        // A button the phone holds is let go, and the laser hidden, before the process ends.
+        input.shutdown()
         let hadPhone = server.activePhone != nil
         server.stop()
         transfers.shutdown()
@@ -697,6 +805,7 @@ final class AppModel {
 
     private func refreshPhones() {
         pairedPhones = (try? phoneStore.all()) ?? []
+        proximity.setPhones(pairedPhones, discoveryKey: try? KeychainSecretStore().discoveryKey())
     }
 }
 

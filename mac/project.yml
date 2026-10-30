@@ -50,6 +50,14 @@ targets:
       - package: AMKit
         product: FeatureBrowse
       - package: AMKit
+        product: FeatureMedia
+      - package: AMKit
+        product: FeatureFocus
+      - package: AMKit
+        product: FeatureProximity
+      - package: AMKit
+        product: FeatureInput
+      - package: AMKit
         product: AppSession
     settings:
       base:

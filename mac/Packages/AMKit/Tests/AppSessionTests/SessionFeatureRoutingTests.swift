@@ -1,8 +1,10 @@
 import AMProtocol
 import ConnectionCore
+import CoreGraphics
 import CryptoKit
 import FeatureCalls
 import FeatureContacts
+import FeatureInput
 import FeatureNotify
 import Foundation
 import SwiftProtobuf
@@ -175,4 +177,69 @@ private final class Rig {
     r.queue.handle(message: envelope(.filesOffer, .files, AMTransferOffer()))
     await r.queue.drained()
     #expect(r.log.lines == ["files connected P1 Phone P1 files.v1", "files files.offer"])
+}
+
+/// Moves in arrival order, from a cursor that follows them.
+@MainActor
+private final class MovePoster: EventPoster {
+    var cursor = CGPoint(x: 100, y: 100)
+    var moves: [CGPoint] = []
+    func location() -> CGPoint { cursor }
+    func screens() -> [CGRect] { [CGRect(x: 0, y: 0, width: 1440, height: 900), CGRect(x: 1440, y: 0, width: 1920, height: 1080)] }
+    func move(to p: CGPoint, holding: AMMouseButton?, clickCount: Int) {
+        cursor = p
+        moves.append(p)
+    }
+    func button(_ b: AMMouseButton, down: Bool, at p: CGPoint, clickCount: Int) {}
+    func scroll(pixelsX: Int32, pixelsY: Int32) {}
+    func key(_ code: CGKeyCode) {}
+}
+
+@MainActor
+private final class NoLaser: LaserOverlay {
+    func show(at p: CGPoint) {}
+    func hide() {}
+}
+
+@MainActor
+private final class Trusted: AccessibilityTrust {
+    func isTrusted(prompt: Bool) -> Bool { true }
+}
+
+/// Not actor-bound: the model's `now` reads it.
+private final class Ticker {
+    var uptime: TimeInterval = 1_000
+}
+
+@MainActor @Test func thousandMovesApplyInOrder() async {
+    let r = Rig(); defer { r.cleanUp() }
+    let poster = MovePoster()
+    // 5 ms apart, so all 1,000 stay under 240 per second.
+    let ticker = Ticker()
+    let input = InputModel(
+        poster: poster, laser: NoLaser(), trust: Trusted(), enabled: true, naturalScrolling: { true },
+        send: { _, _ in },
+        now: {
+            ticker.uptime += 0.005
+            return ticker.uptime
+        })
+    r.queue.register(input)
+    r.queue.handle(.connected(phone("P1"), shared: ["input.v1"]))
+    var move = AMInputMove()
+    for i in 0..<1000 {
+        // Alternating steps, so a reordering would show up as a different path.
+        move.dx = i.isMultiple(of: 2) ? 1 : 0
+        move.dy = i.isMultiple(of: 2) ? 0 : 0.5
+        #expect(r.queue.handle(message: envelope(.inputMove, .input, move)))
+    }
+    await r.queue.drained()
+    #expect(poster.moves.count == 1000)
+    var expected: [CGPoint] = []
+    var p = CGPoint(x: 100, y: 100)
+    for i in 0..<1000 {
+        p.x += i.isMultiple(of: 2) ? 1 : 0
+        p.y += i.isMultiple(of: 2) ? 0 : 0.5
+        expected.append(p)
+    }
+    #expect(poster.moves == expected)
 }

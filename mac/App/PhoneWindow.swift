@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The "Phone" window: one tab per thing done with the phone (Send, Photos, Files).
+/// The "Phone" window: one tab per thing done with the phone (Send, Photos, Files, Now Playing).
 /// Closing it drops the photo thumbnails (they live in memory only, while the window is open).
 struct PhoneWindow: View {
     let model: AppModel
@@ -13,6 +13,8 @@ struct PhoneWindow: View {
                 .tabItem { Text("Photos") }
             FilesTab(model: model)
                 .tabItem { Text("Files") }
+            NowPlayingTab(model: model)
+                .tabItem { Text("Now Playing") }
         }
         .padding()
         .frame(minWidth: 560, minHeight: 380)

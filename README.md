@@ -133,6 +133,23 @@ The Full build uses the same app, plus the extensions and the code under `#if FU
 
 Install the debug APK on an Android 10+ phone. In the Mac app, open the menu-bar icon and choose "Pair a phone…". A QR code appears. Either scan it from the phone app's in-app scanner, or scan it with the phone's camera app, which opens an `anmirror://pair` link in the app. Confirm that the same code shows on both devices.
 
+### Focus sync
+
+Focus on the Mac and Do Not Disturb on the phone can follow each other. Turn on "Sync Focus with <phone>" in the Mac app's Settings, and "Sync Do Not Disturb with your Mac" in the phone app.
+
+- **Mac to phone:** the Mac reads whether a Focus is on. macOS asks once for Focus status access when you turn the setting on.
+- **Phone to Mac:** macOS has no way for an app to turn Focus on directly, so the Mac app runs two Shortcuts that you make once:
+
+1. Open the Shortcuts app and create a new shortcut.
+2. Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On.
+3. Name the shortcut “Android Mirroring Focus On”.
+4. Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”.
+5. Come back here and click Check Again.
+
+"Here" is the Focus section of the Mac app's Settings.
+
+Whether the ad-hoc signed Contributor build can read Focus status is not yet confirmed (owner check). If it can't, Settings says "This build of Android Mirroring can't read Focus status." and only the phone-to-Mac direction works.
+
 ## Requirements (planned)
 
 - macOS 14 Sonoma or later
