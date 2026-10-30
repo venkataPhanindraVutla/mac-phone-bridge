@@ -18,6 +18,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.ContactsContract
 import android.provider.MediaStore
+import android.provider.Settings
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
@@ -32,6 +33,7 @@ import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.BackgroundState
 import io.github.anmirror.phone.BuildConfig
+import io.github.anmirror.phone.MIRROR_TAG
 import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.MediaAccess
 import io.github.anmirror.phone.PairingState
@@ -179,6 +181,7 @@ class ConnectionService : LifecycleService() {
         setUpDnd()
         setUpProximity()
         setUpInput()
+        setUpMirror()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -216,6 +219,8 @@ class ConnectionService : LifecycleService() {
             dndSession = null
         }
         stopProximityReceiver()
+        wirelessDebuggingObserver?.let { contentResolver.unregisterContentObserver(it) }
+        wirelessDebuggingObserver = null
         graph.proximityBeacon.stop() // its sets and its alarm
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
@@ -842,6 +847,43 @@ class ConnectionService : LifecycleService() {
             val s = (graph.manager.state.value as? Connected)?.takeIf { "input.v1" in it.shared } ?: return@on
             graph.onMacInputAvailability(s, availability)
             Log.i(TAG, "input: mac availability enabled=${availability.enabled} reason=${availability.reason}")
+        }
+    }
+
+    /** Watches Wireless debugging while the service runs; touched only on the main thread. */
+    private var wirelessDebuggingObserver: ContentObserver? = null
+
+    /**
+     * Mirroring (F-17), its availability: `mirror.availability` goes to the Mac while it shares
+     * mirror.v1, on connect and on every change of the switch, the Full mode setup or Wireless
+     * debugging (`Settings.Global.adb_wifi_enabled`, watched here; a read that throws is unknown,
+     * which never blocks).
+     */
+    private fun setUpMirror() {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) = graph.refreshWirelessDebugging()
+        }
+        try {
+            contentResolver.registerContentObserver(Settings.Global.getUriFor(AppGraph.ADB_WIFI_ENABLED), false, observer)
+            wirelessDebuggingObserver = observer
+        } catch (e: SecurityException) {
+            Log.w(TAG, "mirror: wireless debugging not observable (${e.javaClass.simpleName})")
+        }
+        graph.refreshWirelessDebugging()
+        lifecycleScope.launch {
+            combine(
+                // By identity: a new session of the same Mac with the same capabilities is still new.
+                graph.manager.state
+                    .map { s -> (s as? Connected)?.takeIf { AppGraph.MIRROR_CAPABILITY in it.shared } }
+                    .distinctUntilChanged { a, b -> a === b },
+                graph.mirrorAvailabilities,
+            ) { session, availability -> session to availability }
+                .distinctUntilChanged { a, b -> a.first === b.first && a.second == b.second }
+                .collect { (session, availability) ->
+                    if (session == null) return@collect
+                    graph.sendMirror(MessageType.MIRROR_AVAILABILITY, availability)
+                    Log.i(MIRROR_TAG, "availability enabled=${availability.enabled} reason=${availability.reason}")
+                }
         }
     }
 

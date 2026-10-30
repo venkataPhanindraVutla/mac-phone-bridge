@@ -104,3 +104,39 @@ fun inputShared(state: PhoneConnectionState): Boolean = state is PhoneConnection
  */
 fun inputOpen(state: PhoneConnectionState, mac: MacInputAvailability?): Boolean =
     inputShared(state) && mac != null && mac.session === state && mac.availability.enabled
+
+/** Full mode needs Android 11: Wireless debugging and its pairing came with API 30. */
+const val MIRROR_MIN_SDK = 30
+
+/**
+ * The phone's `mirror.availability` (SPEC 24). Android 10 can never mirror; then the switch; then
+ * the setup: not paired, Wireless debugging off, or the last connect to it failed. An unreadable
+ * Wireless debugging setting ([wirelessDebugging] null) never blocks.
+ */
+fun mirrorAvailability(
+    sdk: Int,
+    userOn: Boolean,
+    paired: Boolean,
+    wirelessDebugging: Boolean?,
+    lastConnectFailed: Boolean,
+): FeatureAvailability {
+    val reason = when {
+        sdk < MIRROR_MIN_SDK -> AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE
+        !userOn -> AvailabilityReason.AVAILABILITY_REASON_OFF_BY_USER
+        !paired || wirelessDebugging == false || lastConnectFailed -> AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP
+        else -> return FeatureAvailability.newBuilder().setEnabled(true).build()
+    }
+    return FeatureAvailability.newBuilder().setEnabled(false).setReason(reason).build()
+}
+
+/** The line under "Allow your Mac to show this screen" (the running line comes with the session). */
+enum class MirrorRowLine { NEEDS_ANDROID_11, NEEDS_SETUP, WIRELESS_DEBUGGING_OFF, READY }
+
+/** Which [MirrorRowLine] the home row shows; none while the switch is off on a phone that can mirror. */
+fun mirrorRowLine(sdk: Int, on: Boolean, paired: Boolean, wirelessDebugging: Boolean?, lastConnectFailed: Boolean): MirrorRowLine? = when {
+    sdk < MIRROR_MIN_SDK -> MirrorRowLine.NEEDS_ANDROID_11
+    !on -> null
+    !paired -> MirrorRowLine.NEEDS_SETUP
+    wirelessDebugging == false || lastConnectFailed -> MirrorRowLine.WIRELESS_DEBUGGING_OFF
+    else -> MirrorRowLine.READY
+}

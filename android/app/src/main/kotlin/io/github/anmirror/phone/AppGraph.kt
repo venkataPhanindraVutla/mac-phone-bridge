@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
@@ -30,7 +31,14 @@ import io.github.anmirror.connection.PairedMacStore
 import io.github.anmirror.connection.PhonePairingClient
 import io.github.anmirror.connection.TlsConnector
 import io.github.anmirror.connection.TlsIdentity
+import io.github.anmirror.adb.AdbClient
+import io.github.anmirror.adb.AdbIdentity
+import io.github.anmirror.adb.LibAdbClient
+import io.github.anmirror.adb.LibAdbServices
 import io.github.anmirror.feature.clipboard.AndroidClipboard
+import io.github.anmirror.feature.mirror.FullModeSetup
+import io.github.anmirror.feature.mirror.SetupState
+import io.github.anmirror.feature.mirror.SetupStore
 import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
 import io.github.anmirror.feature.contacts.ContactsSync
@@ -58,6 +66,7 @@ import io.github.anmirror.feature.proximity.ProximityBeacon
 import io.github.anmirror.feature.screenshots.MediaStoreImageQuery
 import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
+import io.github.anmirror.phone.platform.AdbIdentityFiles
 import io.github.anmirror.phone.platform.AndroidKeepAliveTuner
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.Battery
@@ -75,6 +84,7 @@ import io.github.anmirror.phone.ui.mediaAccess
 import io.github.anmirror.phone.ui.photosAccess
 import io.github.anmirror.phone.ui.proximityPermissions
 import io.github.anmirror.phone.service.ConnectionService
+import io.github.anmirror.phone.service.PairingNotifications
 import io.github.anmirror.phone.service.PhoneNotificationListener
 import io.github.anmirror.phone.service.ProximityAlarmReceiver
 import io.github.anmirror.phone.service.SharedNotifications
@@ -127,6 +137,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Log tag for the whole app. */
 const val TAG = "AnMirror"
+
+/** Log tag for Full mode: stages, reasons, enum names, ports and sizes only. */
+const val MIRROR_TAG = "Mirror"
 
 /**
  * Manual dependency wiring: one instance per process, shared by the activity, the service and
@@ -456,6 +469,106 @@ class AppGraph private constructor(context: Context) {
         inputPrefs.edit { putBoolean(KEY_VOLUME_KEYS_ON, on) }
         _volumeKeysOn.value = on
     }
+
+    private val mirrorPrefs = app.getSharedPreferences("mirror", Context.MODE_PRIVATE)
+    private val _mirrorOn = MutableStateFlow(mirrorPrefs.getBoolean(KEY_MIRROR_ON, false))
+
+    /** The user's "Allow your Mac to show this screen" switch. Off until they turn it on. */
+    val mirrorOn: StateFlow<Boolean> = _mirrorOn.asStateFlow()
+
+    fun setMirrorOn(on: Boolean) {
+        mirrorPrefs.edit { putBoolean(KEY_MIRROR_ON, on) }
+        _mirrorOn.value = on
+    }
+
+    /** What the Full mode setup remembers (paired, the last connect port and whether it failed), published as it changes. */
+    val mirrorSetup = MirrorSetupPrefs(mirrorPrefs)
+
+    private val adbIdentities = AdbIdentityFiles(
+        File(app.filesDir, "adb"),
+        KeystoreCipher(),
+        onUnreadable = { keepAliveLog.record(KeepAliveEvent.FULL_MODE, "identity-unreadable,class=$it") },
+    )
+
+    private val adbLock = Any()
+    private var adb: Pair<AdbIdentity, LibAdbClient>? = null
+
+    /**
+     * The phone's own ADB client, for the current Full mode identity (a new identity gets a new
+     * client; the old one is closed). Throws IOException when there is no identity.
+     */
+    fun adbClient(): AdbClient = synchronized(adbLock) {
+        val id = adbIdentities.load() ?: throw IOException("no ADB identity")
+        adb?.takeIf { it.first === id }?.second
+            ?: LibAdbClient(id, Build.VERSION.SDK_INT).also { fresh ->
+                adb?.second?.close()
+                adb = id to fresh
+            }
+    }
+
+    private val _wirelessDebugging = MutableStateFlow(readWirelessDebugging())
+
+    /** `Settings.Global.adb_wifi_enabled`: null when it can't be read (that never blocks mirroring). */
+    val wirelessDebugging: StateFlow<Boolean?> = _wirelessDebugging.asStateFlow()
+
+    fun refreshWirelessDebugging() {
+        val now = readWirelessDebugging()
+        if (_wirelessDebugging.getAndUpdate { now } != now) Log.i(MIRROR_TAG, "setup: wireless debugging=$now")
+    }
+
+    private fun readWirelessDebugging(): Boolean? = try {
+        when (Settings.Global.getInt(app.contentResolver, ADB_WIFI_ENABLED, -1)) {
+            1 -> true
+            0 -> false
+            else -> null
+        }
+    } catch (e: Exception) { // SecurityException on builds that hide it
+        null
+    }
+
+    /** Full mode's one-time setup: pairing with Wireless debugging and the connection to it. */
+    val fullModeSetup: FullModeSetup = FullModeSetup(
+        adb = ::adbClient,
+        finder = LibAdbServices(app),
+        store = mirrorSetup,
+        identity = adbIdentities,
+        notify = { portKnown ->
+            PairingNotifications.post(app, portKnown, (fullModeSetup.state.value as? SetupState.PairFailed)?.error)
+        },
+        scope = scope,
+        log = {
+            Log.i(MIRROR_TAG, "setup: $it")
+            keepAliveLog.record(KeepAliveEvent.FULL_MODE, it)
+        },
+    )
+
+    /** Set when "Re-enable Full mode" opened Settings: the next app resume connects again. */
+    @Volatile var fullModeReArmPending = false
+
+    /** The phone's `mirror.availability` now (SPEC 24). */
+    fun mirrorAvailabilityNow(): FeatureAvailability {
+        val setup = mirrorSetup.snapshot.value
+        return mirrorAvailability(Build.VERSION.SDK_INT, _mirrorOn.value, setup.paired, _wirelessDebugging.value, setup.lastConnectFailed)
+    }
+
+    /** [mirrorAvailabilityNow] as it changes, for `mirror.availability` on change. */
+    val mirrorAvailabilities: Flow<FeatureAvailability> =
+        combine(mirrorOn, mirrorSetup.snapshot, wirelessDebugging) { on, setup, wd ->
+            mirrorAvailability(Build.VERSION.SDK_INT, on, setup.paired, wd, setup.lastConnectFailed)
+        }.distinctUntilChanged()
+
+    /** The connected Mac shares mirror.v1. */
+    fun mirrorShared(): Boolean = shares(MIRROR_CAPABILITY)
+
+    /** Mirroring may start: the Mac shares mirror.v1 and the availability is enabled. */
+    fun mirrorOpen(): Boolean = mirrorShared() && mirrorAvailabilityNow().enabled
+
+    /**
+     * Sends a `mirror.*` message while the Mac shares mirror.v1; false (and nothing sent) otherwise.
+     * Not gated on [mirrorOpen]: the availability and a start's FAILED answer go out while closed.
+     */
+    suspend fun sendMirror(type: String, payload: MessageLite): Boolean =
+        mirrorShared() && manager.send(ProtoChannel.CHANNEL_MIRROR, type, payload)
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(
@@ -1029,6 +1142,12 @@ class AppGraph private constructor(context: Context) {
         }
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
         scope.launch { transfers.transfers.collect { releaseFinished() } }
+        // Paired (connecting or connected) or given up: the pairing notification has done its job.
+        scope.launch {
+            fullModeSetup.state.collect { s ->
+                if (s == SetupState.Connecting || s == SetupState.Ready || s == SetupState.ConnectFailed) PairingNotifications.cancel(app)
+            }
+        }
         TransferNotifier(
             app,
             transfers.transfers,
@@ -1041,7 +1160,7 @@ class AppGraph private constructor(context: Context) {
         .setProtocolVersion(PROTOCOL_VERSION)
         .setAppVersion(BuildConfig.VERSION_NAME)
         .addAllCapabilities(CAPABILITIES)
-        .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
+        .setSetupLevel(if (fullModeSetup.paired) SetupLevel.SETUP_LEVEL_FULL else SetupLevel.SETUP_LEVEL_BASIC)
         .setDeviceName(deviceName())
         .setDeviceModel(deviceModel())
         .build()
@@ -1057,7 +1176,8 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", LIVENESS_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY)
+        const val MIRROR_CAPABILITY = "mirror.v1"
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
@@ -1070,6 +1190,10 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_PROXIMITY_ON = "lock_when_away"
         private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
         private const val KEY_MAKER_STEP_DONE = "maker_step_done"
+        private const val KEY_MIRROR_ON = "allow_mirror"
+
+        /** `Settings.Global.ADB_WIFI_ENABLED`, hidden from the SDK. */
+        const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */
@@ -1116,6 +1240,44 @@ class ObservablePairedMacStore(
     override suspend fun remove(id: String) {
         inner.remove(id)
         all()
+    }
+}
+
+/**
+ * [SetupStore] in the `mirror` preferences, next to the switch. [snapshot] follows every write,
+ * whoever makes it (the setup, or a session that lost its ADB link).
+ */
+class MirrorSetupPrefs(private val prefs: SharedPreferences) : SetupStore {
+    data class Snapshot(val paired: Boolean, val lastConnectPort: Int?, val lastConnectFailed: Boolean)
+
+    private val _snapshot = MutableStateFlow(read())
+    val snapshot: StateFlow<Snapshot> = _snapshot.asStateFlow()
+
+    override var paired: Boolean
+        get() = prefs.getBoolean(KEY_PAIRED, false)
+        set(value) = write { putBoolean(KEY_PAIRED, value) }
+
+    override var lastConnectPort: Int?
+        get() = prefs.getInt(KEY_PORT, 0).takeIf { it > 0 }
+        set(value) = write { if (value == null) remove(KEY_PORT) else putInt(KEY_PORT, value) }
+
+    override var lastConnectFailed: Boolean
+        get() = prefs.getBoolean(KEY_FAILED, false)
+        set(value) = write { putBoolean(KEY_FAILED, value) }
+
+    private fun write(change: SharedPreferences.Editor.() -> Unit) {
+        synchronized(this) {
+            prefs.edit(action = change)
+            _snapshot.value = read()
+        }
+    }
+
+    private fun read() = Snapshot(paired, lastConnectPort, lastConnectFailed)
+
+    private companion object {
+        const val KEY_PAIRED = "full_mode_paired"
+        const val KEY_PORT = "last_connect_port"
+        const val KEY_FAILED = "last_connect_failed"
     }
 }
 

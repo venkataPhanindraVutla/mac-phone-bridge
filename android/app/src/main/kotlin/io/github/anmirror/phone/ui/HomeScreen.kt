@@ -47,7 +47,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
+import io.github.anmirror.phone.MIRROR_MIN_SDK
 import io.github.anmirror.phone.MediaAccess
+import io.github.anmirror.phone.MirrorRowLine
 import io.github.anmirror.phone.R
 import io.github.anmirror.feature.browse.PickedFolders
 import io.github.anmirror.phone.copyNamesMac
@@ -82,6 +84,11 @@ fun HomeScreen(
     proximityAdapter: AdvertiserState,
     onProximityToggle: (Boolean) -> Unit,
     onProximityPermissionResult: () -> Unit,
+    mirrorOn: Boolean,
+    mirrorLine: MirrorRowLine?,
+    onMirrorToggle: (Boolean) -> Unit,
+    onSetUpFullMode: () -> Unit,
+    onReEnableFullMode: () -> Unit,
     trackpadShown: Boolean,
     trackpadOpen: Boolean,
     trackpadLine: Int?,
@@ -158,6 +165,10 @@ fun HomeScreen(
         ProximityRow(
             on = proximityOn, granted = proximityGranted, adapter = proximityAdapter,
             onToggle = onProximityToggle, onPermissionResult = onProximityPermissionResult,
+        )
+        MirrorRow(
+            on = mirrorOn, line = mirrorLine, onToggle = onMirrorToggle,
+            onSetUp = onSetUpFullMode, onReEnable = onReEnableFullMode,
         )
         if (trackpadShown) TrackpadRow(open = trackpadOpen, line = trackpadLine, onOpen = onOpenTrackpad)
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
@@ -441,6 +452,53 @@ private fun ProximityRow(
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_proximity_allow)) }
+        }
+    }
+}
+
+/**
+ * "Allow your Mac to show this screen" (Full mode, F-17): off by default, disabled before Android
+ * 11. While it is on, the line says what the one-time setup still needs: pairing ("Set up Full
+ * mode" opens the Full mode screen), or Wireless debugging turned back on ("Re-enable Full mode"
+ * opens Developer options at it).
+ */
+@Composable
+private fun MirrorRow(
+    on: Boolean,
+    line: MirrorRowLine?,
+    onToggle: (Boolean) -> Unit,
+    onSetUp: () -> Unit,
+    onReEnable: () -> Unit,
+) {
+    val title = stringResource(R.string.home_mirror_title)
+    val supported = Build.VERSION.SDK_INT >= MIRROR_MIN_SDK
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on && supported,
+                onCheckedChange = onToggle,
+                enabled = supported,
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        line?.let { Text(stringResource(it.messageRes()), style = MaterialTheme.typography.bodyMedium) }
+        when (line) {
+            MirrorRowLine.NEEDS_SETUP -> OutlinedButton(onClick = onSetUp, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_mirror_set_up))
+            }
+            MirrorRowLine.WIRELESS_DEBUGGING_OFF -> OutlinedButton(onClick = onReEnable, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_mirror_re_enable))
+            }
+            else -> Unit
         }
     }
 }

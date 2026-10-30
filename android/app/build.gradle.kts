@@ -82,6 +82,14 @@ android {
         compose = true
         buildConfig = true
     }
+
+    packaging {
+        resources {
+            // bcpkix, bcutil and bcprov (Full mode's ADB identity) each carry the same Bouncy Castle
+            // licence; one copy ships, and assets/licenses has it too.
+            pickFirsts += "META-INF/LICENSE.md"
+        }
+    }
 }
 
 androidComponents {
@@ -148,6 +156,8 @@ dependencies {
     implementation(project(":feature:dnd"))
     implementation(project(":feature:proximity"))
     implementation(project(":feature:input"))
+    implementation(project(":feature:mirror"))
+    implementation(project(":core:adb"))
     implementation(project(":core:transfer"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)

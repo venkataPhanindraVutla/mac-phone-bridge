@@ -165,6 +165,11 @@
             android:name=".service.KeepAliveWatchdogReceiver"
             android:exported="false" />
 
+        <!-- Full mode setup: the pairing notification's "Enter code" reply; only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.PairingReplyReceiver"
+            android:exported="false" />
+
         <!-- "Tap to reconnect" was dismissed: not posted again until the phone connects (deleteIntent). -->
         <receiver
             android:name=".service.ReconnectNoticeDismissReceiver"

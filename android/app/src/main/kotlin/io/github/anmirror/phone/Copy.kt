@@ -3,6 +3,8 @@ package io.github.anmirror.phone
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PairingFailure
 import io.github.anmirror.connection.PhoneConnectionState
+import io.github.anmirror.feature.mirror.PairingError
+import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.protocol.v1.AvailabilityReason
 import io.github.anmirror.protocol.v1.DndAvailability
@@ -111,4 +113,30 @@ fun trackpadLine(state: PhoneConnectionState, mac: MacInputAvailability?): Int? 
     !inputShared(state) || mac == null || mac.session !== state || mac.availability.enabled -> null
     mac.availability.reason == AvailabilityReason.AVAILABILITY_REASON_NEEDS_PERMISSION -> R.string.trackpad_mac_needs_accessibility
     else -> R.string.trackpad_mac_off
+}
+
+/** What the Full mode screen and the pairing notification say for each way pairing can fail. */
+fun pairingErrorRes(error: PairingError): Int = when (error) {
+    PairingError.WRONG_PORT -> R.string.full_error_wrong_port
+    PairingError.WRONG_CODE -> R.string.full_error_wrong_code
+    PairingError.NOT_LISTENING -> R.string.full_error_not_listening
+    PairingError.INVALID -> R.string.full_error_invalid
+    PairingError.TIMEOUT -> R.string.full_error_timeout
+}
+
+/** The Full mode screen's status line for a setup state; null when it has none. */
+fun SetupState.statusRes(): Int? = when (this) {
+    SetupState.Looking -> R.string.full_status_looking
+    is SetupState.Pairing -> R.string.full_status_pairing
+    SetupState.Connecting -> R.string.full_status_connecting
+    SetupState.Ready -> R.string.full_status_ready
+    SetupState.Unpaired, is SetupState.PairFailed, SetupState.ConnectFailed -> null
+}
+
+/** The home row's line for [MirrorRowLine]. */
+fun MirrorRowLine.messageRes(): Int = when (this) {
+    MirrorRowLine.NEEDS_ANDROID_11 -> R.string.home_mirror_needs_android_11
+    MirrorRowLine.NEEDS_SETUP -> R.string.home_mirror_needs_setup
+    MirrorRowLine.WIRELESS_DEBUGGING_OFF -> R.string.home_mirror_wireless_debugging_off
+    MirrorRowLine.READY -> R.string.home_mirror_ready
 }

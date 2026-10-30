@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
-// The phone's own Wireless debugging client (Full mode). Only the dependencies for now, so the
-// licence audit (docs/licenses.md) sees the real graph; the code comes with Task 3 of 0.5.
+// The phone's own Wireless debugging client (Full mode): its identity, pairing, connection and
+// streams over libadb-android, and the NSD lookup of the daemon's ports.
 android {
     namespace = "io.github.anmirror.core.adb"
 
@@ -32,6 +32,8 @@ dependencies {
     }
     implementation(libs.conscrypt.android)
     implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.kotlinx.coroutines.core)
 
+    testImplementation(libs.kotlin.test.junit)
     testImplementation(libs.junit)
 }

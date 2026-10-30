@@ -221,3 +221,34 @@ fun Context.openAllFilesAccessSettings() {
         startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
+
+/**
+ * Full mode's pairing: the code is typed into a notification (Settings has to stay on the pairing
+ * screen), so POST_NOTIFICATIONS on API 33+. Asked for only by "Start pairing".
+ */
+fun fullModePairingPermissions(): List<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
+
+/** Developer options; About phone (where Build number turns them on) when they are not on yet. */
+fun Context.openDeveloperOptions() {
+    try {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: android.content.ActivityNotFoundException) {
+        startActivity(Intent(Settings.ACTION_DEVICE_INFO_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+/**
+ * "Re-enable Full mode": Developer options scrolled to Wireless debugging (the fragment argument
+ * Settings uses for search results), or plain Developer options when that is refused.
+ */
+fun Context.openWirelessDebuggingSettings() {
+    val wireless = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+        .putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        startActivity(wireless)
+    } catch (e: RuntimeException) { // ActivityNotFoundException, or a SecurityException over the extra
+        openDeveloperOptions()
+    }
+}

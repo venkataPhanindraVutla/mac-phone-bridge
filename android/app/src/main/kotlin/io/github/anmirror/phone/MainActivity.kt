@@ -18,22 +18,26 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.anmirror.feature.mirror.MakerGuidance as FullModeMaker
 import io.github.anmirror.phone.remote.TrackpadActivity
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.service.BootDecision
 import io.github.anmirror.phone.service.ServiceProbe
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
+import io.github.anmirror.phone.ui.FullModeScreen
 import io.github.anmirror.phone.ui.HomeScreen
 import io.github.anmirror.phone.ui.KeepConnectedScreen
 import io.github.anmirror.phone.ui.LinkOfferScreen
 import io.github.anmirror.phone.ui.OnboardingScreen
 import io.github.anmirror.phone.ui.ScanScreen
+import io.github.anmirror.phone.ui.openWirelessDebuggingSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,6 +63,12 @@ class MainActivity : ComponentActivity() {
         graph.refreshDndAccess()
         graph.refreshProximityGranted()
         graph.refreshProximityAdapter()
+        graph.refreshWirelessDebugging()
+        // Back from Settings after "Re-enable Full mode": connect again, so mirroring is ready.
+        if (graph.fullModeReArmPending) {
+            graph.fullModeReArmPending = false
+            graph.scope.launch { graph.fullModeSetup.ensureConnected() }
+        }
         // Back from the exemption dialog or Settings; the Mac hears of a change through the status.
         graph.refreshBackgroundExempt()
         graph.launchQuietly("browse: access refresh") { graph.refreshBrowseAccess() }
@@ -90,7 +100,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Main, Scan, KeepConnected }
+private enum class Screen { Main, Scan, KeepConnected, FullMode }
 
 /** The store could not be read just now; nothing was forgotten. */
 private suspend fun forgetFailed(context: android.content.Context) = withContext(Dispatchers.Main) {
@@ -127,6 +137,11 @@ private fun AppRoot(graph: AppGraph) {
     val pickedFolders by graph.pickedFolders.folders.collectAsStateWithLifecycle()
     val backgroundExempt by graph.backgroundExempt.collectAsStateWithLifecycle()
     val makerStepDone by graph.makerStepDone.collectAsStateWithLifecycle()
+    val mirrorOn by graph.mirrorOn.collectAsStateWithLifecycle()
+    val mirrorSetup by graph.mirrorSetup.snapshot.collectAsStateWithLifecycle()
+    val wirelessDebugging by graph.wirelessDebugging.collectAsStateWithLifecycle()
+    val fullMode by graph.fullModeSetup.state.collectAsStateWithLifecycle()
+    val fullModeMaker = remember { FullModeMaker.of(Build.MANUFACTURER) }
     val background = BackgroundState(backgroundExempt, graph.maker, makerStepDone)
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
@@ -150,6 +165,13 @@ private fun AppRoot(graph: AppGraph) {
                         screen = Screen.Main
                     },
                     onNotNow = { screen = Screen.Main },
+                )
+                screen == Screen.FullMode -> FullModeScreen(
+                    state = fullMode,
+                    maker = fullModeMaker,
+                    onStartPairing = graph.fullModeSetup::startPairing,
+                    onConnect = { port -> graph.scope.launch { graph.fullModeSetup.ensureConnected(typedPort = port) } },
+                    onBack = { screen = Screen.Main },
                 )
                 macs == null -> Unit // the store is loading; a blank frame, no flash of onboarding
                 macs.orEmpty().isEmpty() -> OnboardingScreen(onPair = { screen = Screen.Scan })
@@ -177,6 +199,16 @@ private fun AppRoot(graph: AppGraph) {
                         proximityAdapter = proximityAdapter,
                         onProximityToggle = graph::setProximityOn,
                         onProximityPermissionResult = graph::refreshProximityGranted,
+                        mirrorOn = mirrorOn,
+                        mirrorLine = mirrorRowLine(
+                            Build.VERSION.SDK_INT, mirrorOn, mirrorSetup.paired, wirelessDebugging, mirrorSetup.lastConnectFailed,
+                        ),
+                        onMirrorToggle = graph::setMirrorOn,
+                        onSetUpFullMode = { screen = Screen.FullMode },
+                        onReEnableFullMode = {
+                            graph.fullModeReArmPending = true
+                            context.openWirelessDebuggingSettings()
+                        },
                         trackpadShown = inputShared(connection),
                         trackpadOpen = inputOpen(connection, macInput),
                         trackpadLine = trackpadLine(connection, macInput),

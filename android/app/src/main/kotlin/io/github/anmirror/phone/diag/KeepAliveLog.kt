@@ -11,6 +11,8 @@ enum class KeepAliveEvent(val code: String) {
     SERVICE_SELF_STOP("service-self-stop"), STATE("state"), STORE_UNREADABLE("store-unreadable"),
     SCREEN_ON("screen-on"), NETWORK("network"), WATCHDOG("watchdog"), EXEMPT("exempt"),
     SOCKET_TUNE("socket-tune"), SESSION_END("session-end"),
+    /** Full mode setup: stages, error names and port numbers (never the code, never an address). */
+    FULL_MODE("full-mode"),
 }
 
 /** `session-end <reason>,matured=<bool>,liveness=<bool>,s=<seconds>` (ConnectionManager's onSessionEnd). */

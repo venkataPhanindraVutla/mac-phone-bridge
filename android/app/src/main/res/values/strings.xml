@@ -225,4 +225,48 @@
     <string name="keep_maker_oppo">Settings › Apps › App management › Android Mirroring › Battery usage › Allow background activity</string>
     <string name="keep_maker_samsung">Settings › Battery › Background usage limits › Never sleeping apps › add Android Mirroring</string>
     <string name="keep_maker_huawei">Settings › Battery › App launch › Android Mirroring › Manage manually, with Run in background on</string>
+
+    <!-- Full mode (F-17): "Allow your Mac to show this screen" on Home, the one-time setup with Wireless debugging. -->
+    <string name="home_mirror_title">Allow your Mac to show this screen</string>
+    <string name="home_mirror_needs_setup">Needs Full mode, a one-time setup with Wireless debugging.</string>
+    <string name="home_mirror_set_up">Set up Full mode</string>
+    <string name="home_mirror_wireless_debugging_off">Wireless debugging is off.</string>
+    <string name="home_mirror_re_enable">Re-enable Full mode</string>
+    <string name="home_mirror_needs_android_11">Needs Android 11 or later.</string>
+    <string name="home_mirror_ready">Ready. Start it from your Mac\'s menu.</string>
+    <string name="full_title">Full mode</string>
+    <string name="full_intro_1">Full mode lets your Mac show and control this phone\'s screen. It uses Wireless debugging, a developer setting, to start a small helper with the same rights as a computer connected by USB.</string>
+    <string name="full_intro_2">The helper runs only while your Mac shows your screen, and talks only to your paired Mac.</string>
+    <string name="full_intro_3">To turn Full mode off, turn off Wireless debugging or Developer options.</string>
+    <string name="full_step_1">Turn on Developer options: open Settings › About phone and tap Build number seven times.</string>
+    <string name="full_step_2">In Developer options, turn on Wireless debugging and allow it on this network.</string>
+    <string name="full_step_3">Tap “Pair device with pairing code” and keep that screen open.</string>
+    <string name="full_step_4">Pull down the notification from Android Mirroring and type the code there.</string>
+    <string name="full_open_developer_options">Open Developer options</string>
+    <string name="full_start_pairing">Start pairing</string>
+    <string name="full_status_looking">Looking for the pairing service…</string>
+    <string name="full_status_pairing">Pairing…</string>
+    <string name="full_status_connecting">Connecting…</string>
+    <string name="full_status_ready">Full mode is ready.</string>
+    <string name="full_connection_port">Connection port</string>
+    <string name="full_connect">Connect</string>
+    <string name="full_error_wrong_port">That\'s the Wireless debugging port. Use the port shown under “Pair device with pairing code”.</string>
+    <string name="full_error_wrong_code">The code didn\'t match. Open “Pair device with pairing code” again and enter the new code.</string>
+    <string name="full_error_not_listening">The pairing screen is closed. Open “Pair device with pairing code” and try again.</string>
+    <string name="full_error_invalid">Enter the six-digit code (and the port, if asked).</string>
+    <string name="full_error_timeout">That took too long. Try again.</string>
+    <string name="full_connect_failed">Couldn\'t connect to Wireless debugging. Check that it\'s on, then try again.</string>
+    <string name="full_notifications_needed">Android Mirroring needs to show a notification to collect the pairing code. Allow notifications.</string>
+    <string name="full_maker_xiaomi">On this phone, also turn on “USB debugging (Security settings)” in Developer options, or taps and typing from your Mac won\'t work.</string>
+    <string name="full_maker_bbk">On this phone, also turn on “Disable permission monitoring” in Developer options, or taps and typing from your Mac won\'t work.</string>
+    <!-- TalkBack: the typed fallback field and its button. -->
+    <string name="full_connection_port_description">Connection port, the port shown under Wireless debugging</string>
+    <string name="full_connect_description">Connect to Wireless debugging on this port</string>
+    <string name="channel_full_mode">Full mode setup</string>
+    <string name="pairing_notification_title">Pair with Wireless debugging</string>
+    <string name="pairing_notification_text_code">Enter the six-digit pairing code.</string>
+    <string name="pairing_notification_text_port_and_code">Enter the pairing port and code, like 37123 482916.</string>
+    <string name="pairing_notification_action">Enter code</string>
+    <string name="pairing_notification_input_code">Pairing code</string>
+    <string name="pairing_notification_input_port_and_code">Port and code</string>
 </resources>

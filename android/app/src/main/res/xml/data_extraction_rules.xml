@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Nothing is backed up or transferred: the paired-Mac store is useless without its Keystore key. -->
+<!-- Nothing is backed up or transferred: the paired-Mac store is useless without its Keystore key.
+     Full mode's ADB identity (files/adb/) is a secret and is named on its own as well. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" />
         <exclude domain="file" />
+        <exclude domain="file" path="adb/" />
         <exclude domain="database" />
         <exclude domain="sharedpref" />
         <exclude domain="external" />
@@ -11,6 +13,7 @@
     <device-transfer>
         <exclude domain="root" />
         <exclude domain="file" />
+        <exclude domain="file" path="adb/" />
         <exclude domain="database" />
         <exclude domain="sharedpref" />
         <exclude domain="external" />
