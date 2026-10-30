@@ -131,6 +131,11 @@ message Envelope {
 | `input.move` / `input.button` / `input.click` | phone to Mac | `InputMove` / `InputButton` / `InputClick` | INPUT |
 | `input.scroll` / `input.key` / `input.laser` | phone to Mac | `InputScroll` / `InputKey` / `InputLaser` | INPUT |
 | `input.availability` | Mac to phone | `FeatureAvailability` | INPUT |
+| `mirror.availability` | phone to Mac | `FeatureAvailability` | MIRROR |
+| `mirror.start` | Mac to phone | `MirrorStart` | MIRROR |
+| `mirror.state` | phone to Mac | `MirrorState` | MIRROR |
+| `mirror.stop` | both | `MirrorStop` | MIRROR |
+| `mirror.test_pattern` | Mac to phone | `MirrorTestPattern` | MIRROR |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -142,7 +147,8 @@ encoded, so `0` and `-1` stay distinct.
 `status.v1` and `find.v1`. Version 0.2 adds `notify.v1`, `contacts.v1` and `calls.v1`
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
-Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23). A side MUST NOT send messages of a feature the peer did not list.
+Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23).
+Version 0.5 adds `mirror.v1` (section 24). A side MUST NOT send messages of a feature the peer did not list.
 
 `Hello.protocol_version` is the integer **1**. If versions differ, the receiver answers
 `system.error` with `ERROR_CODE_PROTOCOL_MISMATCH` and closes.
@@ -321,6 +327,7 @@ Channel `NOTIFY`. Messages are listed in section 3.
   not, a `reason`: `OFF_BY_USER`, `NEEDS_PERMISSION`, `PARTIAL_ACCESS`, `UNAVAILABLE` (this device
   cannot do it at all) or `NEEDS_SETUP` (the user must set something up first). It is sent on connect
   and on change. `dnd.availability` and `input.availability` also go from Mac to phone.
+  `mirror.availability` uses `OFF_BY_USER`, `NEEDS_SETUP` and `UNAVAILABLE` (section 24).
 - Wire limits:
   - `image_jpeg`: long edge at most 720 px, at most 300 KB; dropped if it does not fit.
   - `AppIcon.png`: 96x96, at most 32 KB.
@@ -373,6 +380,9 @@ File bytes never travel in control frames. They use separate bulk connections.
   `size` bytes and never waits for EOF; extra bytes fail the transfer. The sender closes after
   `files.received` or `files.failed`, or after 30 s.
 - A control disconnect revokes every token and ends every bulk connection.
+- Roles 4–6 (`MIRROR_VIDEO`, `MIRROR_AUDIO`, `MIRROR_CONTROL`) carry the helper's streams (section 24)
+  unchanged, both ways, after the hello. They have no size. Their tokens are issued in `mirror.start`.
+  A connection ends when either side closes it, on `mirror.stop`, or at disconnect.
 - Requests that the Mac originates (`photos.list`, `browse.*`) carry their own `request_id`, a
   Mac counter echoed by the phone, not the envelope `reply_to`.
 
@@ -552,3 +562,39 @@ Channel `INPUT`.
 - `REMOTE_KEY_PREV_SLIDE` and `REMOTE_KEY_NEXT_SLIDE` are the Left and Right arrow keys.
 
 Vectors: `framing.json` `input_move`.
+
+## 24. Mirroring (`mirror.v1`)
+
+Channel `MIRROR`.
+
+- The phone sends `mirror.availability` on connect and on change. When not enabled, the reason is
+  `OFF_BY_USER` (the user's switch is off), `NEEDS_SETUP` (the phone is not paired with Wireless
+  debugging, Wireless debugging is off, or the last connect to it failed) or `UNAVAILABLE`
+  (Android 10).
+- The Mac sends `mirror.start` only when the user asks, or for an Auto quality restart, and only
+  while the phone's last `mirror.availability` is enabled.
+- One session at a time. A `mirror.start` replaces the running session, which ends with
+  `mirror.state STOPPED` and reason `REPLACED`.
+- `MirrorStart.session` is a Mac counter, from 1, per Mac process. Every `mirror.state` and
+  `mirror.stop` names the session it is about.
+- The phone answers a start with `mirror.state STARTING`, then `RUNNING` once the video stream
+  flows, or `FAILED` with a reason. A start while the feature is not enabled gets only `FAILED`,
+  with the reason that matches the availability (`TURNED_OFF`, `NEEDS_SETUP` or `UNAVAILABLE`).
+- The phone dials one bulk connection per token in `MirrorStart.tokens` (section 13): `video` with
+  role `MIRROR_VIDEO`, `audio` with role `MIRROR_AUDIO` (only when `audio`; the token is empty
+  otherwise) and `control` with role `MIRROR_CONTROL`, to `MirrorStart.port`. It copies the
+  helper's bytes unchanged, both ways. The streams are the scrcpy v5.0.1 protocol: the video
+  socket starts with the dummy byte, the 64-byte device name and the codec ID; the audio socket
+  with the codec ID; the control socket carries scrcpy control messages to the phone and device
+  messages back. They are summarised in `vectors/scrcpy.json`.
+- `max_size`, `video_bit_rate`, `max_fps`, `video_codec`, `audio` and `audio_codec` are passed to
+  the helper as its options of the same names.
+- Either side may send `mirror.stop`. The phone then sends `mirror.state STOPPED` with the stop's
+  reason. States and stops for another `session` are ignored.
+- `mirror.test_pattern` asks the phone to show the delay test screen (`DELAY`), the frame-rate
+  test screen (`FPS`), or neither (`OFF`), while a session runs.
+- A control disconnect ends the session.
+
+Vectors: `framing.json` `mirror_start_minimal`; `scrcpy.json` `control`, `device` and `stream`.
+The canned stream `testdata/mirror/sample-h264-320x640.scrcpy` holds the video socket bytes after
+the dummy byte (made by `scripts/make-mirror-sample.swift`).

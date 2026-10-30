@@ -33,6 +33,9 @@ enum BulkRole {
   BULK_ROLE_PHONE_SENDS = 1;
   BULK_ROLE_PHONE_RECEIVES = 2;
   BULK_ROLE_THUMBNAILS = 3;
+  BULK_ROLE_MIRROR_VIDEO = 4;    // section 24: the helper's streams, unchanged, no size
+  BULK_ROLE_MIRROR_AUDIO = 5;
+  BULK_ROLE_MIRROR_CONTROL = 6;
 }
 
 message BulkEndpoint {

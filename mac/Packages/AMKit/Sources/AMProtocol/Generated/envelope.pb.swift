@@ -47,6 +47,7 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
   case dnd // = 15
   case proximity // = 16
   case input // = 17
+  case mirror // = 18
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -73,6 +74,7 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 15: self = .dnd
     case 16: self = .proximity
     case 17: self = .input
+    case 18: self = .mirror
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -97,6 +99,7 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .dnd: return 15
     case .proximity: return 16
     case .input: return 17
+    case .mirror: return 18
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -121,6 +124,7 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     .dnd,
     .proximity,
     .input,
+    .mirror,
   ]
 
 }
@@ -154,7 +158,7 @@ public nonisolated struct AMEnvelope: Sendable {
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
 
 nonisolated extension AMChannel: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0\u{1}CHANNEL_NOTIFY\0\u{1}CHANNEL_CONTACTS\0\u{1}CHANNEL_CALLS\0\u{1}CHANNEL_CLIPBOARD\0\u{1}CHANNEL_SHARE\0\u{1}CHANNEL_FILES\0\u{1}CHANNEL_SCREENSHOTS\0\u{1}CHANNEL_PHOTOS\0\u{1}CHANNEL_BROWSE\0\u{1}CHANNEL_MEDIA\0\u{1}CHANNEL_DND\0\u{1}CHANNEL_PROXIMITY\0\u{1}CHANNEL_INPUT\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0\u{1}CHANNEL_NOTIFY\0\u{1}CHANNEL_CONTACTS\0\u{1}CHANNEL_CALLS\0\u{1}CHANNEL_CLIPBOARD\0\u{1}CHANNEL_SHARE\0\u{1}CHANNEL_FILES\0\u{1}CHANNEL_SCREENSHOTS\0\u{1}CHANNEL_PHOTOS\0\u{1}CHANNEL_BROWSE\0\u{1}CHANNEL_MEDIA\0\u{1}CHANNEL_DND\0\u{1}CHANNEL_PROXIMITY\0\u{1}CHANNEL_INPUT\0\u{1}CHANNEL_MIRROR\0")
 }
 
 nonisolated extension AMEnvelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

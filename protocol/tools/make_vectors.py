@@ -3,7 +3,7 @@
 
 Run as:  python3 -I protocol/tools/make_vectors.py [--check]
 
-Writes protocol/vectors/{framing,crypto,pairing_uri,filenames}.json. With --check it regenerates
+Writes protocol/vectors/{framing,crypto,pairing_uri,filenames,scrcpy}.json. With --check it regenerates
 in memory and exits 1 if any file on disk differs. Output is fully deterministic: all
 "random" inputs are derived from fixed labels with SHA-256. Standard library only
 (the test certificates are read from the committed .p12 files via the `openssl` CLI).
@@ -36,7 +36,7 @@ BLE_LABEL = b"anmirror-ble-v1"
 CHANNELS = {"SYSTEM": 1, "PAIRING": 2, "STATUS": 3, "FIND": 4,
             "NOTIFY": 5, "CONTACTS": 6, "CALLS": 7, "CLIPBOARD": 8, "SHARE": 9, "FILES": 10,
             "SCREENSHOTS": 11, "PHOTOS": 12, "BROWSE": 13, "MEDIA": 14, "DND": 15, "PROXIMITY": 16,
-            "INPUT": 17}
+            "INPUT": 17, "MIRROR": 18}
 
 
 # ---------------------------------------------------------------- protobuf encoding
@@ -294,6 +294,11 @@ def build_framing() -> dict:
          + f_varint(9, 1) + f_float(10, 1.0) + f_varint(12, 1)),
         ("input_move", CHANNELS["INPUT"], 7, 0, "input.move",
          f_float(1, 1.5) + f_float(2, -2.25)),
+        # tokens{video, control} (no audio); video_codec 1 = VIDEO_CODEC_H264; audio false is omitted
+        ("mirror_start_minimal", CHANNELS["MIRROR"], 3, 0, "mirror.start",
+         f_varint(1, 1) + f_bytes(2, f_bytes(1, det("tok-v", 32)) + f_bytes(3, det("tok-c", 32)))
+         + f_varint(3, 50123) + f_varint(4, 1920) + f_varint(5, 8_000_000) + f_varint(6, 60)
+         + f_varint(7, 1)),
         ("large_ids_multibyte_varint", CHANNELS["STATUS"], 300, 16384, "status.update",
          f_varint(1, 100)),
         ("unicode_type_and_payload_bytes", CHANNELS["SYSTEM"], 1, 0, "system.pongé",
@@ -555,12 +560,206 @@ def build_filenames() -> dict:
             "sanitize": sanitize, "unique": unique}
 
 
+# ---------------------------------------------------------------- scrcpy v5.0.1 streams (section 24)
+# A reference encoder for the helper's three sockets, read from upstream scrcpy at tag v5.0.1
+# (app/src/control_msg.c, app/src/device_msg.c, server/.../control/*). Everything is big endian.
+#
+# NOT YET VERIFIED: the control type numbers above 4 (GET_CLIPBOARD 8, SET_CLIPBOARD 9,
+# SET_DISPLAY_POWER 10, ROTATE_DEVICE 11, RESET_VIDEO 17), the text limits (300 and 262,130
+# bytes), the device message layouts and the audio codec IDs were written from memory of
+# upstream. Task 2 checks every entry against the vendored ControlMessageReader and
+# DeviceMessageWriter and fixes this generator if they differ. Entries carry "verified": false
+# until then, and "source" says where the layout came from: "spike" = the 0.1 spike used it
+# against the real v5.0.1 server; "memory" = not exercised yet.
+SC_INJECT_KEYCODE, SC_INJECT_TEXT, SC_INJECT_TOUCH, SC_INJECT_SCROLL, SC_BACK_OR_SCREEN_ON = 0, 1, 2, 3, 4
+SC_GET_CLIPBOARD, SC_SET_CLIPBOARD, SC_SET_DISPLAY_POWER, SC_ROTATE_DEVICE = 8, 9, 10, 11
+SC_RESET_VIDEO = 17
+SC_DEVICE_CLIPBOARD, SC_DEVICE_ACK_CLIPBOARD, SC_DEVICE_UHID_OUTPUT = 0, 1, 2
+SC_INJECT_TEXT_MAX = 300
+SC_CLIPBOARD_TEXT_MAX = 262_130          # 1 << 18 (the control message limit) minus 14
+SC_DEVICE_NAME_BYTES = 64
+SC_POINTER_GENERIC_FINGER = -2
+SC_CODEC_IDS = {"h264": 0x68323634, "h265": 0x68323635, "opus": 0x6F707573, "aac": 0x00616163}
+SC_AUDIO_DISABLED, SC_AUDIO_ERROR = 0, 1
+SC_FLAG_SESSION = 1 << 63
+SC_FLAG_CONFIG = 1 << 62
+SC_FLAG_KEY_FRAME = 1 << 61
+SC_META_CTRL = 0x1000 | 0x2000           # META_CTRL_ON | META_CTRL_LEFT_ON
+SC_TEXT_300 = ("The quick brown fox jumps over the lazy dog. " * 7)[:SC_INJECT_TEXT_MAX]
+
+
+def sc_string(text: str, limit: int) -> bytes:
+    raw = text.encode("utf-8")
+    assert len(raw) <= limit, (len(raw), limit)
+    return struct.pack(">I", len(raw)) + raw
+
+
+def sc_scroll_i16(v: float) -> int:
+    """scrcpy's sc_float_to_i16fp(clamp(v / 16, -1, 1)): times 2^15, truncated, 1.0 -> 32767."""
+    n = max(-1.0, min(1.0, v / 16))
+    return max(-32768, min(32767, int(n * 32768)))
+
+
+def sc_control(f: dict) -> bytes:
+    t = f["type"]
+    head = bytes([t])
+    if t == SC_INJECT_KEYCODE:
+        return head + struct.pack(">BIII", f["action"], f["keycode"], f["repeat"], f["meta_state"])
+    if t == SC_INJECT_TEXT:
+        return head + sc_string(f["text"], SC_INJECT_TEXT_MAX)
+    if t == SC_INJECT_TOUCH:
+        return head + struct.pack(">BqiiHHHII", f["action"], f["pointer_id"], f["x"], f["y"], f["width"],
+                                  f["height"], f["pressure"], f["action_button"], f["buttons"])
+    if t == SC_INJECT_SCROLL:
+        assert f["hscroll_i16"] == sc_scroll_i16(f["hscroll"]) and f["vscroll_i16"] == sc_scroll_i16(f["vscroll"])
+        return head + struct.pack(">iiHHhhI", f["x"], f["y"], f["width"], f["height"],
+                                  f["hscroll_i16"], f["vscroll_i16"], f["buttons"])
+    if t == SC_BACK_OR_SCREEN_ON:
+        return head + bytes([f["action"]])
+    if t == SC_GET_CLIPBOARD:
+        return head + bytes([f["copy_key"]])
+    if t == SC_SET_CLIPBOARD:
+        return head + struct.pack(">QB", f["sequence"], int(f["paste"])) + sc_string(f["text"], SC_CLIPBOARD_TEXT_MAX)
+    if t == SC_SET_DISPLAY_POWER:
+        return head + bytes([int(f["on"])])
+    if t in (SC_ROTATE_DEVICE, SC_RESET_VIDEO):
+        return head
+    raise AssertionError(f)
+
+
+def sc_device(f: dict) -> bytes:
+    t = f["type"]
+    if t == SC_DEVICE_CLIPBOARD:
+        return bytes([t]) + sc_string(f["text"], SC_CLIPBOARD_TEXT_MAX)
+    if t == SC_DEVICE_ACK_CLIPBOARD:
+        return bytes([t]) + struct.pack(">Q", f["sequence"])
+    if t == SC_DEVICE_UHID_OUTPUT:
+        data = bytes.fromhex(f["data_hex"])
+        return bytes([t]) + struct.pack(">HH", f["id"], len(data)) + data
+    raise AssertionError(f)
+
+
+def sc_video_prelude(device_name: str, codec: str, dummy_byte: bool = True) -> bytes:
+    """The video socket's start: [dummy 0x00] + 64-byte NUL-padded UTF-8 name + codec ID."""
+    name = device_name.encode("utf-8")
+    assert len(name) < SC_DEVICE_NAME_BYTES
+    return (b"\x00" if dummy_byte else b"") + name.ljust(SC_DEVICE_NAME_BYTES, b"\x00") \
+        + struct.pack(">I", SC_CODEC_IDS[codec])
+
+
+def sc_session_packet(width: int, height: int) -> bytes:
+    return struct.pack(">QI", SC_FLAG_SESSION | width, height)
+
+
+def sc_media_header(config: bool, key_frame: bool, pts_us: int, size: int) -> bytes:
+    assert 0 <= pts_us < SC_FLAG_KEY_FRAME
+    flags = (SC_FLAG_CONFIG if config else 0) | (SC_FLAG_KEY_FRAME if key_frame else 0)
+    return struct.pack(">QI", flags | pts_us, size)
+
+
+def build_scrcpy() -> dict:
+    touch = {"type": SC_INJECT_TOUCH, "pointer_id": SC_POINTER_GENERIC_FINGER, "width": 1080,
+             "height": 2400, "action_button": 0, "buttons": 0}
+    scroll = {"type": SC_INJECT_SCROLL, "x": 540, "y": 1200, "width": 1080, "height": 2400, "buttons": 0}
+    control = [
+        ("inject_keycode_home_down", "memory", {"type": SC_INJECT_KEYCODE, "action": 0, "keycode": 3,
+                                                "repeat": 0, "meta_state": 0}),
+        ("inject_keycode_home_up", "memory", {"type": SC_INJECT_KEYCODE, "action": 1, "keycode": 3,
+                                              "repeat": 0, "meta_state": 0}),
+        ("inject_keycode_ctrl_a_down", "memory", {"type": SC_INJECT_KEYCODE, "action": 0, "keycode": 29,
+                                                  "repeat": 0, "meta_state": SC_META_CTRL}),
+        ("inject_text_ascii", "memory", {"type": SC_INJECT_TEXT, "text": "hello"}),
+        ("inject_text_300_bytes", "memory", {"type": SC_INJECT_TEXT, "text": SC_TEXT_300}),
+        ("inject_touch_down", "spike", {**touch, "action": 0, "x": 540, "y": 1200, "pressure": 0xFFFF}),
+        ("inject_touch_move", "spike", {**touch, "action": 2, "x": 560, "y": 1300, "pressure": 0xFFFF}),
+        ("inject_touch_up", "spike", {**touch, "action": 1, "x": 560, "y": 1300, "pressure": 0}),
+        # v / 16 x 32768 is a whole number for these, so truncating and rounding agree
+        ("inject_scroll_down_one", "memory", {**scroll, "hscroll": 0.0, "vscroll": -1.0,
+                                              "hscroll_i16": 0, "vscroll_i16": sc_scroll_i16(-1.0)}),
+        ("inject_scroll_clamped", "memory", {**scroll, "hscroll": 32.0, "vscroll": -16.0,
+                                             "hscroll_i16": sc_scroll_i16(32.0), "vscroll_i16": sc_scroll_i16(-16.0)}),
+        ("back_or_screen_on_down", "memory", {"type": SC_BACK_OR_SCREEN_ON, "action": 0}),
+        ("back_or_screen_on_up", "memory", {"type": SC_BACK_OR_SCREEN_ON, "action": 1}),
+        ("get_clipboard_copy", "memory", {"type": SC_GET_CLIPBOARD, "copy_key": 1}),
+        # sequence is above 2**32 on purpose (u64)
+        ("set_clipboard_ascii", "memory", {"type": SC_SET_CLIPBOARD, "sequence": 4_294_967_298, "paste": False,
+                                           "text": "plain text"}),
+        ("set_clipboard_paste_emoji", "memory", {"type": SC_SET_CLIPBOARD, "sequence": 7, "paste": True,
+                                                 "text": "Hi \U0001F44B\U0001F3FD from the Mac \U0001F1EE\U0001F1F3"}),
+        ("set_display_power_off", "memory", {"type": SC_SET_DISPLAY_POWER, "on": False}),
+        ("set_display_power_on", "memory", {"type": SC_SET_DISPLAY_POWER, "on": True}),
+        ("rotate_device", "memory", {"type": SC_ROTATE_DEVICE}),
+        ("reset_video", "memory", {"type": SC_RESET_VIDEO}),
+    ]
+    device = [
+        ("clipboard_ascii", "memory", {"type": SC_DEVICE_CLIPBOARD, "text": "copied on the phone"}),
+        ("clipboard_emoji", "memory", {"type": SC_DEVICE_CLIPBOARD, "text": "\u00e9t\u00e9 \U0001F4CB\u2728"}),
+        ("ack_clipboard", "memory", {"type": SC_DEVICE_ACK_CLIPBOARD, "sequence": 4_294_967_298}),
+        ("uhid_output", "memory", {"type": SC_DEVICE_UHID_OUTPUT, "id": 1, "data_hex": "0102ff"}),
+    ]
+    stream = [
+        ("video_prelude_h264", "spike", {"dummy_byte": True, "device_name": "phone-sim", "codec": "h264",
+                                         "codec_id": SC_CODEC_IDS["h264"]},
+         lambda f: sc_video_prelude(f["device_name"], f["codec"])),
+        ("video_prelude_h265_utf8_name", "memory", {"dummy_byte": True, "device_name": "Ana\u2019s phone \U0001F4F1",
+                                                    "codec": "h265", "codec_id": SC_CODEC_IDS["h265"]},
+         lambda f: sc_video_prelude(f["device_name"], f["codec"])),
+        ("session_packet", "spike", {"session": True, "width": 1080, "height": 2400},
+         lambda f: sc_session_packet(f["width"], f["height"])),
+        ("config_packet_header", "spike", {"config": True, "key_frame": False, "pts_us": 0, "size": 27},
+         lambda f: sc_media_header(f["config"], f["key_frame"], f["pts_us"], f["size"])),
+        ("key_frame_packet_header", "spike", {"config": False, "key_frame": True, "pts_us": 16_667, "size": 1500},
+         lambda f: sc_media_header(f["config"], f["key_frame"], f["pts_us"], f["size"])),
+        # pts is above 2**32 on purpose (61-bit field)
+        ("plain_packet_header", "spike", {"config": False, "key_frame": False, "pts_us": 5_000_000_000, "size": 300},
+         lambda f: sc_media_header(f["config"], f["key_frame"], f["pts_us"], f["size"])),
+        ("audio_prelude_opus", "memory", {"codec": "opus", "codec_id": SC_CODEC_IDS["opus"]},
+         lambda f: struct.pack(">I", f["codec_id"])),
+        ("audio_prelude_aac", "memory", {"codec": "aac", "codec_id": SC_CODEC_IDS["aac"]},
+         lambda f: struct.pack(">I", f["codec_id"])),
+        ("audio_prelude_disabled", "memory", {"codec": "disabled", "codec_id": SC_AUDIO_DISABLED},
+         lambda f: struct.pack(">I", f["codec_id"])),
+        ("audio_prelude_error", "memory", {"codec": "error", "codec_id": SC_AUDIO_ERROR},
+         lambda f: struct.pack(">I", f["codec_id"])),
+    ]
+
+    def entry(name, source, fields, raw):
+        return {"name": name, "verified": False, "source": source, "fields": fields, "hex": raw.hex()}
+
+    return {
+        "upstream": "scrcpy v5.0.1: app/src/control_msg.c, app/src/device_msg.c, "
+                    "server/src/main/java/com/genymobile/scrcpy/control/*",
+        "notes": [
+            "All integers are big endian. Each control and device entry starts with its type byte.",
+            "verified = false: not yet checked against the vendored scrcpy server (Task 2 of 0.5 does it). "
+            "source = spike: the 0.1 spike used this layout against the real v5.0.1 server; "
+            "source = memory: written from memory of upstream, including the control types above 4, "
+            "the limits and the device messages.",
+            "Touch: pointer_id -2 is the generic finger; width and height are the current video size; "
+            "pressure is u16 fixed point (65535 = 1.0).",
+            "Scroll: hscroll and vscroll are the encoder's input; on the wire they are "
+            "i16 = clamp(v / 16, -1, 1) x 32768, clamped to -32768..32767.",
+            "Text and clipboard strings: u32 byte length, then UTF-8.",
+            "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is "
+            "u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; "
+            "a session packet sets bit 63 and carries the width and height.",
+        ],
+        "limits": {"verified": False, "inject_text_max_bytes": SC_INJECT_TEXT_MAX,
+                   "set_clipboard_text_max_bytes": SC_CLIPBOARD_TEXT_MAX,
+                   "device_name_bytes": SC_DEVICE_NAME_BYTES},
+        "control": [entry(n, src, f, sc_control(f)) for n, src, f in control],
+        "device": [entry(n, src, f, sc_device(f)) for n, src, f in device],
+        "stream": [entry(n, src, f, enc(f)) for n, src, f, enc in stream],
+    }
+
+
 def build_all() -> dict:
     ids = load_identities()
     return {"framing.json": build_framing(),
             "crypto.json": build_crypto(ids),
             "pairing_uri.json": build_pairing_uri(ids),
-            "filenames.json": build_filenames()}
+            "filenames.json": build_filenames(),
+            "scrcpy.json": build_scrcpy()}
 
 
 def main() -> int:

@@ -145,6 +145,11 @@ public nonisolated enum AMBulkRole: SwiftProtobuf.Enum, Swift.CaseIterable {
   case phoneSends // = 1
   case phoneReceives // = 2
   case thumbnails // = 3
+
+  /// section 24: the helper's streams, unchanged, no size
+  case mirrorVideo // = 4
+  case mirrorAudio // = 5
+  case mirrorControl // = 6
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -157,6 +162,9 @@ public nonisolated enum AMBulkRole: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 1: self = .phoneSends
     case 2: self = .phoneReceives
     case 3: self = .thumbnails
+    case 4: self = .mirrorVideo
+    case 5: self = .mirrorAudio
+    case 6: self = .mirrorControl
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -167,6 +175,9 @@ public nonisolated enum AMBulkRole: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .phoneSends: return 1
     case .phoneReceives: return 2
     case .thumbnails: return 3
+    case .mirrorVideo: return 4
+    case .mirrorAudio: return 5
+    case .mirrorControl: return 6
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -177,6 +188,9 @@ public nonisolated enum AMBulkRole: SwiftProtobuf.Enum, Swift.CaseIterable {
     .phoneSends,
     .phoneReceives,
     .thumbnails,
+    .mirrorVideo,
+    .mirrorAudio,
+    .mirrorControl,
   ]
 
 }
@@ -373,7 +387,7 @@ nonisolated extension AMTransferError: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension AMBulkRole: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0BULK_ROLE_UNSPECIFIED\0\u{1}BULK_ROLE_PHONE_SENDS\0\u{1}BULK_ROLE_PHONE_RECEIVES\0\u{1}BULK_ROLE_THUMBNAILS\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0BULK_ROLE_UNSPECIFIED\0\u{1}BULK_ROLE_PHONE_SENDS\0\u{1}BULK_ROLE_PHONE_RECEIVES\0\u{1}BULK_ROLE_THUMBNAILS\0\u{1}BULK_ROLE_MIRROR_VIDEO\0\u{1}BULK_ROLE_MIRROR_AUDIO\0\u{1}BULK_ROLE_MIRROR_CONTROL\0")
 }
 
 nonisolated extension AMBulkEndpoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

@@ -1,0 +1,81 @@
+// Mirror channel: screen mirroring with control (Full mode). See protocol/SPEC.md section 24.
+// mirror.availability carries FeatureAvailability (system.proto).
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum VideoCodec {
+  VIDEO_CODEC_UNSPECIFIED = 0;
+  VIDEO_CODEC_H264 = 1;
+  VIDEO_CODEC_H265 = 2;
+}
+
+enum AudioCodec {
+  AUDIO_CODEC_UNSPECIFIED = 0;
+  AUDIO_CODEC_OPUS = 1;
+  AUDIO_CODEC_AAC = 2;
+}
+
+message MirrorTokens {
+  bytes video = 1;
+  bytes audio = 2;            // empty when MirrorStart.audio = false
+  bytes control = 3;
+}
+
+message MirrorStart {
+  uint32 session = 1;         // Mac counter from 1, per Mac process
+  MirrorTokens tokens = 2;
+  uint32 port = 3;            // the bulk listener (section 13)
+  uint32 max_size = 4;
+  uint32 video_bit_rate = 5;
+  uint32 max_fps = 6;
+  VideoCodec video_codec = 7;
+  bool audio = 8;
+  AudioCodec audio_codec = 9;
+}
+
+enum MirrorPhase {
+  MIRROR_PHASE_UNSPECIFIED = 0;
+  MIRROR_PHASE_STARTING = 1;
+  MIRROR_PHASE_RUNNING = 2;
+  MIRROR_PHASE_STOPPED = 3;
+  MIRROR_PHASE_FAILED = 4;
+}
+
+enum MirrorReason {
+  MIRROR_REASON_UNSPECIFIED = 0;
+  MIRROR_REASON_USER = 1;
+  MIRROR_REASON_REPLACED = 2;
+  MIRROR_REASON_TURNED_OFF = 3;
+  MIRROR_REASON_NEEDS_SETUP = 4;
+  MIRROR_REASON_ADB_FAILED = 5;
+  MIRROR_REASON_HELPER_FAILED = 6;
+  MIRROR_REASON_LINK_FAILED = 7;
+  MIRROR_REASON_UNAVAILABLE = 8;
+}
+
+message MirrorState {
+  uint32 session = 1;
+  MirrorPhase phase = 2;
+  MirrorReason reason = 3;
+}
+
+message MirrorStop {
+  uint32 session = 1;
+  MirrorReason reason = 2;
+}
+
+enum TestPatternMode {
+  TEST_PATTERN_MODE_OFF = 0;
+  TEST_PATTERN_MODE_DELAY = 1;
+  TEST_PATTERN_MODE_FPS = 2;
+}
+
+message MirrorTestPattern {
+  uint32 session = 1;
+  TestPatternMode mode = 2;
+}

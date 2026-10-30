@@ -308,6 +308,82 @@ private struct URIFile: Decodable {
     #expect(try m.serializedData() == env.payload)
 }
 
+@Test func mirrorStartVectorDecodes() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "mirror_start_minimal" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .mirror)
+    #expect(env.id == 3)
+    #expect(env.type == MessageType.mirrorStart.rawValue)
+    let m = try AMMirrorStart(serializedBytes: env.payload)
+    #expect(m.session == 1)
+    #expect(m.tokens.video.count == 32)
+    #expect(m.tokens.audio.isEmpty)
+    #expect(m.tokens.control.count == 32)
+    #expect(m.tokens.video != m.tokens.control)
+    #expect(m.port == 50123)
+    #expect(m.maxSize == 1920)
+    #expect(m.videoBitRate == 8_000_000)
+    #expect(m.maxFps == 60)
+    #expect(m.videoCodec == .h264)
+    #expect(!m.audio)
+    #expect(m.audioCodec == .unspecified)
+    #expect(try m.serializedData() == env.payload)
+}
+
+@Test func bulkRoleValues() {
+    #expect(AMBulkRole.phoneSends.rawValue == 1)
+    #expect(AMBulkRole.phoneReceives.rawValue == 2)
+    #expect(AMBulkRole.thumbnails.rawValue == 3)
+    #expect(AMBulkRole.mirrorVideo.rawValue == 4)
+    #expect(AMBulkRole.mirrorAudio.rawValue == 5)
+    #expect(AMBulkRole.mirrorControl.rawValue == 6)
+}
+
+private struct ScrcpyFile: Decodable {
+    struct Entry: Decodable {
+        let name: String
+        let fields: [String: JSONValue]
+        let hex: String
+    }
+    let control: [Entry]
+    let device: [Entry]
+    let stream: [Entry]
+}
+
+/// Just enough JSON to read `fields`; the values are checked by the encoders that use them.
+private enum JSONValue: Decodable {
+    case number(Double), string(String), bool(Bool)
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let n = try? c.decode(Double.self) { self = .number(n) }
+        else { self = .string(try c.decode(String.self)) }
+    }
+    var number: Double? { if case .number(let n) = self { n } else { nil } }
+}
+
+@Test func scrcpyFixturesAreWellFormed() throws {
+    let file: ScrcpyFile = load("scrcpy.json")
+    #expect(!file.control.isEmpty)
+    #expect(!file.device.isEmpty)
+    #expect(!file.stream.isEmpty)
+    let all = file.control + file.device + file.stream
+    #expect(Set(all.map(\.name)).count == all.count)
+    for e in all {
+        #expect(e.hex.count % 2 == 0 && !e.hex.isEmpty, "\(e.name)")
+        #expect(e.hex.allSatisfy(\.isHexDigit) && e.hex == e.hex.lowercased(), "\(e.name)")
+    }
+    for e in file.control + file.device {
+        let type = try #require(e.fields["type"]?.number, "\(e.name)")
+        #expect(data(hex: e.hex).first.map(Double.init) == type, "\(e.name)")
+    }
+    let types = Set(file.control.compactMap { $0.fields["type"]?.number })
+    #expect(types == [0, 1, 2, 3, 4, 8, 9, 10, 11, 17])
+    let text = try #require(file.control.first { $0.name == "inject_text_300_bytes" })
+    #expect(data(hex: text.hex).count == 1 + 4 + 300)
+}
+
 private struct FilenamesFile: Decodable {
     struct Sanitize: Decodable { let `in`: String; let out: String }
     struct Unique: Decodable { let name: String; let taken: [String]; let out: String }
@@ -345,7 +421,7 @@ private struct FilenamesFile: Decodable {
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 76)
+    #expect(MessageType.allCases.count == 81)
     let expected: [MessageType: String] = [
         .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
         .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
@@ -395,6 +471,9 @@ private struct FilenamesFile: Decodable {
         .inputMove: "input.move", .inputButton: "input.button", .inputClick: "input.click",
         .inputScroll: "input.scroll", .inputKey: "input.key", .inputLaser: "input.laser",
         .inputAvailability: "input.availability",
+        .mirrorAvailability: "mirror.availability", .mirrorStart: "mirror.start",
+        .mirrorState: "mirror.state", .mirrorStop: "mirror.stop",
+        .mirrorTestPattern: "mirror.test_pattern",
     ]
     for (type, raw) in expected { #expect(type.rawValue == raw) }
     #expect(AMChannel.notify.rawValue == 5)
@@ -410,6 +489,7 @@ private struct FilenamesFile: Decodable {
     #expect(AMChannel.dnd.rawValue == 15)
     #expect(AMChannel.proximity.rawValue == 16)
     #expect(AMChannel.input.rawValue == 17)
+    #expect(AMChannel.mirror.rawValue == 18)
     #expect(AMAvailabilityReason.partialAccess.rawValue == 3)
     #expect(AMAvailabilityReason.unavailable.rawValue == 4)
     #expect(AMAvailabilityReason.needsSetup.rawValue == 5)

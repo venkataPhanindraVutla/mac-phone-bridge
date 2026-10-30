@@ -178,6 +178,17 @@
       "frame_hex": "0000001c08111007220a696e7075742e6d6f76652a0a0d0000c03f15000010c0"
     },
     {
+      "name": "mirror_start_minimal",
+      "envelope": {
+        "channel": 18,
+        "id": 3,
+        "reply_to": 0,
+        "type": "mirror.start",
+        "payload_hex": "080112440a201bc0edc8477eea36aa3704111e243385e6a1ec06d6828dc37842117d07b2f14c1a204c9972233007742c44e6da9e66df54ed730c644cb1a03ef3191743197f31251718cb870320800f2880a4e803303c3801"
+      },
+      "frame_hex": "0000006c08121003220c6d6972726f722e73746172742a58080112440a201bc0edc8477eea36aa3704111e243385e6a1ec06d6828dc37842117d07b2f14c1a204c9972233007742c44e6da9e66df54ed730c644cb1a03ef3191743197f31251718cb870320800f2880a4e803303c3801"
+    },
+    {
       "name": "large_ids_multibyte_varint",
       "envelope": {
         "channel": 3,

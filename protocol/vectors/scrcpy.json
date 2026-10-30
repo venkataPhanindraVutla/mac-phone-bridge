@@ -1,0 +1,416 @@
+{
+  "upstream": "scrcpy v5.0.1: app/src/control_msg.c, app/src/device_msg.c, server/src/main/java/com/genymobile/scrcpy/control/*",
+  "notes": [
+    "All integers are big endian. Each control and device entry starts with its type byte.",
+    "verified = false: not yet checked against the vendored scrcpy server (Task 2 of 0.5 does it). source = spike: the 0.1 spike used this layout against the real v5.0.1 server; source = memory: written from memory of upstream, including the control types above 4, the limits and the device messages.",
+    "Touch: pointer_id -2 is the generic finger; width and height are the current video size; pressure is u16 fixed point (65535 = 1.0).",
+    "Scroll: hscroll and vscroll are the encoder's input; on the wire they are i16 = clamp(v / 16, -1, 1) x 32768, clamped to -32768..32767.",
+    "Text and clipboard strings: u32 byte length, then UTF-8.",
+    "Video stream entries include the dummy byte when dummy_byte is true. A media packet header is u64 (bit 62 config, bit 61 key frame, low 61 bits PTS in microseconds) and u32 payload size; a session packet sets bit 63 and carries the width and height."
+  ],
+  "limits": {
+    "verified": false,
+    "inject_text_max_bytes": 300,
+    "set_clipboard_text_max_bytes": 262130,
+    "device_name_bytes": 64
+  },
+  "control": [
+    {
+      "name": "inject_keycode_home_down",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 0,
+        "action": 0,
+        "keycode": 3,
+        "repeat": 0,
+        "meta_state": 0
+      },
+      "hex": "0000000000030000000000000000"
+    },
+    {
+      "name": "inject_keycode_home_up",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 0,
+        "action": 1,
+        "keycode": 3,
+        "repeat": 0,
+        "meta_state": 0
+      },
+      "hex": "0001000000030000000000000000"
+    },
+    {
+      "name": "inject_keycode_ctrl_a_down",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 0,
+        "action": 0,
+        "keycode": 29,
+        "repeat": 0,
+        "meta_state": 12288
+      },
+      "hex": "00000000001d0000000000003000"
+    },
+    {
+      "name": "inject_text_ascii",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 1,
+        "text": "hello"
+      },
+      "hex": "010000000568656c6c6f"
+    },
+    {
+      "name": "inject_text_300_bytes",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 1,
+        "text": "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over"
+      },
+      "hex": "010000012c54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e2054686520717569636b2062726f776e20666f78206a756d7073206f766572"
+    },
+    {
+      "name": "inject_touch_down",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "type": 2,
+        "pointer_id": -2,
+        "width": 1080,
+        "height": 2400,
+        "action_button": 0,
+        "buttons": 0,
+        "action": 0,
+        "x": 540,
+        "y": 1200,
+        "pressure": 65535
+      },
+      "hex": "0200fffffffffffffffe0000021c000004b004380960ffff0000000000000000"
+    },
+    {
+      "name": "inject_touch_move",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "type": 2,
+        "pointer_id": -2,
+        "width": 1080,
+        "height": 2400,
+        "action_button": 0,
+        "buttons": 0,
+        "action": 2,
+        "x": 560,
+        "y": 1300,
+        "pressure": 65535
+      },
+      "hex": "0202fffffffffffffffe000002300000051404380960ffff0000000000000000"
+    },
+    {
+      "name": "inject_touch_up",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "type": 2,
+        "pointer_id": -2,
+        "width": 1080,
+        "height": 2400,
+        "action_button": 0,
+        "buttons": 0,
+        "action": 1,
+        "x": 560,
+        "y": 1300,
+        "pressure": 0
+      },
+      "hex": "0201fffffffffffffffe00000230000005140438096000000000000000000000"
+    },
+    {
+      "name": "inject_scroll_down_one",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 3,
+        "x": 540,
+        "y": 1200,
+        "width": 1080,
+        "height": 2400,
+        "buttons": 0,
+        "hscroll": 0.0,
+        "vscroll": -1.0,
+        "hscroll_i16": 0,
+        "vscroll_i16": -2048
+      },
+      "hex": "030000021c000004b0043809600000f80000000000"
+    },
+    {
+      "name": "inject_scroll_clamped",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 3,
+        "x": 540,
+        "y": 1200,
+        "width": 1080,
+        "height": 2400,
+        "buttons": 0,
+        "hscroll": 32.0,
+        "vscroll": -16.0,
+        "hscroll_i16": 32767,
+        "vscroll_i16": -32768
+      },
+      "hex": "030000021c000004b0043809607fff800000000000"
+    },
+    {
+      "name": "back_or_screen_on_down",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 4,
+        "action": 0
+      },
+      "hex": "0400"
+    },
+    {
+      "name": "back_or_screen_on_up",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 4,
+        "action": 1
+      },
+      "hex": "0401"
+    },
+    {
+      "name": "get_clipboard_copy",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 8,
+        "copy_key": 1
+      },
+      "hex": "0801"
+    },
+    {
+      "name": "set_clipboard_ascii",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 9,
+        "sequence": 4294967298,
+        "paste": false,
+        "text": "plain text"
+      },
+      "hex": "090000000100000002000000000a706c61696e2074657874"
+    },
+    {
+      "name": "set_clipboard_paste_emoji",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 9,
+        "sequence": 7,
+        "paste": true,
+        "text": "Hi 👋🏽 from the Mac 🇮🇳"
+      },
+      "hex": "0900000000000000070100000021486920f09f918bf09f8fbd2066726f6d20746865204d616320f09f87aef09f87b3"
+    },
+    {
+      "name": "set_display_power_off",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 10,
+        "on": false
+      },
+      "hex": "0a00"
+    },
+    {
+      "name": "set_display_power_on",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 10,
+        "on": true
+      },
+      "hex": "0a01"
+    },
+    {
+      "name": "rotate_device",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 11
+      },
+      "hex": "0b"
+    },
+    {
+      "name": "reset_video",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 17
+      },
+      "hex": "11"
+    }
+  ],
+  "device": [
+    {
+      "name": "clipboard_ascii",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 0,
+        "text": "copied on the phone"
+      },
+      "hex": "0000000013636f70696564206f6e207468652070686f6e65"
+    },
+    {
+      "name": "clipboard_emoji",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 0,
+        "text": "été 📋✨"
+      },
+      "hex": "000000000dc3a974c3a920f09f938be29ca8"
+    },
+    {
+      "name": "ack_clipboard",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 1,
+        "sequence": 4294967298
+      },
+      "hex": "010000000100000002"
+    },
+    {
+      "name": "uhid_output",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "type": 2,
+        "id": 1,
+        "data_hex": "0102ff"
+      },
+      "hex": "02000100030102ff"
+    }
+  ],
+  "stream": [
+    {
+      "name": "video_prelude_h264",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "dummy_byte": true,
+        "device_name": "phone-sim",
+        "codec": "h264",
+        "codec_id": 1748121140
+      },
+      "hex": "0070686f6e652d73696d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068323634"
+    },
+    {
+      "name": "video_prelude_h265_utf8_name",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "dummy_byte": true,
+        "device_name": "Ana’s phone 📱",
+        "codec": "h265",
+        "codec_id": 1748121141
+      },
+      "hex": "00416e61e28099732070686f6e6520f09f93b10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068323635"
+    },
+    {
+      "name": "session_packet",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "session": true,
+        "width": 1080,
+        "height": 2400
+      },
+      "hex": "800000000000043800000960"
+    },
+    {
+      "name": "config_packet_header",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "config": true,
+        "key_frame": false,
+        "pts_us": 0,
+        "size": 27
+      },
+      "hex": "40000000000000000000001b"
+    },
+    {
+      "name": "key_frame_packet_header",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "config": false,
+        "key_frame": true,
+        "pts_us": 16667,
+        "size": 1500
+      },
+      "hex": "200000000000411b000005dc"
+    },
+    {
+      "name": "plain_packet_header",
+      "verified": false,
+      "source": "spike",
+      "fields": {
+        "config": false,
+        "key_frame": false,
+        "pts_us": 5000000000,
+        "size": 300
+      },
+      "hex": "000000012a05f2000000012c"
+    },
+    {
+      "name": "audio_prelude_opus",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "codec": "opus",
+        "codec_id": 1869641075
+      },
+      "hex": "6f707573"
+    },
+    {
+      "name": "audio_prelude_aac",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "codec": "aac",
+        "codec_id": 6381923
+      },
+      "hex": "00616163"
+    },
+    {
+      "name": "audio_prelude_disabled",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "codec": "disabled",
+        "codec_id": 0
+      },
+      "hex": "00000000"
+    },
+    {
+      "name": "audio_prelude_error",
+      "verified": false,
+      "source": "memory",
+      "fields": {
+        "codec": "error",
+        "codec_id": 1
+      },
+      "hex": "00000001"
+    }
+  ]
+}

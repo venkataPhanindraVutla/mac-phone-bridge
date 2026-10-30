@@ -200,6 +200,39 @@ class VectorTest {
     }
 
     @Test
+    fun mirrorStartVectorDecodes() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "mirror_start_minimal" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_MIRROR, env.channel)
+        assertEquals(3L, env.id)
+        assertEquals(MessageType.MIRROR_START, env.type)
+        val m = io.github.anmirror.protocol.v1.MirrorStart.parseFrom(env.payload)
+        assertEquals(1, m.session)
+        assertEquals(32, m.tokens.video.size())
+        assertTrue(m.tokens.audio.isEmpty)
+        assertEquals(32, m.tokens.control.size())
+        assertFalse(m.tokens.video == m.tokens.control)
+        assertEquals(50123, m.port)
+        assertEquals(1920, m.maxSize)
+        assertEquals(8_000_000, m.videoBitRate)
+        assertEquals(60, m.maxFps)
+        assertEquals(io.github.anmirror.protocol.v1.VideoCodec.VIDEO_CODEC_H264, m.videoCodec)
+        assertFalse(m.audio)
+        assertEquals(io.github.anmirror.protocol.v1.AudioCodec.AUDIO_CODEC_UNSPECIFIED, m.audioCodec)
+        assertEquals(env.payload, m.toByteString())
+    }
+
+    @Test
+    fun bulkRoleValues() {
+        assertEquals(1, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_PHONE_SENDS_VALUE)
+        assertEquals(2, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_PHONE_RECEIVES_VALUE)
+        assertEquals(3, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_THUMBNAILS_VALUE)
+        assertEquals(4, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_MIRROR_VIDEO_VALUE)
+        assertEquals(5, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_MIRROR_AUDIO_VALUE)
+        assertEquals(6, io.github.anmirror.protocol.v1.BulkRole.BULK_ROLE_MIRROR_CONTROL_VALUE)
+    }
+
+    @Test
     fun filenameVectorsLoadAndHoldInvariants() {
         val file = load("filenames.json")
         val sanitize = file.arr("sanitize").map { it.jsonObject }
@@ -233,8 +266,8 @@ class VectorTest {
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
-        assertEquals(76, MessageType.ALL.size)
-        assertEquals(76, MessageType.ALL.toSet().size)
+        assertEquals(81, MessageType.ALL.size)
+        assertEquals(81, MessageType.ALL.toSet().size)
         val expected = mapOf(
             MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
             MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",
@@ -285,6 +318,9 @@ class VectorTest {
             MessageType.INPUT_CLICK to "input.click", MessageType.INPUT_SCROLL to "input.scroll",
             MessageType.INPUT_KEY to "input.key", MessageType.INPUT_LASER to "input.laser",
             MessageType.INPUT_AVAILABILITY to "input.availability",
+            MessageType.MIRROR_AVAILABILITY to "mirror.availability", MessageType.MIRROR_START to "mirror.start",
+            MessageType.MIRROR_STATE to "mirror.state", MessageType.MIRROR_STOP to "mirror.stop",
+            MessageType.MIRROR_TEST_PATTERN to "mirror.test_pattern",
         )
         for ((const, raw) in expected) {
             assertEquals(raw, const)
@@ -303,6 +339,7 @@ class VectorTest {
         assertEquals(15, Channel.CHANNEL_DND_VALUE)
         assertEquals(16, Channel.CHANNEL_PROXIMITY_VALUE)
         assertEquals(17, Channel.CHANNEL_INPUT_VALUE)
+        assertEquals(18, Channel.CHANNEL_MIRROR_VALUE)
         assertEquals(3, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_PARTIAL_ACCESS_VALUE)
         assertEquals(4, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE_VALUE)
         assertEquals(5, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP_VALUE)

@@ -76,4 +76,9 @@ public enum MessageType: String, CaseIterable, Sendable {
     case inputKey = "input.key"
     case inputLaser = "input.laser"
     case inputAvailability = "input.availability"
+    case mirrorAvailability = "mirror.availability"
+    case mirrorStart = "mirror.start"
+    case mirrorState = "mirror.state"
+    case mirrorStop = "mirror.stop"
+    case mirrorTestPattern = "mirror.test_pattern"
 }

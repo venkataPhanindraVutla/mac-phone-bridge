@@ -78,6 +78,11 @@ object MessageType {
     const val INPUT_KEY = "input.key"
     const val INPUT_LASER = "input.laser"
     const val INPUT_AVAILABILITY = "input.availability"
+    const val MIRROR_AVAILABILITY = "mirror.availability"
+    const val MIRROR_START = "mirror.start"
+    const val MIRROR_STATE = "mirror.state"
+    const val MIRROR_STOP = "mirror.stop"
+    const val MIRROR_TEST_PATTERN = "mirror.test_pattern"
 
     val ALL: List<String> = listOf(
         HELLO, PING, PONG, ERROR, GOODBYE, PAIR_REQUEST, PAIR_VERIFIED, PAIR_CONFIRM,
@@ -95,5 +100,6 @@ object MessageType {
         MEDIA_STATE, MEDIA_ARTWORK, MEDIA_COMMAND, MEDIA_AVAILABILITY, DND_STATE, DND_AVAILABILITY,
         PROXIMITY_AVAILABILITY, INPUT_MOVE, INPUT_BUTTON, INPUT_CLICK, INPUT_SCROLL, INPUT_KEY,
         INPUT_LASER, INPUT_AVAILABILITY,
+        MIRROR_AVAILABILITY, MIRROR_START, MIRROR_STATE, MIRROR_STOP, MIRROR_TEST_PATTERN,
     )
 }
