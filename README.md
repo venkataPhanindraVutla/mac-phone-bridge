@@ -2,7 +2,18 @@
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
-> **Status: milestone 0.3 is code-complete and being verified on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone) and 0.2 (notifications, one-time codes, contacts, calls), it adds sharing and files: a shared clipboard, files and links both ways, screenshots and recent photos on your Mac, and browsing your phone's files from the Mac. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md).
+> **Status: milestone 0.4 is code-complete and waiting for checks on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone), 0.2 (notifications, one-time codes, contacts, calls) and 0.3 (clipboard, files, screenshots, photos, browsing your phone's files), it adds control and context: a music controller, Do Not Disturb and Focus sync, auto-lock when you walk away, and the phone as a trackpad and presentation remote. Everything that depends on a real phone or Mac is **unverified** until the owner checks in the results file are done. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md), [0.4 results](docs/milestones/0.4-results.md).
+
+### What's in 0.4
+
+- **Music controller:** the track, artist and artwork from the phone's media player show in the Mac menu, in the Phone window's Now Playing tab (with Position and Volume sliders) and in Control Center. Play or Pause, Previous, Next and volume work from the menu. The Mac's media keys and AirPods taps are meant to work too, but macOS may not send them to a menu-bar app that plays no audio (unverified: owner check b). Needs notification access on the phone.
+- **Do Not Disturb and Focus sync:** Focus on the Mac turns on Do Not Disturb on the phone, and the phone's Do Not Disturb turns on a Focus on the Mac. Phone to Mac needs two Shortcuts you make once (see "Focus sync" below). On Android 15 and later, the phone's Do Not Disturb from the Mac is an app "mode" that only the app can switch off: turning Focus off on the Mac does not clear a Do Not Disturb you turned on by hand on the phone (unverified on a device: owner check c). Below Android 15 it does.
+
+Whether the ad-hoc signed Contributor build can read Focus status is unverified (owner check d).
+- **Auto-lock when you walk away:** the phone sends a small Bluetooth beacon, and the Mac locks when it stays away. It never unlocks the Mac, and it is deliberately conservative: it does not lock while a video, call or browser keeps the screen awake, and it needs the phone to have connected to the Mac over Wi-Fi in the last 30 minutes. No location permission. Unverified on a real lock and over a full day (owner check e).
+- **Trackpad and presentation remote:** the phone moves the Mac's pointer, clicks, right-clicks, scrolls and drags, and its Remote tab has Previous, Next, a laser dot and optional volume-key slide changes. Needs the Accessibility permission, asked for only when you turn the setting on. Ad-hoc builds lose that grant on every rebuild.
+- Still no SMS or MMS access, no account and no cloud. The new Android permission is `BLUETOOTH_ADVERTISE` (older Android uses the legacy Bluetooth permissions); there is no location permission.
+- Known limits: see [0.4 results](docs/milestones/0.4-results.md#known-limitations-in-04).
 
 ### What's in 0.3
 
@@ -29,19 +40,19 @@
 - 📁 **Files both ways:** drag, Share menu, and your phone in Finder's sidebar (in 0.3)
 - 📋 **Shared clipboard** for text (in 0.3)
 - 📞 **Calls:** see, answer and decline from your Mac (in 0.2)
-- 🎵 **Music controller,** including your Mac's media keys
+- 🎵 **Music controller,** including your Mac's media keys (in 0.4)
 - 🖥️ **Screen mirroring with full control:** use WhatsApp and any app with your Mac's keyboard and mouse
 - Also:
   - phone status in the menu bar
   - find my phone
   - one-time-code copy (in 0.2)
   - Send to Mac / Send to phone (in 0.3)
-  - Do Not Disturb sync
+  - Do Not Disturb sync (in 0.4)
   - instant screenshots (in 0.3)
   - recent photos (in 0.3)
   - caller ID
-  - auto-lock your Mac when you walk away
-  - phone as trackpad / presentation remote
+  - auto-lock your Mac when you walk away (in 0.4)
+  - phone as trackpad / presentation remote (in 0.4)
 
 **Version 2:** phone as webcam, phone as microphone, one-click hotspot.
 
@@ -135,10 +146,10 @@ Install the debug APK on an Android 10+ phone. In the Mac app, open the menu-bar
 
 ### Focus sync
 
-Focus on the Mac and Do Not Disturb on the phone can follow each other. Turn on "Sync Focus with <phone>" in the Mac app's Settings, and "Sync Do Not Disturb with your Mac" in the phone app.
+Focus on the Mac and Do Not Disturb on the phone can follow each other. Any Focus on the Mac counts as "on". Turn on "Sync Focus with <phone>" in the Mac app's Settings, and "Sync Do Not Disturb with your Mac" in the phone app.
 
 - **Mac to phone:** the Mac reads whether a Focus is on. macOS asks once for Focus status access when you turn the setting on.
-- **Phone to Mac:** macOS has no way for an app to turn Focus on directly, so the Mac app runs two Shortcuts that you make once:
+- **Phone to Mac:** macOS has no public way for an app to turn Focus on, so the Mac app runs two Shortcuts that you make once:
 
 1. Open the Shortcuts app and create a new shortcut.
 2. Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On.
