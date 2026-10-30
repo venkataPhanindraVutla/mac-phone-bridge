@@ -275,6 +275,10 @@ def build_framing() -> dict:
          f_varint(1, 87) + f_varint(2, 1) + f_varint(3, -1) + f_varint(4, 2)),
         ("status_update_signal_zero_omitted", CHANNELS["STATUS"], 5, 0, "status.update",
          f_varint(1, 5) + f_varint(4, 3)),
+        ("ping_from_mac", CHANNELS["SYSTEM"], 4, 0, "system.ping", b""),
+        # network 2 = NETWORK_KIND_WIFI; background_restricted is field 5 (bool)
+        ("status_update_background_restricted", CHANNELS["STATUS"], 6, 0, "status.update",
+         f_varint(1, 40) + f_varint(3, 2) + f_varint(4, 2) + f_varint(5, 1)),
         ("find_ring", CHANNELS["FIND"], 6, 0, "find.ring", b""),
         ("find_state_reply", CHANNELS["FIND"], 7, 6, "find.state",
          f_varint(1, 1) + f_varint(2, 1)),
