@@ -228,8 +228,9 @@ class ProximityBeaconTest {
     }
 
     @Test fun pendingStartAtBoundaryKeepsEnabled() {
-        // A first start still pending is no fault, also across a boundary: it starts again with
-        // the new ID (nothing is on the air to keep yet).
+        // A first start still pending (within its 5 s) is no fault, also across a boundary: it
+        // starts again with the new ID (nothing is on the air to keep yet).
+        now = boundary + 898_000L
         beacon.update(active = true, macs = listOf(macA))
         val first = advertiser.sets.single()
         now = boundary + 901_000L
@@ -372,6 +373,37 @@ class ProximityBeaconTest {
         // A confirmation arriving after the deadline changes nothing.
         set.events(AdvertiserEvent.DataSet)
         assertEquals(setOf("a"), beacon.faulted.value)
+    }
+
+    @Test fun startWithoutCallbackFaultsAfter5s() {
+        beacon.update(active = true, macs = listOf(macA))
+        val set = advertiser.sets.single()
+        // No onAdvertisingSetStarted: the alarm comes back at the deadline.
+        assertEquals(now + 5_000L, alarm.at)
+        assertEquals(WakeKind.PROMPT, alarm.kind)
+        now += 4_999L
+        beacon.onClockCheck()
+        assertEquals(BeaconState.Starting, beacon.states.value["a"])
+        assertEquals(emptySet(), beacon.faulted.value)
+        now += 1L
+        beacon.onClockCheck()
+        assertEquals(BeaconState.Failed(ProximityBeacon.CODE_START_TIMEOUT), beacon.states.value["a"])
+        assertEquals(setOf("a"), beacon.faulted.value)
+        assertTrue(set.stopped)
+        // A late Started for the abandoned set changes nothing; the retry is due as for any failure.
+        set.events(AdvertiserEvent.Started)
+        assertEquals(setOf("a"), beacon.faulted.value)
+        assertEquals(now + 5_000L, alarm.at)
+        now += 5_000L
+        beacon.onClockCheck()
+        assertEquals(2, advertiser.sets.size)
+        advertiser.sets[1].events(AdvertiserEvent.Started)
+        assertEquals(BeaconState.On, beacon.states.value["a"])
+        assertEquals(emptySet(), beacon.faulted.value)
+        // Started in time: no deadline left behind.
+        now += 60_000L
+        beacon.onClockCheck()
+        assertEquals(BeaconState.On, beacon.states.value["a"])
     }
 
     private companion object {

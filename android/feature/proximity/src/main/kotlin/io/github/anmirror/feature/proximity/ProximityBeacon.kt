@@ -22,9 +22,9 @@ sealed interface BeaconState {
  *   recomputes the epoch from [clock] and gives every started set its new ID in place (a set still
  *   starting starts again with it). A late alarm, a clock change or the screen coming on just
  *   calls [onClockCheck] again.
- * - **Failures:** a failed start, refused new data, new data the stack does not confirm within
- *   [DATA_CONFIRM_MS], or a set the system stopped is [BeaconState.Failed] and retried after
- *   [RetryBackoff]; the sets that did start are kept.
+ * - **Failures:** a failed start, a start or new data the stack does not confirm within
+ *   [DATA_CONFIRM_MS], refused new data, or a set the system stopped is [BeaconState.Failed] and
+ *   retried after [RetryBackoff]; the sets that did start are kept.
  * - **Adapter blips:** after [markAdapterNotReady] (Bluetooth left the on state, if only for a
  *   moment) no set is trusted: the next [update] or [refresh] starts them all again, since the
  *   stack may have dropped them without a word.
@@ -52,7 +52,7 @@ class ProximityBeacon(
         var failures = 0
         var retryAt: Long? = null
 
-        /** New data awaits the stack's confirmation until then. */
+        /** A start (while [BeaconState.Starting]) or new data awaits the stack's confirmation until then. */
         var confirmBy: Long? = null
     }
 
@@ -148,7 +148,7 @@ class ProximityBeacon(
                 }
                 // The same for a deadline further off than the confirmation wait.
                 confirmBy != null && (confirmBy <= now || confirmBy - now > DATA_CONFIRM_MS) ->
-                    fail(slot, CODE_DATA_TIMEOUT, now)
+                    fail(slot, if (slot.state == BeaconState.Starting) CODE_START_TIMEOUT else CODE_DATA_TIMEOUT, now)
                 slot.epoch == epoch -> Unit
                 slot.state == BeaconState.On -> {
                     slot.epoch = epoch
@@ -172,7 +172,9 @@ class ProximityBeacon(
         slot.token = token
         slot.state = BeaconState.Starting
         slot.retryAt = null
-        slot.confirmBy = null
+        // A start that never reports must fault too, or an armed Mac sees silence while the
+        // availability still says enabled.
+        slot.confirmBy = now + DATA_CONFIRM_MS
         slot.epoch = RotationSchedule.epochAt(now)
         val handle = advertiser.start(bleId(slot.mac, slot.epoch)) { event -> onEvent(slot, token, event) }
         // A failure reported before start returned has already moved on: the set is not kept.
@@ -191,6 +193,7 @@ class ProximityBeacon(
         when (event) {
             AdvertiserEvent.Started -> {
                 slot.state = BeaconState.On
+                slot.confirmBy = null
                 slot.faulted = false
                 slot.failures = 0
             }
@@ -228,7 +231,10 @@ class ProximityBeacon(
         /** [BeaconState.Failed]'s code when new data was not confirmed within [DATA_CONFIRM_MS]. */
         const val CODE_DATA_TIMEOUT = -2
 
-        /** How long new data may wait for `onAdvertisingDataSet`. */
+        /** [BeaconState.Failed]'s code when a start was not confirmed within [DATA_CONFIRM_MS]. */
+        const val CODE_START_TIMEOUT = -3
+
+        /** How long a start may wait for `onAdvertisingSetStarted`, and new data for `onAdvertisingDataSet`. */
         const val DATA_CONFIRM_MS = 5_000L
     }
 }
