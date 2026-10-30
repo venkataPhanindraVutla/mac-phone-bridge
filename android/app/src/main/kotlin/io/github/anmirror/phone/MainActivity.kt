@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.anmirror.phone.remote.TrackpadActivity
 import io.github.anmirror.phone.service.BootDecision
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.ui.ConfirmCodeScreen
@@ -94,6 +95,7 @@ private fun AppRoot(graph: AppGraph) {
     val proximityOn by graph.proximityOn.collectAsStateWithLifecycle()
     val proximityGranted by graph.proximityGranted.collectAsStateWithLifecycle()
     val proximityAdapter by graph.proximityAdapter.collectAsStateWithLifecycle()
+    val macInput by graph.macInputAvailability.collectAsStateWithLifecycle()
     val contactsOn by graph.contactsOn.collectAsStateWithLifecycle()
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
@@ -145,6 +147,10 @@ private fun AppRoot(graph: AppGraph) {
                         proximityAdapter = proximityAdapter,
                         onProximityToggle = graph::setProximityOn,
                         onProximityPermissionResult = graph::refreshProximityGranted,
+                        trackpadShown = inputShared(connection),
+                        trackpadOpen = inputOpen(connection, macInput),
+                        trackpadLine = trackpadLine(connection, macInput),
+                        onOpenTrackpad = { context.startActivity(Intent(context, TrackpadActivity::class.java)) },
                         contactsOn = contactsOn,
                         contactsGranted = contactsGranted,
                         onContactsToggle = graph::setContactsOn,
@@ -196,7 +202,7 @@ private fun AppRoot(graph: AppGraph) {
 }
 
 @Composable
-private fun AppTheme(content: @Composable () -> Unit) {
+internal fun AppTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val context = LocalContext.current
     val colors = when {

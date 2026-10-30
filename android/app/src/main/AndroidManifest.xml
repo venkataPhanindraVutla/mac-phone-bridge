@@ -125,6 +125,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The trackpad and presentation remote (F-16), opened from Home only. -->
+        <activity
+            android:name=".remote.TrackpadActivity"
+            android:exported="false"
+            android:label="@string/trackpad_title"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Cancel on a transfer notification; only this app's PendingIntent reaches it. -->
         <receiver
             android:name=".service.TransferActionReceiver"

@@ -78,6 +78,7 @@ import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.DndAvailability
 import io.github.anmirror.protocol.v1.DndState
+import io.github.anmirror.protocol.v1.FeatureAvailability
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.MediaCommand
@@ -145,6 +146,7 @@ class ConnectionService : LifecycleService() {
         setUpMedia()
         setUpDnd()
         setUpProximity()
+        setUpInput()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -769,6 +771,20 @@ class ConnectionService : LifecycleService() {
                         }
                     }
                 }
+        }
+    }
+
+    /**
+     * Trackpad and remote (F-16): the Mac's `input.availability` says whether it lets this phone move
+     * its pointer; kept with its session (cleared when that session ends) and read by
+     * [AppGraph.inputOpen]. The phone sends no availability of its own: it needs no permission.
+     */
+    private fun setUpInput() {
+        graph.manager.on(MessageType.INPUT_AVAILABILITY) { env ->
+            val availability = FeatureAvailability.parseFrom(env.payload)
+            val s = (graph.manager.state.value as? Connected)?.takeIf { "input.v1" in it.shared } ?: return@on
+            graph.onMacInputAvailability(s, availability)
+            Log.i(TAG, "input: mac availability enabled=${availability.enabled} reason=${availability.reason}")
         }
     }
 

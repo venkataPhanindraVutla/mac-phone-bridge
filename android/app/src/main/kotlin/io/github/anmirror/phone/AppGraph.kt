@@ -78,6 +78,7 @@ import io.github.anmirror.protocol.v1.ActionOutcome
 import io.github.anmirror.protocol.v1.BulkEndpoint
 import io.github.anmirror.protocol.v1.BulkHello
 import io.github.anmirror.protocol.v1.Envelope
+import io.github.anmirror.protocol.v1.FeatureAvailability
 import io.github.anmirror.protocol.v1.RootKind
 import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.protocol.v1.TransferKind
@@ -365,6 +366,40 @@ class AppGraph private constructor(context: Context) {
         phoneFp = { phoneFingerprint },
         log = { Log.w(TAG, it) },
     )
+
+    private val _macInputAvailability = MutableStateFlow<MacInputAvailability?>(null)
+
+    /**
+     * The Mac's last `input.availability` (whether it lets this phone move its pointer), with the
+     * session it came in; set by the service, cleared when that session ends.
+     */
+    val macInputAvailability: StateFlow<MacInputAvailability?> = _macInputAvailability.asStateFlow()
+
+    fun onMacInputAvailability(session: PhoneConnectionState.Connected, availability: FeatureAvailability) {
+        _macInputAvailability.value = MacInputAvailability(session, availability)
+    }
+
+    /**
+     * The trackpad (F-16) sends `input.*` only while the Mac shares input.v1 and its last
+     * `input.availability` in this session is enabled (SPEC 23). The phone needs no permission
+     * and has no switch for it.
+     */
+    fun inputOpen(): Boolean = inputOpen(manager.state.value, _macInputAvailability.value)
+
+    /** Sends an `input.*` message when [inputOpen]; false (and nothing sent) otherwise. */
+    suspend fun sendInput(type: String, payload: MessageLite): Boolean =
+        inputOpen() && manager.send(ProtoChannel.CHANNEL_INPUT, type, payload)
+
+    private val inputPrefs = app.getSharedPreferences("input", Context.MODE_PRIVATE)
+    private val _volumeKeysOn = MutableStateFlow(inputPrefs.getBoolean(KEY_VOLUME_KEYS_ON, true))
+
+    /** The Remote tab's "Volume keys change slides" switch. On until turned off. */
+    val volumeKeysOn: StateFlow<Boolean> = _volumeKeysOn.asStateFlow()
+
+    fun setVolumeKeysOn(on: Boolean) {
+        inputPrefs.edit { putBoolean(KEY_VOLUME_KEYS_ON, on) }
+        _volumeKeysOn.value = on
+    }
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(
@@ -867,6 +902,7 @@ class AppGraph private constructor(context: Context) {
      */
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
         bulkEndpoint.update { if (it?.session === ended) null else it }
+        _macInputAvailability.update { if (it?.session === ended) null else it }
         photos.stop()
         trees.set(null) // a new session starts with fresh path lookups
         transfers.onDisconnected()
@@ -952,7 +988,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1")
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1")
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
         private const val KEY_CALLS_ON = "calls_on_mac"
@@ -963,6 +999,7 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_MEDIA_ON = "control_from_mac"
         private const val KEY_DND_ON = "sync_with_mac"
         private const val KEY_PROXIMITY_ON = "lock_when_away"
+        private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */

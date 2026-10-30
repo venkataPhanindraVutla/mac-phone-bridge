@@ -1,5 +1,6 @@
 package io.github.anmirror.phone
 
+import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.feature.proximity.AdvertiserState
 import io.github.anmirror.protocol.v1.AvailabilityReason
 import io.github.anmirror.protocol.v1.DndAvailability
@@ -65,3 +66,16 @@ fun mediaFeatureAvailability(access: MediaAccess, userOn: Boolean, partialWorks:
         .setReason(AvailabilityReason.AVAILABILITY_REASON_PARTIAL_ACCESS)
         .build()
 }
+
+/** The Mac's last `input.availability` (SPEC 23), and the session it came in. */
+class MacInputAvailability(val session: PhoneConnectionState.Connected, val availability: FeatureAvailability)
+
+/** The Mac shares input.v1 in [state]. */
+fun inputShared(state: PhoneConnectionState): Boolean = state is PhoneConnectionState.Connected && "input.v1" in state.shared
+
+/**
+ * The trackpad may send: connected, the Mac shares input.v1, and its last `input.availability`
+ * in this very session is enabled. Nothing heard yet, or heard in an earlier session, is closed.
+ */
+fun inputOpen(state: PhoneConnectionState, mac: MacInputAvailability?): Boolean =
+    inputShared(state) && mac != null && mac.session === state && mac.availability.enabled

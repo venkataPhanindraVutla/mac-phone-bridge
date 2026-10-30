@@ -79,6 +79,10 @@ fun HomeScreen(
     proximityAdapter: AdvertiserState,
     onProximityToggle: (Boolean) -> Unit,
     onProximityPermissionResult: () -> Unit,
+    trackpadShown: Boolean,
+    trackpadOpen: Boolean,
+    trackpadLine: Int?,
+    onOpenTrackpad: () -> Unit,
     contactsOn: Boolean,
     contactsGranted: Boolean,
     onContactsToggle: (Boolean) -> Unit,
@@ -151,6 +155,7 @@ fun HomeScreen(
             on = proximityOn, granted = proximityGranted, adapter = proximityAdapter,
             onToggle = onProximityToggle, onPermissionResult = onProximityPermissionResult,
         )
+        if (trackpadShown) TrackpadRow(open = trackpadOpen, line = trackpadLine, onOpen = onOpenTrackpad)
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         ClipboardRow(on = clipboardOn, onToggle = onClipboardToggle)
@@ -400,6 +405,21 @@ private fun ProximityRow(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.home_proximity_allow)) }
         }
+    }
+}
+
+/**
+ * "Use as trackpad", shown while connected to a Mac that has the trackpad: it opens the trackpad
+ * once the Mac allows it, and until then the line says what to turn on there. No permission and no
+ * switch on the phone.
+ */
+@Composable
+private fun TrackpadRow(open: Boolean, line: Int?, onOpen: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = onOpen, enabled = open, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.home_trackpad))
+        }
+        if (line != null) Text(stringResource(line), style = MaterialTheme.typography.bodyMedium)
     }
 }
 

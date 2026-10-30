@@ -84,6 +84,20 @@
     <string name="home_proximity_allow">Allow Nearby devices</string>
     <string name="home_proximity_bluetooth_off">Turn on Bluetooth to use this.</string>
     <string name="home_proximity_unsupported">This phone can\'t advertise over Bluetooth.</string>
+    <!-- Home and the trackpad screen: the phone as the Mac's trackpad and presentation remote (F-16).
+         Not connected reuses clipboard_not_connected. -->
+    <string name="home_trackpad">Use as trackpad</string>
+    <string name="trackpad_title">Trackpad</string>
+    <string name="trackpad_tab_trackpad">Trackpad</string>
+    <string name="trackpad_tab_remote">Remote</string>
+    <string name="trackpad_previous">Previous</string>
+    <string name="trackpad_next">Next</string>
+    <string name="trackpad_laser">Laser</string>
+    <string name="trackpad_volume_keys">Volume keys change slides</string>
+    <string name="trackpad_mac_off">Turn on pointer control in Android Mirroring\'s settings on your Mac.</string>
+    <string name="trackpad_mac_needs_accessibility">Allow Android Mirroring in your Mac\'s Accessibility settings.</string>
+    <!-- TalkBack label of the trackpad surface. -->
+    <string name="trackpad_surface_label">Trackpad. Move one finger to move the pointer, tap to click, tap with two fingers to right-click, drag with two fingers to scroll.</string>
     <!-- Home: calls on the Mac -->
     <string name="home_calls_title">Calls on your Mac</string>
     <string name="home_calls_needs_permission">Android Mirroring needs access to your phone\'s call state to do this. Allow it in Settings.</string>

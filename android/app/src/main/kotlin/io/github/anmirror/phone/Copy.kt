@@ -94,3 +94,15 @@ fun proximityRowLine(on: Boolean, granted: Boolean, adapter: AdvertiserState): I
     adapter == AdvertiserState.UNSUPPORTED -> R.string.home_proximity_unsupported
     else -> null
 }
+
+/**
+ * Why the trackpad can't be used, for Home's "Use as trackpad" and the trackpad screen: not
+ * connected, or the Mac's pointer control is off or lacks Accessibility. Null when it can be used,
+ * when this Mac has no trackpad support (Home hides the row), or before the Mac has said.
+ */
+fun trackpadLine(state: PhoneConnectionState, mac: MacInputAvailability?): Int? = when {
+    state !is PhoneConnectionState.Connected -> R.string.clipboard_not_connected
+    !inputShared(state) || mac == null || mac.session !== state || mac.availability.enabled -> null
+    mac.availability.reason == AvailabilityReason.AVAILABILITY_REASON_NEEDS_PERMISSION -> R.string.trackpad_mac_needs_accessibility
+    else -> R.string.trackpad_mac_off
+}
