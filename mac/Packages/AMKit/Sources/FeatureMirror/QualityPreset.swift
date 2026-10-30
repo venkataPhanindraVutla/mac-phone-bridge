@@ -8,7 +8,7 @@ public struct QualityPreset: Equatable, Sendable, Hashable {
     public let bitRate: UInt32
     public let maxFps: UInt32
 
-    public init(name: String, maxSize: UInt32, bitRate: UInt32, maxFps: UInt32) {
+    init(name: String, maxSize: UInt32, bitRate: UInt32, maxFps: UInt32) {
         self.name = name
         self.maxSize = maxSize
         self.bitRate = bitRate

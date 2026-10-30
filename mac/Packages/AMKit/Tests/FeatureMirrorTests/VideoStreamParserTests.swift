@@ -85,6 +85,28 @@ import Testing
         #expect(events == [.packet(MediaPacket(config: false, key: false, pts: 5_000_000_000, payload: Data(count: 300)))])
     }
 
+    @Test func largePayloadInSmallChunksParses() throws {
+        let big = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        var stream = preludeBytes(name: "p", codec: .h264)
+        stream += packetBytes(key: true, pts: 1, payload: big)
+        stream += sessionBytes(width: 640, height: 320)
+        stream += packetBytes(pts: 2, payload: Data([0, 0, 1, 0x41]))
+        var parser = VideoStreamParser(expectDummyByte: false)
+        var events: [VideoEvent] = []
+        var i = 0
+        while i < stream.count {
+            let end = min(i + 1_400, stream.count)
+            events += try parser.push(stream.subdata(in: i..<end))
+            i = end
+        }
+        #expect(events == [
+            .deviceName("p"), .codec(ScrcpyCodec.h264.rawValue),
+            .packet(MediaPacket(config: false, key: true, pts: 1, payload: big)),
+            .session(width: 640, height: 320),
+            .packet(MediaPacket(config: false, key: false, pts: 2, payload: Data([0, 0, 1, 0x41]))),
+        ])
+    }
+
     @Test func oversizedPacketThrows() throws {
         var parser = VideoStreamParser(expectDummyByte: false)
         _ = try parser.push(preludeBytes(name: "p", codec: .h264))

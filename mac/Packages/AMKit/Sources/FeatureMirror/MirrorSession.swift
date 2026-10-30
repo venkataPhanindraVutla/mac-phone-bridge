@@ -11,8 +11,26 @@ public enum MirrorSessionEvent: Sendable {
     case size(width: Int, height: Int)
     /// A link ended (EOF, an error, or a bad stream such as an oversized packet).
     case linkEnded(AMBulkRole)
-    /// The decoder fell behind and dropped to the next key frame; send RESET_VIDEO. At most once per second.
+    /// The decoder dropped to the next key frame (a backlog or a decode error); send RESET_VIDEO.
+    /// At most once per second: a request inside the window is deferred to its end, and further
+    /// requests before then join it, so the phone is always asked again for a key frame.
     case needsReset
+}
+
+/// The clock the RESET_VIDEO throttle reads and schedules on (a fake one in tests).
+struct ResetClock: Sendable {
+    var now: @Sendable () -> ContinuousClock.Instant
+    var after: @Sendable (Duration, @escaping @Sendable () -> Void) -> Void
+
+    static let system = ResetClock(
+        now: { ContinuousClock.now },
+        after: { delay, work in
+            Task.detached {
+                try? await Task.sleep(for: delay)
+                work()
+            }
+        }
+    )
 }
 
 /// One mirror session's links, parsers and decoder. Every read loop runs off the main actor;
@@ -24,11 +42,14 @@ public final class MirrorSession: @unchecked Sendable {
     /// RESET_VIDEO is asked for at most this often.
     static let resetInterval: Duration = .seconds(1)
     static let readChunk = 262_144
+    /// Control messages queued for a slow control link at most.
+    static let maxQueuedControl = 512
 
     public let id: UInt32
     /// Internal so tests can hold it.
     let decoder: VideoDecoder
     private let events: @Sendable (MirrorSessionEvent) -> Void
+    private let clock: ResetClock
     private let lock = NSLock()
 
     // Guarded by `lock`.
@@ -37,13 +58,20 @@ public final class MirrorSession: @unchecked Sendable {
     private var size: (width: Int, height: Int)?
     private var sawFirstFrame = false
     private var lastReset: ContinuousClock.Instant?
+    /// A deferred RESET_VIDEO is scheduled for the end of the current window.
+    private var resetDeferred = false
     private var parsed = 0
     private var control: AsyncStream<Data>.Continuation?
     private var frameHook: (@Sendable (UInt64) -> Void)?
 
-    public init(id: UInt32, sink: any FrameSink, events: @escaping @Sendable (MirrorSessionEvent) -> Void) {
+    public convenience init(id: UInt32, sink: any FrameSink, events: @escaping @Sendable (MirrorSessionEvent) -> Void) {
+        self.init(id: id, sink: sink, events: events, clock: .system)
+    }
+
+    init(id: UInt32, sink: any FrameSink, events: @escaping @Sendable (MirrorSessionEvent) -> Void, clock: ResetClock) {
         self.id = id
         self.events = events
+        self.clock = clock
         let relay = Relay()
         decoder = VideoDecoder(sink: sink, onFrame: { relay.session?.frameDecoded($0) })
         decoder.onKeyFrameNeeded = { relay.session?.requestReset() }
@@ -66,7 +94,8 @@ public final class MirrorSession: @unchecked Sendable {
         case .mirrorVideo:
             Task.detached { [self] in await readVideo(pipe) }
         case .mirrorControl:
-            let (stream, continuation) = AsyncStream.makeStream(of: Data.self)
+            // Bounded: a stalled link keeps the newest messages (it is ending anyway; the writer drops after an error).
+            let (stream, continuation) = AsyncStream.makeStream(of: Data.self, bufferingPolicy: .bufferingNewest(Self.maxQueuedControl))
             lock.withLock { control = continuation }
             let writer = ControlWriter(pipe: pipe)
             Task.detached {
@@ -173,14 +202,37 @@ public final class MirrorSession: @unchecked Sendable {
         if first { emit(.firstFrame) }
     }
 
-    fileprivate func requestReset() {
-        let now = ContinuousClock.now
-        let due: Bool = lock.withLock {
-            if let lastReset, now - lastReset < Self.resetInterval { return false }
-            lastReset = now
-            return true
+    /// Asks for RESET_VIDEO: now, or (inside the 1 s window) once at the window's end; requests
+    /// made while one is deferred join it. Internal, for tests.
+    func requestReset() {
+        enum Action { case now, later(Duration), joined }
+        let at = clock.now()
+        let action: Action = lock.withLock {
+            if resetDeferred { return .joined }
+            if let lastReset, at - lastReset < Self.resetInterval {
+                resetDeferred = true
+                return .later(lastReset + Self.resetInterval - at)
+            }
+            lastReset = at
+            return .now
         }
-        if due { emit(.needsReset) }
+        switch action {
+        case .now:
+            emit(.needsReset)
+        case let .later(delay):
+            clock.after(delay) { [weak self] in self?.deferredReset() }
+        case .joined:
+            break
+        }
+    }
+
+    private func deferredReset() {
+        let at = clock.now()
+        lock.withLock {
+            resetDeferred = false
+            lastReset = at
+        }
+        emit(.needsReset)
     }
 
     private func emit(_ event: MirrorSessionEvent) {

@@ -120,6 +120,7 @@ public final class VideoDecoder: @unchecked Sendable {
             return held
         }
         if resume { queue.resume() }
+        sink.flush()
         queue.async { self.teardown() }
     }
 
@@ -177,6 +178,8 @@ public final class VideoDecoder: @unchecked Sendable {
         guard let sets = ParameterSets.ordered(codec: codec, nals: nals) else { return }
         guard sets != parameterSets || codec != sessionCodec || session == nil else { return }
         guard let made = ParameterSets.formatDescription(codec: codec, nals: sets) else { return }
+        // Pictures of the old stream still waiting for display go; the one on screen stays.
+        if session != nil { sink.flush() }
         teardown()
         format = made
         parameterSets = sets
@@ -263,27 +266,30 @@ public final class VideoDecoder: @unchecked Sendable {
         needed?()
     }
 
-    /// One frame's NAL units as a 4-byte length-prefixed sample.
+    /// One frame's NAL units as a 4-byte length-prefixed sample, written straight into its block buffer.
     private static func sampleBuffer(_ nals: [Data], pts: UInt64, format: CMVideoFormatDescription) -> CMSampleBuffer? {
-        var bytes = Data(capacity: nals.reduce(0) { $0 + $1.count + 4 })
-        for nal in nals {
-            withUnsafeBytes(of: UInt32(nal.count).bigEndian) { bytes.append(contentsOf: $0) }
-            bytes.append(nal)
-        }
+        let total = nals.reduce(0) { $0 + $1.count + 4 }
         var block: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes.count, blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil, offsetToData: 0, dataLength: bytes.count, flags: kCMBlockBufferAssureMemoryNowFlag,
+            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: total, blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil, offsetToData: 0, dataLength: total, flags: kCMBlockBufferAssureMemoryNowFlag,
             blockBufferOut: &block) == noErr, let block else { return nil }
-        let copied = bytes.withUnsafeBytes {
-            CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0,
-                                          dataLength: bytes.count)
+        var offset = 0
+        for nal in nals {
+            var prefix = UInt32(nal.count).bigEndian
+            guard CMBlockBufferReplaceDataBytes(with: &prefix, blockBuffer: block, offsetIntoDestination: offset,
+                                                dataLength: 4) == noErr else { return nil }
+            let copied = nal.withUnsafeBytes {
+                CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: offset + 4,
+                                              dataLength: nal.count)
+            }
+            guard copied == noErr else { return nil }
+            offset += 4 + nal.count
         }
-        guard copied == noErr else { return nil }
         var timing = CMSampleTimingInfo(duration: .invalid,
                                         presentationTimeStamp: CMTime(value: CMTimeValue(pts), timescale: 1_000_000),
                                         decodeTimeStamp: .invalid)
-        var size = bytes.count
+        var size = total
         var sample: CMSampleBuffer?
         guard CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,

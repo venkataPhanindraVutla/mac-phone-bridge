@@ -399,10 +399,8 @@ final class AppModel {
                 self?.bulk.handleWake()
             }
         }
-        sleepObserver = MacSleepObserver.install { [weak self] in
-            guard let self else { return }
-            Task { await self.mirror.macWillSleep() }
-        }
+        // The session ends and its links close right here, before the Mac sleeps.
+        sleepObserver = MacSleepObserver.install { [weak self] in self?.mirror.macWillSleepNow() }
         start()
     }
 
@@ -646,14 +644,18 @@ final class AppModel {
         return MirrorCopy.notice(mirror.phoneAvailability)
     }
 
-    /// "Show Phone Screen": opens the mirror window and starts a session.
+    /// "Show Phone Screen": opens the mirror window, and starts a session unless one is already
+    /// starting or running (then the window just comes forward).
     func showMirror() {
         let controller = mirrorWindow.controller(model: mirror, title: { [weak self] in
             self?.currentPhone?.name ?? ""
         })
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        Task { await mirror.start() }
+        switch mirror.phase {
+        case .starting, .running: break
+        case .idle, .ended: Task { await mirror.start() }
+        }
     }
 
     // MARK: pairing

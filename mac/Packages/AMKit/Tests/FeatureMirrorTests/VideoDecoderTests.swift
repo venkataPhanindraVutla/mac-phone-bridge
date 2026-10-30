@@ -110,6 +110,91 @@ import Testing
         #expect(events.all.contains("firstFrame"))
     }
 
+    @Test func throttledResetRequestIsDeferredToTheWindowsEnd() {
+        let fake = FakeResetClock()
+        let resets = Recorder<Duration>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .needsReset = event { resets.append(fake.elapsed) }
+        }, clock: fake.clock)
+        defer { session.close() }
+        session.requestReset()
+        #expect(resets.all == [.zero])
+        fake.advance(by: .milliseconds(100))
+        session.requestReset()
+        // Not dropped: one reset is scheduled for the end of the 1 s window.
+        #expect(resets.count == 1)
+        #expect(fake.scheduled == 1)
+        fake.advance(by: .milliseconds(899))
+        #expect(resets.count == 1)
+        fake.advance(by: .milliseconds(1))
+        #expect(resets.all == [.zero, .seconds(1)])
+    }
+
+    @Test func requestsInsideTheWindowJoinOneDeferredReset() {
+        let fake = FakeResetClock()
+        let resets = Recorder<Duration>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .needsReset = event { resets.append(fake.elapsed) }
+        }, clock: fake.clock)
+        defer { session.close() }
+        session.requestReset()
+        for _ in 0..<3 {
+            fake.advance(by: .milliseconds(100))
+            session.requestReset()
+        }
+        #expect(fake.scheduled == 1)
+        fake.advance(by: .milliseconds(700)) // t = 1 s: the one deferred reset
+        #expect(resets.all == [.zero, .seconds(1)])
+        // The deferred reset opened a new window: a request right after it waits for that window's end.
+        session.requestReset()
+        #expect(resets.count == 2)
+        fake.advance(by: .seconds(1))
+        #expect(resets.all == [.zero, .seconds(1), .seconds(2)])
+        // Long after, a request goes at once.
+        fake.advance(by: .seconds(5))
+        session.requestReset()
+        #expect(resets.all == [.zero, .seconds(1), .seconds(2), .seconds(7)])
+    }
+
+    @Test func resetsAfterCloseAreNotReported() {
+        let fake = FakeResetClock()
+        let resets = Recorder<Duration>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .needsReset = event { resets.append(fake.elapsed) }
+        }, clock: fake.clock)
+        session.requestReset()
+        session.requestReset()
+        session.close()
+        fake.advance(by: .seconds(2))
+        #expect(resets.count == 1)
+    }
+
+    /// A frame VideoToolbox can't decode: counted, the key frame hook fires, and frames are
+    /// skipped until the next key frame.
+    @Test func decodeErrorSkipsToTheNextKeyFrameAndAsksForOne() async throws {
+        let sink = CountingSink()
+        let pts = Recorder<UInt64>()
+        let needed = Recorder<Bool>()
+        let decoder = VideoDecoder(sink: sink, onFrame: { pts.append($0) })
+        decoder.onKeyFrameNeeded = { needed.append(true) }
+        defer { decoder.invalidate() }
+        // Config and key frame 0, then a frame whose slice data is garbage.
+        decoder.decode(samplePackets[0], codec: .h264)
+        decoder.decode(samplePackets[1], codec: .h264)
+        try await until("frame 0") { pts.count == 1 }
+        var garbage = Data([0, 0, 0, 1, 0x41])
+        garbage.append(Data(repeating: 0xFF, count: 64))
+        decoder.decode(MediaPacket(config: false, key: false, pts: 1, payload: garbage), codec: .h264)
+        try await until("the error") { decoder.decodeErrors == 1 }
+        #expect(needed.count == 1)
+        // Frames 1...29 are skipped; key frame 30 and the rest decode.
+        for p in samplePackets[2...60] { decoder.decode(p, codec: .h264) }
+        try await until("frames 30...59") { pts.count == 31 }
+        try await until("backlog drained") { decoder.backlog == 0 }
+        #expect(Array(pts.all.dropFirst()) == (30..<60).map { UInt64($0) * 16_667 })
+        #expect(decoder.decodeErrors == 1)
+    }
+
     nonisolated private static func name(_ e: MirrorSessionEvent) -> String {
         switch e {
         case .firstFrame: "firstFrame"

@@ -249,6 +249,32 @@ private final class Rig {
         #expect(rig.bulk.revoked == ["mirror-1"])
     }
 
+    @Test func forgettingAnotherPhoneLeavesTheSessionAlone() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        await rig.model.forget(phoneID: String(repeating: "ab", count: 32))
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(rig.model.session != nil)
+        #expect(rig.model.phoneAvailability?.enabled == true)
+        #expect(rig.model.canStart)
+        #expect(rig.bulk.revoked.isEmpty)
+        #expect(!links.video.mac.isClosed)
+    }
+
+    @Test func sleepNowClosesBeforeReturning() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        rig.model.macWillSleepNow()
+        // Everything local is done before the call returns.
+        #expect(rig.model.phase == .ended(.macSleep))
+        #expect(rig.model.session == nil)
+        #expect(rig.bulk.revoked == ["mirror-1"])
+        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        try await until("stop sent") { rig.stops.count == 1 }
+        #expect(rig.stops.first?.reason == .user)
+        #expect(rig.stops.first?.session == 1)
+    }
+
     @Test func sleepStopsSession() async throws {
         let rig = Rig()
         _ = try await rig.running()
@@ -330,13 +356,15 @@ private final class Rig {
 
     @Test func linkEndedThenStateWithinGraceUsesTheState() async throws {
         let rig = Rig()
-        rig.model.linkGrace = .seconds(2)
+        rig.model.linkGrace = .milliseconds(300)
         let links = try await rig.running()
         links.video.phone.close()
         try await until("link end seen") { rig.model.linkEndPending }
         await rig.state(1, .failed, .helperFailed)
         #expect(rig.model.phase == .ended(.phone(.helperFailed)))
-        try await Task.sleep(for: .milliseconds(50))
+        #expect(!rig.model.linkEndPending) // the grace timer is cancelled
+        // Well past the grace: still the phone's reason, and no stop went out.
+        try await Task.sleep(for: .milliseconds(500))
         #expect(rig.model.phase == .ended(.phone(.helperFailed)))
         #expect(rig.stops.isEmpty)
     }

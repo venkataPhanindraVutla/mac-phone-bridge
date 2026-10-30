@@ -54,8 +54,6 @@ public final class MirrorModel: SessionFeature {
     public private(set) var phoneAvailability: AMFeatureAvailability?
     /// The current (or last) session, a Mac counter from 1.
     public private(set) var sessionID: UInt32 = 0
-    /// The connected phone's name, for the window title. Content: never logged.
-    public private(set) var phoneName: String?
     public var preset: QualityPreset = .high
     /// The codec asked for; unspecified is sent as H.264.
     public var codec: AMVideoCodec = .h264
@@ -75,6 +73,8 @@ public final class MirrorModel: SessionFeature {
     /// How long a link end waits for the phone's state before it counts as LINK_FAILED (internal, for tests).
     @ObservationIgnored var linkGrace: Duration = .seconds(1)
     private var sharesMirror = false
+    /// The phone in session; a forget for any other phone leaves this model alone.
+    @ObservationIgnored private var phoneID: String?
     @ObservationIgnored private var current: MirrorSession?
     @ObservationIgnored private var phoneRunning = false
     /// The current session's first picture is decoded (internal, for tests).
@@ -103,13 +103,14 @@ public final class MirrorModel: SessionFeature {
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
         if current != nil { end(.disconnected) }
         sharesMirror = shared.contains("mirror.v1")
-        self.phoneName = phoneName
+        self.phoneID = phoneID
         phoneAvailability = nil
     }
 
     public func disconnected() {
         if current != nil { end(.disconnected) }
         sharesMirror = false
+        phoneID = nil
         phoneAvailability = nil
     }
 
@@ -141,8 +142,13 @@ public final class MirrorModel: SessionFeature {
         }
     }
 
+    /// Only the phone in session counts (the queue sends `disconnected()` before forgetting it);
+    /// forgetting another paired phone leaves the session and the availability alone.
     public func forget(phoneID: String) async {
+        guard phoneID == self.phoneID else { return }
         if current != nil { end(.disconnected) }
+        self.phoneID = nil
+        sharesMirror = false
         phoneAvailability = nil
     }
 
@@ -187,8 +193,17 @@ public final class MirrorModel: SessionFeature {
     }
 
     /// The Mac is going to sleep: like `stop()`.
+    /// The links close before the stop is awaited, so nothing stays open across sleep even if the
+    /// Mac sleeps before the send completes.
     public func macWillSleep() async {
-        await stopCurrent(.macSleep)
+        await stopCurrent(.macSleep, closeFirst: true)
+    }
+
+    /// `macWillSleep()` for the sleep notification: everything local happens now, before returning;
+    /// the stop goes out from a task.
+    public func macWillSleepNow() {
+        guard let stop = endLocally(.macSleep, closeFirst: true) else { return }
+        Task { await send(.mirrorStop, stop.message) }
     }
 
     /// A bulk link whose token redeemed. Only the current session's context is kept.
@@ -250,17 +265,22 @@ public final class MirrorModel: SessionFeature {
     }
 
     /// Ends the current session from this side and tells the phone (`mirror.stop`, reason USER).
-    /// The session ends here first, so the phone's answer finds nothing to act on.
-    private func stopCurrent(_ reason: MirrorEndReason) async {
-        guard current != nil else { return }
-        let id = sessionID
-        let session = end(reason, closing: false)
+    /// The session ends here first, so the phone's answer finds nothing to act on. The links close
+    /// after the stop has gone (so the phone hears the stop first), or before when `closeFirst`.
+    private func stopCurrent(_ reason: MirrorEndReason, closeFirst: Bool = false) async {
+        guard let stop = endLocally(reason, closeFirst: closeFirst) else { return }
+        await send(.mirrorStop, stop.message)
+        stop.session?.close()
+    }
+
+    /// The local half of a stop: ends the session and builds its `mirror.stop{session, USER}`.
+    private func endLocally(_ reason: MirrorEndReason, closeFirst: Bool) -> (message: AMMirrorStop, session: MirrorSession?)? {
+        guard current != nil else { return nil }
         var stop = AMMirrorStop()
-        stop.session = id
+        stop.session = sessionID
         stop.reason = .user
-        await send(.mirrorStop, stop)
-        // After the stop has gone, so the phone hears the stop before the links close.
-        session?.close()
+        let session = end(reason, closing: closeFirst)
+        return (stop, closeFirst ? nil : session)
     }
 
     /// Ends the current session: revokes its tokens, closes it (unless the caller will) and sets
@@ -294,12 +314,13 @@ public final class MirrorModel: SessionFeature {
 }
 
 /// Tells the main actor when the Mac is about to sleep. The observer block is built here,
-/// nonisolated, and hops to the main actor itself, whatever thread posts the notification.
+/// nonisolated, and runs on the main queue whatever thread posts the notification.
 public enum MacSleepObserver {
     nonisolated public static func install(center: NotificationCenter = NSWorkspace.shared.notificationCenter,
                                            _ handler: @escaping @MainActor @Sendable () -> Void) -> NSObjectProtocol {
-        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in
-            Task { @MainActor in handler() }
+        // Delivered on the main queue: at once when posted there (as the system does), else one hop.
+        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
         }
     }
 }

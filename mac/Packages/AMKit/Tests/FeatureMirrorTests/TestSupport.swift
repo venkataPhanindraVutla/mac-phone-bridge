@@ -1,6 +1,6 @@
 import CoreMedia
 import CoreVideo
-import FeatureMirror
+@testable import FeatureMirror
 import Foundation
 import VideoToolbox
 
@@ -208,5 +208,40 @@ enum TestEncoder {
 
     private static func annexB(_ nals: [Data]) -> Data {
         nals.reduce(into: Data()) { $0.append(contentsOf: [0, 0, 0, 1]); $0.append($1) }
+    }
+}
+
+/// A manual clock for the RESET_VIDEO throttle: `advance` runs what has come due, in order.
+final class FakeResetClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let start = ContinuousClock.now
+    private var offset: Duration = .zero
+    private var timers: [(due: Duration, work: @Sendable () -> Void)] = []
+
+    var clock: ResetClock {
+        ResetClock(
+            now: { [self] in lock.withLock { start + offset } },
+            after: { [self] delay, work in lock.withLock { timers.append((offset + delay, work)) } }
+        )
+    }
+
+    /// Time since the clock was made.
+    var elapsed: Duration { lock.withLock { offset } }
+    var scheduled: Int { lock.withLock { timers.count } }
+
+    func advance(by step: Duration) {
+        let target = lock.withLock { offset + step }
+        while true {
+            let next: (due: Duration, work: @Sendable () -> Void)? = lock.withLock {
+                guard let i = timers.indices.filter({ timers[$0].due <= target }).min(by: { timers[$0].due < timers[$1].due })
+                else { return nil }
+                let t = timers.remove(at: i)
+                offset = t.due
+                return t
+            }
+            guard let next else { break }
+            next.work()
+        }
+        lock.withLock { offset = target }
     }
 }

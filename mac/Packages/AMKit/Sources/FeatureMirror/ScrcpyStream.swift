@@ -60,8 +60,10 @@ public struct VideoStreamParser: Sendable {
     }
 
     private var stage: Stage
-    /// Bytes not yet consumed; always starts at index 0.
+    /// Bytes received; those before `head` are consumed. Compacted only once the consumed part is
+    /// large, so a big payload arriving in many chunks is not copied again on every push.
     private var buffer = Data()
+    private var head = 0
 
     public init(expectDummyByte: Bool = true) {
         stage = expectDummyByte ? .dummy : .name
@@ -72,8 +74,8 @@ public struct VideoStreamParser: Sendable {
     public mutating func push(_ data: Data) throws -> [VideoEvent] {
         buffer.append(data)
         var events: [VideoEvent] = []
-        var at = 0
-        defer { buffer = at >= buffer.count ? Data() : Data(buffer[at...]) }
+        var at = head
+        defer { compact(at) }
         while true {
             let available = buffer.count - at
             switch stage {
@@ -112,6 +114,18 @@ public struct VideoStreamParser: Sendable {
                 at += size
                 stage = .header
             }
+        }
+    }
+
+    private mutating func compact(_ consumed: Int) {
+        if consumed >= buffer.count {
+            buffer = Data()
+            head = 0
+        } else if consumed >= 65_536 && consumed * 2 >= buffer.count {
+            buffer = Data(buffer[consumed...])
+            head = 0
+        } else {
+            head = consumed
         }
     }
 
