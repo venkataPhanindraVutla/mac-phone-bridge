@@ -727,6 +727,9 @@ private func phoneSends(_ r: Rig, _ read: AMBrowsePath, _ bytes: Data, id: Strin
     let (mac, phone) = MemoryPipe.pair()
     r.engine.link(mac, grant: BulkGrant(role: .phoneReceives, context: offer.transferID))
     #expect(try await readAll(phone, bytes.count) == bytes)
+    // The phone answers only after files.complete: the last bytes can be read before the engine
+    // has sent it, and an earlier files.received would be ignored.
+    try await until("files.complete") { !r.sent.of(.filesComplete, AMTransferComplete.self).isEmpty }
     var received = AMTransferReceived(); received.transferID = offer.transferID
     await r.engine.message(envelope(.files, .filesReceived, received))
     let item = try #require(try? await task.value.get())
