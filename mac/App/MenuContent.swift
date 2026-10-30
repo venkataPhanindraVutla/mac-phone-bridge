@@ -129,7 +129,7 @@ struct MenuContent: View {
         if let state = model.nowPlaying {
             let title = NowPlayingText.title(state)
             Button {} label: {
-                if let image = ArtworkImage.image(model.media.artwork, side: 32) {
+                if let image = ArtworkImage.sized(model.media.artworkImage, side: 32) {
                     Label { Text(verbatim: title) } icon: { Image(nsImage: image) }
                 } else {
                     Text(verbatim: title)

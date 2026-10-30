@@ -55,6 +55,10 @@ public protocol NowPlayingCenter: AnyObject {
 /// The real one: `MPNowPlayingInfoCenter.default()` and `MPRemoteCommandCenter.shared()`.
 /// Handlers are added at the first `show` and removed by `clear`, so while nothing is playing on
 /// the phone the media keys go to other apps.
+///
+/// MediaPlayer calls the artwork request and the command handlers on threads of its own. Those
+/// closures are made in `nonisolated` helpers: a closure formed in this main-actor class would be
+/// main-actor isolated, and Swift 6 traps when it runs anywhere else.
 @MainActor
 public final class SystemNowPlaying: NowPlayingCenter {
     public var onCommand: ((AMMediaCommandKind, Double?) -> Void)?
@@ -84,7 +88,12 @@ public final class SystemNowPlaying: NowPlayingCenter {
             MPNowPlayingInfoPropertyPlaybackRate: info.rate,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
         ]
-        if info.durationSeconds > 0 { values[MPMediaItemPropertyPlaybackDuration] = info.durationSeconds }
+        if info.durationSeconds > 0 {
+            values[MPMediaItemPropertyPlaybackDuration] = info.durationSeconds
+        } else {
+            // Duration 0: unknown or live (SPEC section 20).
+            values[MPNowPlayingInfoPropertyIsLiveStream] = true
+        }
         if let artwork = artwork(info.artwork) { values[MPMediaItemPropertyArtwork] = artwork }
         let center = MPNowPlayingInfoCenter.default()
         center.nowPlayingInfo = values
@@ -95,38 +104,61 @@ public final class SystemNowPlaying: NowPlayingCenter {
         let center = MPNowPlayingInfoCenter.default()
         center.nowPlayingInfo = nil
         center.playbackState = .stopped
+        let remote = MPRemoteCommandCenter.shared()
+        for command in Self.commands(remote) { command.isEnabled = false }
         for target in targets { target.command.removeTarget(target.token) }
         targets = []
         artworkMemo = nil
     }
 
+    private static func commands(_ remote: MPRemoteCommandCenter) -> [MPRemoteCommand] {
+        [remote.playCommand, remote.pauseCommand, remote.togglePlayPauseCommand, remote.nextTrackCommand,
+         remote.previousTrackCommand, remote.changePlaybackPositionCommand]
+    }
+
     private func addTargets(_ remote: MPRemoteCommandCenter) {
-        let simple: [(MPRemoteCommand, AMMediaCommandKind)] = [
+        let kinds: [(MPRemoteCommand, AMMediaCommandKind)] = [
             (remote.playCommand, .play), (remote.pauseCommand, .pause), (remote.togglePlayPauseCommand, .toggle),
             (remote.nextTrackCommand, .next), (remote.previousTrackCommand, .previous),
+            (remote.changePlaybackPositionCommand, .seek),
         ]
-        for (command, kind) in simple {
-            let token = command.addTarget { [weak self] _ in
-                Task { @MainActor in self?.onCommand?(kind, nil) }
-                return .success
-            }
+        let forward = forwarder()
+        for (command, kind) in kinds {
+            let token = command.addTarget(handler: Self.remoteHandler(kind, forward: forward))
             targets.append((command, token))
         }
-        let seek = remote.changePlaybackPositionCommand
-        let token = seek.addTarget { [weak self] event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            let seconds = event.positionTime
-            Task { @MainActor in self?.onCommand?(.seek, seconds) }
+    }
+
+    /// A command handler, safe on any thread: `.seek` takes the position from the event.
+    nonisolated static func remoteHandler(
+        _ kind: AMMediaCommandKind, forward: @escaping @Sendable (AMMediaCommandKind, Double?) -> Void
+    ) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
+        { event in
+            if kind == .seek {
+                guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+                forward(.seek, event.positionTime)
+            } else {
+                forward(kind, nil)
+            }
             return .success
         }
-        targets.append((seek, token))
+    }
+
+    /// Hands a command from any thread to `onCommand` on the main actor.
+    func forwarder() -> @Sendable (AMMediaCommandKind, Double?) -> Void {
+        { [weak self] kind, seconds in Task { @MainActor in self?.onCommand?(kind, seconds) } }
+    }
+
+    /// Artwork whose image MediaPlayer may ask for on any thread.
+    nonisolated static func makeArtwork(_ image: NSImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     private func artwork(_ jpeg: Data?) -> MPMediaItemArtwork? {
         guard let jpeg else { return nil }
         if let memo = artworkMemo, memo.jpeg == jpeg { return memo.artwork }
         guard let image = NSImage(data: jpeg) else { return nil }
-        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        let artwork = Self.makeArtwork(image)
         artworkMemo = (jpeg, artwork)
         return artwork
     }

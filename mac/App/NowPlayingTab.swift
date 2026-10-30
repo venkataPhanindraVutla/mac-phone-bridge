@@ -7,9 +7,9 @@ import SwiftUI
 /// Position and Volume sliders (a seek or a volume change is sent when the slider is let go).
 struct NowPlayingTab: View {
     let model: AppModel
-    /// While a slider is dragged: its value, shown instead of the phone's.
-    @State private var seekingMs: Double?
-    @State private var settingVolume: Double?
+    /// Each slider's own value while dragged, and after release until the phone's next state.
+    @State private var seek = SliderHold()
+    @State private var volume = SliderHold()
 
     private var media: MediaModel { model.media }
 
@@ -33,6 +33,10 @@ struct NowPlayingTab: View {
         }
         .padding(.top, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: media.state) {
+            seek.stateArrived()
+            volume.stateArrived()
+        }
     }
 
     @ViewBuilder private func playing(_ state: AMMediaState) -> some View {
@@ -54,13 +58,13 @@ struct NowPlayingTab: View {
             .accessibilityElement(children: .contain)
         }
         position(state)
-        volume(state)
+        volumeSlider(state)
         Spacer(minLength: 0)
     }
 
     @ViewBuilder private var artwork: some View {
         Group {
-            if let image = ArtworkImage.image(media.artwork) {
+            if let image = media.artworkImage {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -101,16 +105,17 @@ struct NowPlayingTab: View {
         // Redrawn every second, so the position moves while playing.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let duration = Double(max(state.durationMs, 0))
-            let current = seekingMs ?? Double(media.positionMs(now: context.date))
+            let current = seek.value ?? Double(media.positionMs(now: context.date))
             VStack(alignment: .leading, spacing: 2) {
                 Slider(
-                    value: Binding(get: { current }, set: { seekingMs = $0 }),
+                    value: Binding(get: { current }, set: { seek.drag($0) }),
                     in: 0...max(duration, 1),
                     onEditingChanged: { editing in
-                        guard !editing, let target = seekingMs else { return }
+                        guard !editing, let release = seek.release() else { return }
                         Task {
-                            await media.command(.seek, positionMs: Int64(target.rounded()))
-                            seekingMs = nil
+                            await media.command(.seek, positionMs: Int64(release.value.rounded()))
+                            try? await Task.sleep(for: Self.answerTimeout)
+                            seek.timedOut(release.id)
                         }
                     }
                 ) {
@@ -134,22 +139,23 @@ struct NowPlayingTab: View {
         }
     }
 
-    @ViewBuilder private func volume(_ state: AMMediaState) -> some View {
+    @ViewBuilder private func volumeSlider(_ state: AMMediaState) -> some View {
         if state.hasVolume, state.volume.max > 0 {
             let max = Double(state.volume.max)
-            let current = settingVolume ?? Double(state.volume.current)
+            let current = volume.value ?? Double(state.volume.current)
             HStack(spacing: 8) {
                 Image(systemName: "speaker.fill")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Slider(
-                    value: Binding(get: { current }, set: { settingVolume = $0 }),
+                    value: Binding(get: { current }, set: { volume.drag($0) }),
                     in: 0...max, step: 1,
                     onEditingChanged: { editing in
-                        guard !editing, let target = settingVolume else { return }
+                        guard !editing, let release = volume.release() else { return }
                         Task {
-                            await media.command(.setVolume, volume: UInt32(target.rounded()))
-                            settingVolume = nil
+                            await media.command(.setVolume, volume: UInt32(release.value.rounded()))
+                            try? await Task.sleep(for: Self.answerTimeout)
+                            volume.timedOut(release.id)
                         }
                     }
                 ) {
@@ -165,6 +171,9 @@ struct NowPlayingTab: View {
             }
         }
     }
+
+    /// How long a released slider waits for the phone's next state before showing the phone's value.
+    private static let answerTimeout: Duration = .seconds(1)
 
     private func send(_ kind: AMMediaCommandKind) {
         Task { await media.command(kind) }
@@ -206,25 +215,12 @@ enum MediaNotice {
     }
 }
 
-/// The phone's artwork as an image, decoded once per JPEG.
-@MainActor
+/// The phone's artwork at a given size: a menu item shows an image at its own `size`.
 enum ArtworkImage {
-    private static var memo: (jpeg: Data, image: NSImage)?
-
-    /// The image at its own size, or fitted into `side` × `side` points (a menu item shows an
-    /// image at its `size`).
-    static func image(_ jpeg: Data?, side: CGFloat? = nil) -> NSImage? {
-        guard let jpeg else { return nil }
-        let image: NSImage
-        if let memo, memo.jpeg == jpeg {
-            image = memo.image
-        } else {
-            guard let decoded = NSImage(data: jpeg) else { return nil }
-            memo = (jpeg, decoded)
-            image = decoded
-        }
-        guard let side, image.size.width > 0, image.size.height > 0,
-              let sized = image.copy() as? NSImage else { return image }
+    /// A copy of `image` fitted into `side` × `side` points.
+    static func sized(_ image: NSImage?, side: CGFloat) -> NSImage? {
+        guard let image, image.size.width > 0, image.size.height > 0,
+              let sized = image.copy() as? NSImage else { return nil }
         let scale = side / max(image.size.width, image.size.height)
         sized.size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
         return sized

@@ -1,4 +1,5 @@
 import AMProtocol
+import AppKit
 import ConnectionCore
 import Foundation
 import Observation
@@ -25,6 +26,9 @@ public final class MediaModel: SessionFeature {
     public private(set) var state: AMMediaState?
     /// The current state's artwork (JPEG), once it has arrived.
     public private(set) var artwork: Data?
+    /// `artwork` decoded, for the menu and the Phone window; nil when it is no image. It goes
+    /// with `artwork`, so no image outlives the session.
+    public private(set) var artworkImage: NSImage?
     /// The phone's last `media.availability`; nil until the first one of this connection.
     public private(set) var phoneAvailability: AMFeatureAvailability?
     /// Each command answered, with its round trip (for the sim; the log line is written anyway).
@@ -76,7 +80,7 @@ public final class MediaModel: SessionFeature {
             guard let a = try? AMMediaArtwork(serializedBytes: envelope.payload), !a.artworkKey.isEmpty else { return }
             cache.put(a.artworkKey, a.jpeg)
             if let s = state, s.active, s.artworkKey == a.artworkKey {
-                artwork = a.jpeg
+                setArtwork(a.jpeg)
                 showNowPlaying()
             }
         case .mediaAvailability:
@@ -126,7 +130,7 @@ public final class MediaModel: SessionFeature {
         let at = now()
         state = s
         receivedAt = at
-        artwork = s.active && !s.artworkKey.isEmpty ? cache.get(s.artworkKey) : nil
+        setArtwork(s.active && !s.artworkKey.isEmpty ? cache.get(s.artworkKey) : nil)
         if s.active {
             showNowPlaying()
         } else if shown {
@@ -138,9 +142,10 @@ public final class MediaModel: SessionFeature {
 
     private func showNowPlaying() {
         guard let s = state, s.active else { return }
+        // The position now: artwork may arrive a while after its state.
         let info = NowPlayingInfo(
             title: s.title, artist: s.artist, album: s.album,
-            durationSeconds: Double(s.durationMs) / 1000, elapsedSeconds: Double(s.positionMs) / 1000,
+            durationSeconds: Double(s.durationMs) / 1000, elapsedSeconds: Double(positionMs(now: now())) / 1000,
             rate: s.playing ? (s.speed > 0 ? Double(s.speed) : 1) : 0, artwork: artwork)
         let commands = RemoteCommands(
             play: s.canPlay, pause: s.canPause, toggle: s.canPlay || s.canPause,
@@ -149,11 +154,12 @@ public final class MediaModel: SessionFeature {
         center.show(info, playing: s.playing, commands: commands)
     }
 
-    /// Commands sent to `sessionKey` are answered by this state: log and report each once.
+    /// Commands sent to `sessionKey` are answered by this state: log and report each once. Any
+    /// sent to another session are dropped: that session is no longer the phone's.
     private func reportRoundTrips(sessionKey: String, at: Date) {
         let answered = sent.filter { $0.value.sessionKey == sessionKey }.sorted { $0.key.rawValue < $1.key.rawValue }
+        sent = [:]
         for (kind, command) in answered {
-            sent[kind] = nil
             let seconds = max(0, at.timeIntervalSince(command.at))
             let ms = Int64((seconds * 1000).rounded())
             Self.log.info("command \(Self.name(kind), privacy: .public) rtt \(ms, privacy: .public) ms")
@@ -168,9 +174,15 @@ public final class MediaModel: SessionFeature {
             center.clear()
         }
         state = nil
-        artwork = nil
+        setArtwork(nil)
         receivedAt = nil
         sent = [:]
+    }
+
+    private func setArtwork(_ jpeg: Data?) {
+        guard jpeg != artwork else { return }
+        artwork = jpeg
+        artworkImage = jpeg.flatMap(NSImage.init(data:))
     }
 
     private func reset() {

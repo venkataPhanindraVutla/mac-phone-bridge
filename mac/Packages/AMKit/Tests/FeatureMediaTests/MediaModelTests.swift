@@ -1,4 +1,5 @@
 import AMProtocol
+import AppKit
 import Foundation
 import SwiftProtobuf
 import Testing
@@ -180,7 +181,7 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
 }
 
 @MainActor @Test func artworkArrivingAfterStateUpdatesNowPlaying() async {
-    let (model, center, _, _) = rig()
+    let (model, center, _, clock) = rig()
     await connectOn(model)
     await model.message(envelope(.mediaState, playing(artworkKey: "k1")))
     #expect(model.artwork == nil)
@@ -189,10 +190,13 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
     await model.message(artwork("k2", Data("other".utf8)))
     #expect(model.artwork == nil)
     #expect(center.shows.count == 1)
+    // Two seconds into the track: shown again at the position now, not the one the state was sent at.
+    clock.advance(2)
     await model.message(artwork("k1", Data("jpeg".utf8)))
     #expect(model.artwork == Data("jpeg".utf8))
     #expect(center.shows.count == 2)
     #expect(center.shows.last?.info.artwork == Data("jpeg".utf8))
+    #expect(center.shows.last?.info.elapsedSeconds == 32)
     // A later state naming the cached key has it at once.
     await model.message(envelope(.mediaState, playing(artworkKey: "k2")))
     #expect(model.artwork == Data("other".utf8))
@@ -250,6 +254,34 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
     #expect(sent.commands.map(\.kind) == [.toggle])
 }
 
+@MainActor @Test func commandBeforeAnyAvailabilityGoes() async {
+    // R27: commands are user-triggered, so a phone that has not reported availability yet gets them.
+    let (model, _, sent, _) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    await model.message(envelope(.mediaState, playing()))
+    #expect(model.phoneAvailability == nil)
+    await model.command(.toggle)
+    #expect(sent.commands.map(\.kind) == [.toggle])
+}
+
+@MainActor @Test func artworkImageIsDecodedAndGoesWithTheSession() async {
+    let (model, _, _, _) = rig()
+    let jpeg = testJPEG()
+    await connectOn(model)
+    await model.message(artwork("k1", jpeg))
+    await model.message(envelope(.mediaState, playing(artworkKey: "k1")))
+    #expect(model.artworkImage != nil)
+    // Bytes that are no image: none.
+    await model.message(artwork("bad", Data("jpeg".utf8)))
+    await model.message(envelope(.mediaState, playing(artworkKey: "bad")))
+    #expect(model.artwork != nil)
+    #expect(model.artworkImage == nil)
+    await model.message(envelope(.mediaState, playing(artworkKey: "k1")))
+    #expect(model.artworkImage != nil)
+    model.disconnected()
+    #expect(model.artworkImage == nil)
+}
+
 @MainActor @Test func remoteToggleSendsToggle() async {
     let (model, center, sent, _) = rig()
     await connectOn(model)
@@ -274,10 +306,13 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
     #expect(trips.isEmpty)
     await model.command(.toggle)
     clock.advance(0.040)
-    // Another session's state is not the answer.
+    // Another session's state is not the answer, and the command is never answered after it.
     await model.message(envelope(.mediaState, playing(key: "other")))
     #expect(trips.isEmpty)
-    clock.advance(0.080)
+    await model.message(envelope(.mediaState, playing(key: "s1")))
+    #expect(trips.isEmpty)
+    await model.command(.toggle)
+    clock.advance(0.120)
     await model.message(envelope(.mediaState, playing(key: "s1", playing: false)))
     #expect(trips.count == 1)
     #expect(trips.first?.0 == .toggle)
@@ -315,6 +350,13 @@ private func connectOn(_ model: MediaModel, phoneID: String = "P1") async {
     #expect(model.positionMs(now: clock.now) == 0)
     await model.message(envelope(.mediaState, playing(positionMs: 10_000)))
     #expect(model.positionMs(now: clock.now.addingTimeInterval(2)) == 12_000)
+}
+
+private func testJPEG() -> Data {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8,
+                               samplesPerPixel: 3, hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB,
+                               bytesPerRow: 0, bitsPerPixel: 0)!
+    return rep.representation(using: .jpeg, properties: [:])!
 }
 
 @MainActor

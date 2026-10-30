@@ -314,7 +314,8 @@ final class MediaToggle {
         await model.message(envelope)
         guard !started, model.state?.active == true else { return }
         started = true
-        await model.command(.toggle)
+        // Off the work stream, like the second: the send must not hold up the next message.
+        Task { await self.model.command(.toggle) }
     }
 }
 
