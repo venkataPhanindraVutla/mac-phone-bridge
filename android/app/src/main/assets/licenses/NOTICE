@@ -1,0 +1,21 @@
+Android Mirroring
+Copyright 2026 The Android Mirroring contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes scrcpy-server 5.0.1 (https://github.com/Genymobile/scrcpy), Copyright (C) 2018 Genymobile and Copyright (C) 2018-2026 Romain Vimont, licensed under the Apache License, Version 2.0, built from source with the changes listed in android/helper/UPSTREAM.md. The Mac app's scrcpy stream and control code is a new implementation of that protocol.
+
+Third-party components. Their licence texts, with copyright lines, ship inside the Android app as assets/licenses/ (android/app/src/main/assets/licenses/ in the source tree) and are attached to each GitHub release; the audit is in docs/licenses.md.
+
+- libadb-android 3.1.1 (https://github.com/MuntashirAkon/libadb-android), Copyright 2021 Muntashir Al-Islam, dual licensed GPL-3.0-or-later OR Apache-2.0, used under the Apache License, Version 2.0. Parts are also under the BSD 3-Clause License (AdbConnection, AdbProtocol, AdbStream: Copyright 2013 Cameron Gutman; AdbAuthenticationFailedException: Copyright 2020 Sam Palmer) and the MIT License (PRNGFixes: Copyright 2013 Google Inc.).
+- spake2-android 2.2.1, licensed under the GNU LGPL v3.0, used unmodified as a separate library; source: https://github.com/MuntashirAkon/spake2-java
+  Its native library libspake2.so also contains code under the ISC License (spake2.c, ed25519.h: Copyright (c) 2020, Google Inc.; Copyright (c) 2021, Muntashir Al-Islam), the MIT License (curve25519_32.h: Copyright (c) 2015-2020 the fiat-crypto authors), the Apache License, Version 2.0 (spake2.h: Copyright 2022 Muntashir Al-Islam) and the GNU LGPL v2.1 or later (sha512.c, from the GNU C Library: Copyright (C) 2007-2015 Free Software Foundation, Inc.; Copyright (C) 2021 Muntashir Al-Islam). The LGPL v3.0 incorporates the GNU GPL v3, whose text is included too.
+- Conscrypt (conscrypt-android 2.5.3, https://github.com/google/conscrypt), licensed under the Apache License, Version 2.0; it includes BoringSSL, under the OpenSSL License, the original SSLeay License, the ISC License and the MIT License (see BoringSSL.txt).
+- Bouncy Castle (bcpkix, bcutil and bcprov jdk18on 1.86, https://www.bouncycastle.org), Copyright (c) 2000-2026 The Legion of the Bouncy Castle Inc., licensed under the Bouncy Castle Licence (MIT License).
+- AndroidX and Jetpack Compose (https://developer.android.com/jetpack), Copyright The Android Open Source Project, licensed under the Apache License, Version 2.0.
+- Kotlin standard library and JetBrains annotations (https://github.com/JetBrains), Copyright JetBrains s.r.o. and contributors, licensed under the Apache License, Version 2.0.
+- kotlinx.coroutines and kotlinx.serialization (https://github.com/Kotlin), Copyright JetBrains s.r.o. and contributors, licensed under the Apache License, Version 2.0.
+- Protocol Buffers (protobuf-javalite and protobuf-kotlin-lite 4.36.2, https://github.com/protocolbuffers/protobuf), Copyright 2008 Google Inc., licensed under the BSD 3-Clause License.
+- ZXing core and ZXing Android Embedded (https://github.com/zxing/zxing, https://github.com/journeyapps/zxing-android-embedded), Copyright The ZXing authors, licensed under the Apache License, Version 2.0.
+- Guava listenablefuture (https://github.com/google/guava) and JSpecify (https://jspecify.dev), licensed under the Apache License, Version 2.0.
+- Mac app: swift-protobuf, swift-crypto, swift-certificates and swift-asn1 (https://github.com/apple), licensed under the Apache License, Version 2.0; swift-crypto 5.0.3 includes BoringSSL, whose vendored files are under the Apache License, Version 2.0.
