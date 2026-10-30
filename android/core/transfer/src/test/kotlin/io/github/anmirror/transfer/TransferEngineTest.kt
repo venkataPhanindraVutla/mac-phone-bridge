@@ -539,7 +539,12 @@ class TransferEngineTest {
         val ids = h.engine.send((1..50).map { MemSource("f$it.bin", ByteArray(100) { b -> b.toByte() }) })
         assertEquals(50, ids.size)
         assertEquals(50, ids.toSet().size)
-        ids.forEach { h.awaitState(it, TransferState.DONE, 30_000) }
+        // Not each id in turn: the engine keeps only the last 20 finished, so an early one can be
+        // gone from the list before it is looked for. All 50 completed and everything listed is done.
+        awaitUntil(30_000, "50 completes, all listed done") {
+            h.sent.count { it.first == MessageType.FILES_COMPLETE } == 50 &&
+                h.engine.transfers.value.let { list -> list.isNotEmpty() && list.all { it.state == TransferState.DONE } }
+        }
         assertEquals(1, h.maxOpen.get())
         assertEquals(0, h.openNow.get())
         assertEquals(20, h.engine.transfers.value.count { it.state == TransferState.DONE }) // only the last 20 are kept
