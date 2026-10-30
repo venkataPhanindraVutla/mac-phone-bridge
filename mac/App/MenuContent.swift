@@ -115,6 +115,9 @@ struct MenuContent: View {
         if model.isConnected, let status = model.phoneStatus.status {
             Text(StatusFormatter.detail(status))
                 .accessibilityLabel(Text(StatusFormatter.accessibilityLabel(status)))
+            if let note = StatusFormatter.backgroundNote(status) {
+                Text(note)
+            }
         }
     }
 

@@ -72,7 +72,7 @@ public final class MacServer {
     /// lifetime, used, or burned by bad proofs. Unknown certificates are then refused at TLS.
     public private(set) var pairingSecretSpent = false
 
-    /// Messages from the connected phone other than hello/ping/goodbye.
+    /// Messages from the connected phone other than hello/ping/pong/goodbye.
     @ObservationIgnored public var onMessage: ((AMEnvelope) -> Void)?
     @ObservationIgnored public var onEvent: ((MacServerEvent) -> Void)?
     /// Test hook: sees every accepted NWConnection before the handshake.
@@ -88,6 +88,9 @@ public final class MacServer {
     @ObservationIgnored private let silenceTimeout: Duration
     @ObservationIgnored private let pairingLifetime: TimeInterval
     @ObservationIgnored private let confirmationTimeout: Duration
+    @ObservationIgnored private let pingInterval: Duration
+    @ObservationIgnored private let missedPingLimit: Int
+    @ObservationIgnored private let livenessClock: any Clock<Duration>
     @ObservationIgnored private let now: () -> Date
 
     @ObservationIgnored private var identity: TLSIdentity?
@@ -113,12 +116,19 @@ public final class MacServer {
 
     /// - Parameters:
     ///   - silenceTimeout: drop a connection after this long with no incoming message (SPEC 7).
+    ///     Not used for a session that shares `liveness.v1`.
     ///   - pairingLifetime: seconds a pairing secret stays valid (SPEC 5.1).
     ///   - confirmationTimeout: how long to wait for both users' decisions (SPEC 5.3 step 4).
+    ///   - pingInterval: with `liveness.v1` shared, the Mac pings this often (SPEC 7).
+    ///   - missedPingLimit: with `liveness.v1` shared, drop the phone at this many consecutive
+    ///     intervals with nothing received.
+    ///   - livenessClock: the clock the ping interval is measured on (a test hook).
     public init(identity: any IdentityProvider, phones: any PairedPhoneStore, secrets: any SecretStore,
                 macName: String, appVersion: String, capabilities: Set<String>, advertise: Bool = true,
                 silenceTimeout: Duration = .seconds(75), pairingLifetime: TimeInterval = 300,
-                confirmationTimeout: Duration = .seconds(60), now: @escaping () -> Date = Date.init) {
+                confirmationTimeout: Duration = .seconds(60), pingInterval: Duration = .seconds(30),
+                missedPingLimit: Int = 3, livenessClock: any Clock<Duration> = ContinuousClock(),
+                now: @escaping () -> Date = Date.init) {
         self.identityProvider = identity
         self.phones = phones
         self.secrets = secrets
@@ -129,6 +139,9 @@ public final class MacServer {
         self.silenceTimeout = silenceTimeout
         self.pairingLifetime = pairingLifetime
         self.confirmationTimeout = confirmationTimeout
+        self.pingInterval = pingInterval
+        self.missedPingLimit = missedPingLimit
+        self.livenessClock = livenessClock
         self.now = now
     }
 
@@ -360,7 +373,8 @@ public final class MacServer {
 
     private func handle(_ env: AMEnvelope, in session: Session) {
         guard sessions[ObjectIdentifier(session)] != nil else { return }
-        armSilence(session)
+        // With `liveness.v1` the ping ticks decide; otherwise the 0.1 silence rule (SPEC 7).
+        if session.liveness != nil { session.liveness?.received() } else { armSilence(session) }
         let paired = pairedPhone(session.conn.peerFingerprint)
 
         if env.type == MessageType.goodbye.rawValue {
@@ -397,7 +411,7 @@ public final class MacServer {
         case .active:
             if env.type == MessageType.ping.rawValue {
                 post(session, .pong, AMPong(), channel: .system, replyTo: env.id)
-            } else if env.type != MessageType.hello.rawValue {
+            } else if env.type != MessageType.hello.rawValue && env.type != MessageType.pong.rawValue {
                 onMessage?(env)
             }
         case .closed:
@@ -523,6 +537,7 @@ public final class MacServer {
             }
             post(session, .hello, local, channel: .system, replyTo: env.id)
             session.phase = .active(phone, shared)
+            if shared.contains(Liveness.capability) { startLiveness(session) }
             active = session
             incompatiblePhone = nil
             recomputeState()
@@ -554,6 +569,38 @@ public final class MacServer {
         }
     }
 
+    /// SPEC 7 with `liveness.v1`: the 75 s silence rule no longer applies; the Mac pings every
+    /// `pingInterval`, the first one an interval after its hello, and drops the phone at the
+    /// `missedPingLimit`-th consecutive interval with nothing received.
+    private func startLiveness(_ session: Session) {
+        session.silence?.cancel()
+        session.silence = nil
+        session.liveness = LivenessMonitor(missedLimit: missedPingLimit)
+        let interval = pingInterval
+        let clock = livenessClock
+        session.pinger = Task { [weak self, weak session] in
+            while true {
+                do { try await clock.sleep(for: interval) } catch { return }
+                guard let self, let session, self.livenessTick(session) else { return }
+            }
+        }
+    }
+
+    /// One ping interval has passed. Returns false once the session is gone.
+    private func livenessTick(_ session: Session) -> Bool {
+        guard sessions[ObjectIdentifier(session)] != nil, var monitor = session.liveness else { return false }
+        let action = monitor.tick()
+        session.liveness = monitor
+        switch action {
+        case .sendPing:
+            post(session, .ping, AMPing(), channel: .system)
+            return true
+        case .drop:
+            drop(session)
+            return false
+        }
+    }
+
     /// Sends `system.error code`, closes, and reports `rejection`.
     private func reject(_ session: Session, _ code: AMErrorCode, _ rejection: MacRejection) {
         var error = AMError()
@@ -569,6 +616,7 @@ public final class MacServer {
     private func drop(_ session: Session, flush: Bool = false) {
         guard sessions.removeValue(forKey: ObjectIdentifier(session)) != nil else { return }
         session.silence?.cancel()
+        session.pinger?.cancel()
         let phase = session.phase
         session.phase = .closed
         if flush { session.conn.closeAfterFlush() } else { session.conn.close() }
@@ -695,6 +743,9 @@ private final class Session {
     var phase: Phase = .awaitingFirst
     var silence: Task<Void, Never>?
     var reader: Task<Void, Never>?
+    /// Set once the session shares `liveness.v1` (SPEC 7): the Mac's ping timer and drop rule.
+    var liveness: LivenessMonitor?
+    var pinger: Task<Void, Never>?
 
     init(conn: ControlConnection) { self.conn = conn }
 }
