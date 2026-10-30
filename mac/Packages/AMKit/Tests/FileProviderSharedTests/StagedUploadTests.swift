@@ -105,3 +105,17 @@ private struct Dir {
     #expect(throws: (any Error).self) { try StagedUpload.copy([share, "0", "pipe"], under: outbox, to: d.root.appendingPathComponent("o")) }
     #expect(!StagedUpload.isRegularFile([share, "0", "pipe"], under: outbox))
 }
+
+@Test func outboxWalkRefusesALinkedOutboxRoot() throws {
+    let d = try Dir(); defer { d.clean() }
+    let fm = FileManager.default
+    let elsewhere = d.root.appendingPathComponent("Downloads")
+    let share = UUID().uuidString
+    try fm.createDirectory(at: elsewhere.appendingPathComponent("\(share)/0"), withIntermediateDirectories: true)
+    try Data("private".utf8).write(to: elsewhere.appendingPathComponent("\(share)/0/a.txt"))
+    let outbox = d.root.appendingPathComponent("Outbox")
+    try fm.createSymbolicLink(at: outbox, withDestinationURL: elsewhere)
+    #expect(throws: (any Error).self) { try StagedUpload.copy([share, "0", "a.txt"], under: outbox, to: d.root.appendingPathComponent("o")) }
+    #expect(!StagedUpload.isRegularFile([share, "0", "a.txt"], under: outbox))
+    #expect(!fm.fileExists(atPath: d.root.appendingPathComponent("o").path))
+}

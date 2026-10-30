@@ -256,3 +256,109 @@ private func decodes(_ path: String) -> Bool {
     // Just made: the extension may still be writing its envelope.
     #expect(OutboxFiles.orphanFolders(in: outbox, referenced: [named], nowMs: later - OutboxFiles.orphanGraceMs - 2000).isEmpty)
 }
+
+// MARK: re-review: the outbox folder itself, the grace from the last change
+
+/// A container with a real `Outbox`, and a folder outside it standing for ~/Downloads.
+private struct Container {
+    let root: URL
+    let container: URL
+    let outbox: URL
+    let elsewhere: URL
+    init() throws {
+        let fm = FileManager.default
+        root = fm.temporaryDirectory.appendingPathComponent("am-container-\(UUID().uuidString)")
+        container = root.appendingPathComponent("group")
+        outbox = container.appendingPathComponent("Outbox")
+        elsewhere = root.appendingPathComponent("Downloads")
+        try fm.createDirectory(at: outbox, withIntermediateDirectories: true)
+        try fm.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+    }
+    func clean() { try? FileManager.default.removeItem(at: root) }
+
+    /// Replaces the real outbox with a link to `elsewhere`.
+    func plantLink() throws {
+        try FileManager.default.removeItem(at: outbox)
+        try FileManager.default.createSymbolicLink(at: outbox, withDestinationURL: elsewhere)
+    }
+}
+
+private func age(_ url: URL, hours: Double) throws {
+    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-hours * 3600)], ofItemAtPath: url.path)
+}
+
+private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+@Test func outboxGuardRefusesALinkedOrMissingOutbox() throws {
+    let c = try Container(); defer { c.clean() }
+    let fm = FileManager.default
+    #expect(OutboxFiles.isTrustedOutbox(c.outbox, container: c.container))
+    // The outbox swapped for a link to another folder.
+    try c.plantLink()
+    #expect(!OutboxFiles.isTrustedOutbox(c.outbox, container: c.container))
+    // A file, or nothing, where the outbox should be.
+    try fm.removeItem(at: c.outbox)
+    #expect(!OutboxFiles.isTrustedOutbox(c.outbox, container: c.container))
+    try Data().write(to: c.outbox)
+    #expect(!OutboxFiles.isTrustedOutbox(c.outbox, container: c.container))
+    // A real folder somewhere else is not this container's outbox.
+    #expect(!OutboxFiles.isTrustedOutbox(c.elsewhere, container: c.container))
+    // The container itself a link.
+    try fm.removeItem(at: c.outbox)
+    try fm.createDirectory(at: c.outbox, withIntermediateDirectories: true)
+    let linked = c.root.appendingPathComponent("linked-group")
+    try fm.createSymbolicLink(at: linked, withDestinationURL: c.container)
+    #expect(!OutboxFiles.isTrustedOutbox(linked.appendingPathComponent("Outbox"), container: linked))
+}
+
+@Test func orphanSweepDeletesNothingThroughALinkedOutbox() throws {
+    let c = try Container(); defer { c.clean() }
+    let fm = FileManager.default
+    // What a planter wants gone: a UUID-named folder in "Downloads", unchanged for hours.
+    let victim = c.elsewhere.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: victim, withIntermediateDirectories: true)
+    try Data("mine".utf8).write(to: victim.appendingPathComponent("photo.jpg"))
+    try age(victim.appendingPathComponent("photo.jpg"), hours: 2)
+    try age(victim, hours: 2)
+    try c.plantLink()
+    #expect(OutboxFiles.removeOrphans(in: c.outbox, container: c.container, referenced: [], nowMs: nowMs) == nil)
+    #expect(fm.fileExists(atPath: victim.appendingPathComponent("photo.jpg").path), "nothing outside the container goes")
+
+    // The same folder in the real outbox is an orphan.
+    try fm.removeItem(at: c.outbox)
+    try fm.createDirectory(at: c.outbox, withIntermediateDirectories: true)
+    let orphan = c.outbox.appendingPathComponent(victim.lastPathComponent)
+    try fm.copyItem(at: victim, to: orphan)
+    try age(orphan.appendingPathComponent("photo.jpg"), hours: 2)
+    try age(orphan, hours: 2)
+    #expect(OutboxFiles.removeOrphans(in: c.outbox, container: c.container, referenced: [], nowMs: nowMs) == 1)
+    #expect(!fm.fileExists(atPath: orphan.path))
+}
+
+@Test func orphanGraceRunsFromTheLastChangeAndSkipsSharesBeingWritten() throws {
+    let c = try Container(); defer { c.clean() }
+    let fm = FileManager.default
+    // Made long ago (its creation date is old too), but a file was added just now.
+    let busy = UUID()
+    let busyFolder = c.outbox.appendingPathComponent(busy.uuidString)
+    try fm.createDirectory(at: busyFolder.appendingPathComponent("0"), withIntermediateDirectories: true)
+    try age(busyFolder, hours: 2)
+    #expect(OutboxFiles.orphanFolders(in: c.outbox, referenced: [], nowMs: nowMs).isEmpty, "its entry changed just now")
+    try age(busyFolder.appendingPathComponent("0"), hours: 2)
+    #expect(OutboxFiles.orphanFolders(in: c.outbox, referenced: [], nowMs: nowMs).map(\.lastPathComponent) == [busy.uuidString])
+
+    // The extension is still writing its envelope: never an orphan, however old.
+    let marker = c.outbox.appendingPathComponent(OutboxFiles.writingName(for: busy))
+    try Data().write(to: marker)
+    try age(marker, hours: 1)
+    #expect(OutboxFiles.orphanFolders(in: c.outbox, referenced: [], nowMs: nowMs).isEmpty)
+    #expect(OutboxFiles.removeOrphans(in: c.outbox, container: c.container, referenced: [], nowMs: nowMs) == 0)
+    #expect(fm.fileExists(atPath: busyFolder.path))
+    // A marker a dead extension left a day ago goes, and its folder with it.
+    try age(marker, hours: 25)
+    #expect(OutboxFiles.removeOrphans(in: c.outbox, container: c.container, referenced: [], nowMs: nowMs) == 1)
+    #expect(!fm.fileExists(atPath: marker.path))
+    #expect(!fm.fileExists(atPath: busyFolder.path))
+    #expect(OutboxFiles.envelopeName(for: busy) == busy.uuidString + ".json")
+    #expect(!OutboxFiles.writingName(for: busy).hasSuffix(".json"), "the drain never reads a marker")
+}

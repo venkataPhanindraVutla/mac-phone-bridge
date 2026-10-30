@@ -20,6 +20,9 @@ import os
 /// ends; the share folder goes once its items are queued or dropped. So an envelope another
 /// process planted can only send bytes that process already put in the container.
 /// At most once: a share is sent only after its outbox file was removed.
+/// Every outbox operation (listing, reading, deleting) first checks that `Outbox` is the
+/// container's real folder, not a link planted there (`OutboxFiles.isTrustedOutbox`); if it is
+/// not, nothing is done.
 /// Also tells the extension, through the App Group defaults, which phone to name.
 /// Only counts are logged, never paths, links or text.
 @MainActor
@@ -27,6 +30,8 @@ final class ShareOutbox: SessionFeature {
     let messagePrefixes: [String] = []
 
     private let folder: URL
+    /// The App Group container `folder` must be the real `Outbox` of.
+    private let container: URL
     /// The app's own copies of shared files, each in a folder of its own, while they are sent.
     private let copies: URL
     /// That folder, by transfer ID, until its transfer ends.
@@ -44,6 +49,7 @@ final class ShareOutbox: SessionFeature {
     init(container: URL, defaults: UserDefaults?, transfers: TransferEngine, share: ShareModel,
          pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
         folder = container.appendingPathComponent(FullBuild.outboxFolder, isDirectory: true)
+        self.container = container
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         copies = caches.appendingPathComponent("io.github.anmirror.mac/outbox-sends", isDirectory: true)
@@ -55,7 +61,8 @@ final class ShareOutbox: SessionFeature {
         self.pairedPhoneIDs = pairedPhoneIDs
         // Rewrites left half done: with the original still there nothing was sent, so the rewrite
         // goes; with it gone, the rewrite holds what still waits and takes a place of its own.
-        for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
+        let rewrites = trusted() ? (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] : []
+        for url in rewrites {
             guard let original = OutboxFiles.original(ofPending: url.lastPathComponent) else { continue }
             if FileManager.default.fileExists(atPath: folder.appendingPathComponent(original).path) {
                 try? FileManager.default.removeItem(at: url)
@@ -90,6 +97,7 @@ final class ShareOutbox: SessionFeature {
             defaults?.removeObject(forKey: FullBuild.phoneIDKey)
             defaults?.removeObject(forKey: FullBuild.phoneNameKey)
         }
+        guard trusted() else { return }
         var dropped = 0
         for (url, envelope) in pending() where envelope?.phoneID == phoneID {
             try? FileManager.default.removeItem(at: url)
@@ -137,6 +145,7 @@ final class ShareOutbox: SessionFeature {
     }
 
     private func drain() async {
+        guard trusted() else { return }
         let paired = pairedPhoneIDs()
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let outbox = folder
@@ -184,8 +193,9 @@ final class ShareOutbox: SessionFeature {
         removeOrphanShareFolders(nowMs: now)
     }
 
-    /// Share folders no envelope (or pending rewrite) names, older than a few minutes.
+    /// Share folders no envelope (or pending rewrite) names, unchanged for a few minutes.
     private func removeOrphanShareFolders(nowMs: Int64) {
+        guard trusted() else { return }
         var referenced = Set<String>()
         for (_, envelope) in pending() { if let envelope { referenced.formUnion(envelope.shareFolders) } }
         let rewrites = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
@@ -194,12 +204,23 @@ final class ShareOutbox: SessionFeature {
                 referenced.formUnion(envelope.shareFolders)
             }
         }
-        let orphans = OutboxFiles.orphanFolders(in: folder, referenced: referenced, nowMs: nowMs)
-        for url in orphans { try? FileManager.default.removeItem(at: url) }
-        if !orphans.isEmpty { Self.log.info("removed \(orphans.count, privacy: .public) orphan share folders") }
+        let removed = OutboxFiles.removeOrphans(in: folder, container: container, referenced: referenced, nowMs: nowMs)
+        if let removed, removed > 0 { Self.log.info("removed \(removed, privacy: .public) orphan share folders") }
+    }
+
+    /// The outbox is the container's real folder; else logs (no path) and says no.
+    private func trusted() -> Bool {
+        if OutboxFiles.isTrustedOutbox(folder, container: container) { return true }
+        // No outbox yet (nothing was ever shared): nothing to do, nothing to say.
+        var info = stat()
+        if lstat(folder.path, &info) != 0, errno == ENOENT { return false }
+        Self.log.error("outbox is not the container's own folder: left alone")
+        return false
     }
 
     private func removeShareFolders(_ names: Set<String>) {
+        // Checked again: a delivery awaits between the drain's check and this.
+        guard trusted() else { return }
         for name in names where name.utf8.count == 36 && UUID(uuidString: name) != nil {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name, isDirectory: true))
         }
@@ -266,6 +287,7 @@ final class ShareOutbox: SessionFeature {
 
     /// The outbox's `.json` files, oldest first, each with its envelope (nil when unreadable).
     private func pending() -> [(URL, OutboxEnvelope?)] {
+        guard trusted() else { return [] }
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.creationDateKey, .isRegularFileKey]
         guard let urls = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys) else { return [] }

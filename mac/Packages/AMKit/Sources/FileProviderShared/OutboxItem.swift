@@ -230,20 +230,93 @@ public enum OutboxFiles {
         return relative
     }
 
-    /// The share folders in `outbox` that `referenced` does not name and that are older than
-    /// `orphanGraceMs`: what a crashed extension, an unreadable envelope or a lost rewrite left.
-    public static func orphanFolders(in outbox: URL, referenced: Set<String>, nowMs: Int64) -> [URL] {
-        let fm = FileManager.default
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .creationDateKey]
-        guard let urls = try? fm.contentsOfDirectory(at: outbox, includingPropertiesForKeys: keys) else { return [] }
-        return urls.filter { url in
-            let name = url.lastPathComponent
-            guard name.utf8.count == 36, UUID(uuidString: name) != nil, !referenced.contains(name),
-                  let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.isDirectory == true || values.isSymbolicLink == true
-            else { return false }
-            let created = values.creationDate.map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
-            return nowMs - created >= orphanGraceMs
+    // MARK: the outbox folder itself
+
+    /// Whether `outbox` is the real `Outbox` folder of `container`: the container and the outbox
+    /// are directories, not links (`lstat`), and the outbox resolves (`realpath`) to the resolved
+    /// container plus `/Outbox`. On macOS 14 another process of the same user can write in the
+    /// container; with `Outbox` swapped for a link (to Downloads, say) every path-based outbox
+    /// operation, deletes included, would land there. Each one checks this first.
+    public static func isTrustedOutbox(_ outbox: URL, container: URL) -> Bool {
+        var info = stat()
+        guard lstat(container.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+              lstat(outbox.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+              let base = realPath(container.path), let real = realPath(outbox.path)
+        else { return false }
+        return real == (base as NSString).appendingPathComponent(FullBuild.outboxFolder)
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    // MARK: envelopes being written
+
+    private static let writingSuffix = ".json.writing"
+
+    /// The envelope of share `share`, once written: `<share>.json`.
+    public static func envelopeName(for share: UUID) -> String { share.uuidString + ".json" }
+
+    /// The marker the extension creates before it stages share `share`'s files, writes the
+    /// envelope into, and renames to `envelopeName(for:)` when done. While it is there the share
+    /// folder is never an orphan (the drain reads `.json` files only).
+    public static func writingName(for share: UUID) -> String { share.uuidString + writingSuffix }
+
+    /// Markers older than `maxAgeMs` are an extension that died mid-share.
+    public static func staleMarkers(in outbox: URL, nowMs: Int64) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: outbox.path)) ?? []
+        return names.filter { $0.hasSuffix(writingSuffix) }.compactMap { name in
+            let url = outbox.appendingPathComponent(name)
+            guard let changed = modifiedMs(url.path), nowMs - changed > OutboxEnvelope.maxAgeMs else { return nil }
+            return url
         }
+    }
+
+    // MARK: orphans
+
+    /// The share folders in `outbox` that `referenced` does not name, with no envelope being
+    /// written for them, and unchanged for `orphanGraceMs` (the latest modification time of the
+    /// folder and of what is directly in it): what a crashed extension, an unreadable envelope or
+    /// a lost rewrite left.
+    public static func orphanFolders(in outbox: URL, referenced: Set<String>, nowMs: Int64) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: outbox.path)) ?? []
+        let entries = Set(names)
+        return names.compactMap { name in
+            guard name.utf8.count == 36, UUID(uuidString: name) != nil, !referenced.contains(name),
+                  !entries.contains(name + writingSuffix) else { return nil }
+            let url = outbox.appendingPathComponent(name)
+            guard let changed = lastChangeMs(url) else { return nil }
+            return nowMs - changed >= orphanGraceMs ? url : nil
+        }
+    }
+
+    /// Removes stale markers and orphan share folders; how many went. Nil, with nothing touched,
+    /// when `outbox` is not `container`'s real outbox (`isTrustedOutbox`).
+    public static func removeOrphans(in outbox: URL, container: URL, referenced: Set<String>, nowMs: Int64) -> Int? {
+        guard isTrustedOutbox(outbox, container: container) else { return nil }
+        for marker in staleMarkers(in: outbox, nowMs: nowMs) { unlink(marker.path) }
+        let orphans = orphanFolders(in: outbox, referenced: referenced, nowMs: nowMs)
+        for url in orphans { try? FileManager.default.removeItem(at: url) }
+        return orphans.count
+    }
+
+    /// The newest `lstat` modification time of `url` and, for a real folder, of its entries.
+    private static func lastChangeMs(_ url: URL) -> Int64? {
+        guard var newest = modifiedMs(url.path) else { return nil }
+        var info = stat()
+        if lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR {
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? [] {
+                if let ms = modifiedMs(url.appendingPathComponent(name).path) { newest = max(newest, ms) }
+            }
+        }
+        return newest
+    }
+
+    private static func modifiedMs(_ path: String) -> Int64? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return Int64(info.st_mtimespec.tv_sec) * 1000 + Int64(info.st_mtimespec.tv_nsec) / 1_000_000
     }
 }

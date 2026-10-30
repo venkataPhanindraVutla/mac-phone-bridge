@@ -18,6 +18,8 @@ final class ShareViewController: NSViewController {
     private let sendButton = NSButton(title: String(localized: "Send"), target: nil, action: nil)
     private let cancelButton = NSButton(title: String(localized: "Cancel"), target: nil, action: nil)
     private var phone: (id: String, name: String)?
+    /// Cancel was pressed: a share being staged writes no envelope and leaves no copies.
+    private var cancelled = false
 
     override func loadView() {
         titleLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize + 2)
@@ -55,6 +57,7 @@ final class ShareViewController: NSViewController {
     }
 
     @objc private func cancel() {
+        cancelled = true
         extensionContext?.cancelRequest(withError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
     }
 
@@ -65,14 +68,23 @@ final class ShareViewController: NSViewController {
         let input = Unchecked(providers)
         guard let outbox = Self.outboxFolder() else { return finish(false) }
         let share = UUID()
+        // The marker first: while it is there the app never takes the share folder for an orphan.
+        guard Self.startShare(share, in: outbox) else { return finish(false) }
         Task {
             var items: [OutboxItem] = []
             for (index, provider) in input.value.prefix(OutboxEnvelope.maxItems).enumerated() {
+                if self.cancelled { break }
                 if let item = await Self.item(from: provider, outbox: outbox, share: share, index: index) { items.append(item) }
+            }
+            // Cancelled while staging (the sheet is already gone): nothing is written.
+            guard !self.cancelled else {
+                Self.removeShare(share, in: outbox)
+                Self.log.info("share cancelled while staging")
+                return
             }
             switch OutboxEnvelope.check(items) {
             case .ok:
-                let written = Self.write(items, for: phone.id, in: outbox)
+                let written = Self.write(items, for: phone.id, share: share, in: outbox)
                 if !written { Self.removeShare(share, in: outbox) }
                 self.finish(written)
             case .nothingToSend:
@@ -183,17 +195,35 @@ final class ShareViewController: NSViewController {
         }
     }
 
-    /// A share that is not written leaves no copies behind.
-    private static func removeShare(_ share: UUID, in outbox: URL) {
-        try? FileManager.default.removeItem(at: outbox.appendingPathComponent(share.uuidString, isDirectory: true))
-    }
-
-    /// Writes the share for `phoneID` into `Outbox/` and tells the app; false if it could not.
-    private static func write(_ items: [OutboxItem], for phoneID: String, in outbox: URL) -> Bool {
-        let envelope = OutboxEnvelope(phoneID: phoneID, createdMs: Int64(Date().timeIntervalSince1970 * 1000), items: items)
+    /// Creates `Outbox/` and the share's "being written" marker; false if it could not.
+    private static func startShare(_ share: UUID, in outbox: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: true)
-            try envelope.encoded().write(to: outbox.appendingPathComponent(UUID().uuidString + ".json"), options: .atomic)
+            try Data().write(to: outbox.appendingPathComponent(OutboxFiles.writingName(for: share)))
+            return true
+        } catch {
+            log.error("outbox write failed: \((error as NSError).code, privacy: .public)")
+            return false
+        }
+    }
+
+    /// A share that is not written leaves no copies and no marker behind.
+    private static func removeShare(_ share: UUID, in outbox: URL) {
+        try? FileManager.default.removeItem(at: outbox.appendingPathComponent(share.uuidString, isDirectory: true))
+        try? FileManager.default.removeItem(at: outbox.appendingPathComponent(OutboxFiles.writingName(for: share)))
+    }
+
+    /// Writes the share for `phoneID` into its marker, renames that to `<share>.json` (the app
+    /// reads `.json` files only, so it never sees half an envelope), and tells the app; false if
+    /// it could not.
+    private static func write(_ items: [OutboxItem], for phoneID: String, share: UUID, in outbox: URL) -> Bool {
+        let envelope = OutboxEnvelope(phoneID: phoneID, createdMs: Int64(Date().timeIntervalSince1970 * 1000), items: items)
+        let marker = outbox.appendingPathComponent(OutboxFiles.writingName(for: share))
+        do {
+            try envelope.encoded().write(to: marker)
+            guard rename(marker.path, outbox.appendingPathComponent(OutboxFiles.envelopeName(for: share)).path) == 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
         } catch {
             log.error("outbox write failed: \((error as NSError).code, privacy: .public)")
             return false
