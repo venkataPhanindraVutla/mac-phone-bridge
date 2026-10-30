@@ -30,6 +30,7 @@ import androidx.lifecycle.lifecycleScope
 import io.github.anmirror.connection.PairedMac
 import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.AppGraph
+import io.github.anmirror.phone.BackgroundState
 import io.github.anmirror.phone.BuildConfig
 import io.github.anmirror.phone.MainActivity
 import io.github.anmirror.phone.MediaAccess
@@ -145,6 +146,8 @@ class ConnectionService : LifecycleService() {
         screenOn = ScreenOnKicker(this) {
             graph.keepAliveLog.record(KeepAliveEvent.SCREEN_ON)
             graph.manager.kick()
+            // Catches an exemption revoked in Settings while the app stays closed and the session open.
+            graph.refreshBackgroundExempt()
         }
         screenOn.start()
         graph.manager.start()
@@ -155,7 +158,10 @@ class ConnectionService : LifecycleService() {
         // the exemption there makes a session's first status current.
         val exempt = graph.backgroundExempt.onStart { graph.refreshBackgroundExempt() }
         StatusPublisher(
-            source = combine(AndroidStatusSource(this), exempt) { s, e -> s.copy(backgroundRestricted = !e) },
+            source = combine(AndroidStatusSource(this), exempt) { s, e ->
+                // Restricted means "not exempt" (BackgroundState.restricted); the maker step is not readable.
+                s.copy(backgroundRestricted = BackgroundState(exempt = e, maker = graph.maker, makerStepDone = false).restricted)
+            },
             connected = graph.manager.state.map { it is Connected && "status.v1" in it.shared },
             send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
         ).launchIn(lifecycleScope)

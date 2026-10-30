@@ -215,6 +215,8 @@
     <string name="keep_row_title">May disconnect when locked</string>
     <string name="keep_row_line">Allow Android Mirroring to run in the background.</string>
     <string name="keep_row_fix">Fix</string>
+    <!-- Neither the exemption dialog nor any Settings page could be opened on this phone. -->
+    <string name="keep_settings_unavailable">Settings couldn\'t be opened on this phone.</string>
     <!-- The maker's own battery setting, by Build.MANUFACTURER. Only the vivo path has been seen on a real phone. -->
     <string name="keep_maker_vivo">Settings › Battery › Background power consumption management › Android Mirroring › Allow</string>
     <!-- Some vivo builds have it under App info instead (the Open app settings button). -->

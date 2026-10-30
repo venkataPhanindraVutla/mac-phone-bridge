@@ -1,9 +1,7 @@
 package io.github.anmirror.phone.ui
 
-import android.content.ActivityNotFoundException
 import android.content.Context
-import android.content.Intent
-import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -53,7 +51,7 @@ fun KeepConnectedScreen(state: BackgroundState, onDone: () -> Unit, onNotNow: ()
         )
         Text(stringResource(R.string.keep_body), style = MaterialTheme.typography.bodyLarge)
         if (!state.exempt) {
-            Button(onClick = { context.openBatteryExemption() }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { context.toastUnlessOpened(Battery.openExemption(context)) }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.keep_allow))
             }
         }
@@ -61,7 +59,7 @@ fun KeepConnectedScreen(state: BackgroundState, onDone: () -> Unit, onNotNow: ()
             Text(stringResource(R.string.keep_maker_intro), style = MaterialTheme.typography.bodyLarge)
             Text(stringResource(maker.lineRes()), style = MaterialTheme.typography.bodyLarge)
             maker.fallbackRes()?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
-            OutlinedButton(onClick = { context.openAppSettings() }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { context.toastUnlessOpened(Battery.openAppSettings(context)) }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.keep_open_settings))
             }
         }
@@ -86,19 +84,7 @@ internal fun Maker.fallbackRes(): Int? = when (this) {
     else -> null
 }
 
-/** Android's exemption dialog for this app; a build without it gets the list of apps instead. */
-private fun Context.openBatteryExemption() {
-    try {
-        startActivity(Battery.requestExemptionIntent(this))
-    } catch (e: ActivityNotFoundException) {
-        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-    }
-}
-
-private fun Context.openAppSettings() {
-    try {
-        startActivity(Battery.appSettingsIntent(this))
-    } catch (e: ActivityNotFoundException) {
-        startActivity(Intent(Settings.ACTION_SETTINGS))
-    }
+/** Settings could not be opened at all: say so instead of doing nothing. */
+private fun Context.toastUnlessOpened(opened: Boolean) {
+    if (!opened) Toast.makeText(this, R.string.keep_settings_unavailable, Toast.LENGTH_SHORT).show()
 }
