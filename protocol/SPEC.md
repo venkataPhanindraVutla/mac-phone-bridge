@@ -509,8 +509,9 @@ Channel `DND`.
   the last applied state, with no other local transition in between, is sent with
   `origin = SYNC`. `SYNC` states are never applied. Example: the Mac turns Focus on and the phone
   applies it. If the phone's filter then reports "on" within 10 s, that is the echo and nothing is
-  sent. If the user turns the phone's filter off and on again later, the second "on" matches the
-  last applied state with nothing in between, so it is sent with `origin = SYNC`.
+  sent. If that "on" only shows up after 10 s, with no other local transition before it, it is
+  sent with `origin = SYNC`. Any local transition ends the match: if the user turns the phone's
+  filter off and on again, the "off" and the second "on" are both sent with `origin = USER`.
 - `dnd.availability` is sent both ways on connect and on change.
 
 ## 22. Proximity (`proximity.v1`)
