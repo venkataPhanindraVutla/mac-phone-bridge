@@ -38,7 +38,8 @@ WORK="$(mktemp -d)"
 PIDS=""
 cleanup() {
   local p
-  for p in $PIDS; do kill "$p" 2>/dev/null || true; done
+  # A stopped process (case 11's kill -STOP) ignores SIGTERM until continued; wait would hang.
+  for p in $PIDS; do kill -CONT "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done
   for p in $PIDS; do wait "$p" 2>/dev/null || true; done
   rm -rf "$WORK"
 }
@@ -118,7 +119,7 @@ end_case() {  # end_case <status>
 
 stop_all() {
   local p
-  for p in $PIDS; do kill "$p" 2>/dev/null || true; done
+  for p in $PIDS; do kill -CONT "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done
   for p in $PIDS; do wait "$p" 2>/dev/null || true; done
   PIDS=""
 }
@@ -290,6 +291,48 @@ case9() {
   echo "interop: media toggle round trip $MEDIA_MS ms"
 }
 
+# liveness.v1 (SPEC 7): the Mac pings every --ping-interval-ms and drops after 3 silent intervals.
+case10() {
+  begin_case "10 liveness: Mac pings keep a quiet phone connected"
+  local pstate pings; pstate="$(new_dir c10-phone)"
+  start_mac c10 --auto-confirm --liveness --ping-interval-ms 200 || return 1
+  start_phone c10 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --liveness
+  need "$PHONE_LOG" '^EVENT connected shared=find\.v1,liveness\.v1,status\.v1$' "phone EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
+  need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,liveness\.v1,status\.v1$' "mac EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
+  sleep 3
+  pings="$(grep -c '^EVENT mac-ping$' "$PHONE_LOG" || true)"
+  [[ "$pings" -ge 10 ]] || { fail_reason="phone answered $pings Mac pings in 3 s, expected >= 10"; return 1; }
+  if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a phone that answers its pings"; return 1; fi
+}
+
+case11() {
+  begin_case "11 liveness: frozen phone is dropped"
+  local pstate rc=0; pstate="$(new_dir c11-phone)"
+  start_mac c11 --auto-confirm --liveness --ping-interval-ms 200 || return 1
+  start_phone c11 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --liveness
+  need "$PHONE_LOG" '^EVENT connected shared=find\.v1,liveness\.v1,status\.v1$' "phone EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
+  need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,liveness\.v1,status\.v1$' "mac EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
+  need "$PHONE_LOG" '^EVENT mac-ping$' "phone EVENT mac-ping before the freeze" || return 1
+  if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped the phone before the freeze"; return 1; fi
+  # The socket stays open and the kernel still ACKs, but nothing answers the Mac's pings.
+  kill -STOP "$PHONE_PID"
+  need "$MAC_LOG" '^EVENT disconnected [0-9a-f]+$' "mac EVENT disconnected <phone id> within 3 s of the freeze (3 x 200 ms plus TLS close)" 3 || rc=1
+  kill -CONT "$PHONE_PID" 2>/dev/null || true
+  return $rc
+}
+
+case12() {
+  begin_case "12 liveness Mac, legacy phone: no pings"
+  local pstate; pstate="$(new_dir c12-phone)"
+  start_mac c12 --auto-confirm --liveness --ping-interval-ms 200 || return 1
+  start_phone c12 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm
+  need "$PHONE_LOG" '^EVENT connected shared=find\.v1,status\.v1$' "phone EVENT connected shared=find.v1,status.v1" || return 1
+  need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,status\.v1$' "mac EVENT connected shared=find.v1,status.v1" || return 1
+  sleep 2
+  if grep -q '^EVENT mac-ping$' "$PHONE_LOG"; then fail_reason="the Mac pinged a phone without liveness.v1"; return 1; fi
+  if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a legacy phone within 2 s"; return 1; fi
+}
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -305,10 +348,13 @@ run_case case6
 run_case case7
 run_case case8
 run_case case9
+run_case case10
+run_case case11
+run_case case12
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 9 cases passed"
+  echo "interop: all 12 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1
