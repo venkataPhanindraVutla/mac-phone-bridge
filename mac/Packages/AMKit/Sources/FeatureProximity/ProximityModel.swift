@@ -18,7 +18,8 @@ import SwiftProtobuf
 /// phone has had no LAN session with this Mac now or in the last 30 minutes (ruling R32: this Mac
 /// can't hear that the phone stopped advertising without one), the scanner has heard nothing from
 /// any device for 20 s, or something keeps the screen awake (ruling R33). A stalled scan is
-/// restarted at most every 30 s.
+/// restarted at most every 30 s. The chosen phone's session ending is handed to the monitor, so a
+/// beacon that vanishes with it (a killed app, a reboot) is not taken for a walk-away (ruling R37).
 ///
 /// The monitor runs on a monotonic clock (`uptime`); the wall clock (`now`) is used only for the
 /// beacon epoch and the session stamps.
@@ -165,13 +166,17 @@ public final class ProximityModel: SessionFeature {
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
         sessionPhoneID = phoneID
         markSession(phoneID)
+        if phoneID == self.phoneID { monitor.sessionStarted() }
         // A phone without the capability doesn't advertise.
         if !shared.contains("proximity.v1") { setAvailability(false, reason: .unspecified, phoneID: phoneID) }
         updateBlockers()
     }
 
     public func disconnected() {
-        if let id = sessionPhoneID { markSession(id) }
+        if let id = sessionPhoneID {
+            markSession(id)
+            if id == phoneID { monitor.sessionEnded(at: uptime()) }
+        }
         sessionPhoneID = nil
         updateBlockers()
     }

@@ -84,7 +84,14 @@ public enum Decision: Equatable, Sendable {
 ///   - not heard, the last signal at least threshold + 5 dB (vanished from close range): `vanishHold`.
 /// - Any blocker disarms it and restarts the FAR clock, so the phone must be seen NEAR again after,
 ///   say, Bluetooth comes back on.
+/// - Ruling R37: an absence that begins within `sessionDropWindow` of the phone's LAN session ending
+///   (either order; `sessionEnded(at:)`) is unknown, not FAR: a killed app or a rebooting phone drops
+///   both at once, while a walk-away drops the beacon well before Wi-Fi. It stays unknown until the
+///   next sighting or `sessionStarted()`, from which an absence counts again. It keeps `armed` as it is.
 public struct ProximityMonitor {
+    /// Ruling R37: how close together the last sighting and the session's end make a vanish unknown.
+    public static let sessionDropWindow: TimeInterval = 15
+
     public var config: ProximityConfig
     /// False until the first NEAR, and again after a lock, a blocker or `reset()`.
     public private(set) var armed = false
@@ -96,6 +103,8 @@ public struct ProximityMonitor {
     public private(set) var farHold: TimeInterval = 0
     /// In time order; the last is the newest, and none is more than `window` older than it.
     private var samples: [(at: TimeInterval, rssi: Int)] = []
+    /// When the phone's last LAN session ended, until the next one starts (ruling R37).
+    private var sessionEndedAt: TimeInterval?
 
     public init(config: ProximityConfig) {
         self.config = config
@@ -110,10 +119,28 @@ public struct ProximityMonitor {
         samples.append((time, rssi))
     }
 
-    /// Wake, a setting change or a phone change: forget the samples and wait for NEAR again.
+    /// Wake, a setting change or a phone change: forget the samples and the session's end, and
+    /// wait for NEAR again.
     public mutating func reset() {
         samples.removeAll()
+        sessionEndedAt = nil
         disarm()
+    }
+
+    /// The phone's LAN session ended (ruling R37).
+    public mutating func sessionEnded(at time: TimeInterval) {
+        sessionEndedAt = time
+    }
+
+    /// The phone has a LAN session again: an absence counts as FAR from here on (ruling R37).
+    public mutating func sessionStarted() {
+        sessionEndedAt = nil
+    }
+
+    /// Absent, and the last sighting was within `sessionDropWindow` of the session's end.
+    private func absenceUnknown(at time: TimeInterval) -> Bool {
+        guard let ended = sessionEndedAt, let last = samples.last?.at, smoothedRSSI(at: time) == nil else { return false }
+        return abs(last - ended) <= Self.sessionDropWindow
     }
 
     /// The median of the kept samples (the upper middle for an even count); nil when the newest
@@ -157,6 +184,11 @@ public struct ProximityMonitor {
     public mutating func evaluate(now: TimeInterval, idle: TimeInterval, blockers: Set<Blocker>, testMode: Bool) -> Decision {
         guard blockers.isEmpty else {
             disarm()
+            return .none
+        }
+        if absenceUnknown(at: now) {
+            farSince = nil
+            farHold = 0
             return .none
         }
         guard let hold = hold(at: now) else {

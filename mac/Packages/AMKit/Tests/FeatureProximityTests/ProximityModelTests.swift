@@ -220,10 +220,67 @@ private struct Rig {
 @MainActor @Test func sessionThatJustEndedStillLocks() async {
     let rig = await Rig()
     rig.ticks(5, rssi: near)
-    // Walking out of Wi-Fi range drops the session as the phone leaves.
+    // Walking out of Wi-Fi range drops the session some time after the beacon faded.
+    rig.ticks(30, rssi: nil)
     rig.model.disconnected()
-    rig.ticks(80, rssi: nil)
+    rig.ticks(60, rssi: nil)
     #expect(rig.locker.locks == 1)
+}
+
+// MARK: ruling R37
+
+@MainActor @Test func vanishWithSessionDropIsNotAway() async {
+    // The app is killed (or the phone reboots): the beacon and the LAN session go together.
+    let rig = await Rig()
+    rig.ticks(5, rssi: -60) // close: a vanish from here would otherwise lock after vanishHold
+    rig.model.disconnected()
+    rig.ticks(600, rssi: nil)
+    #expect(rig.locker.locks == 0)
+    #expect(rig.model.decision == .none)
+
+    // Either order: the session drops, the beacon is still heard for 10 s, then stops.
+    let other = await Rig()
+    other.ticks(5, rssi: near)
+    other.model.disconnected()
+    other.ticks(10, rssi: near)
+    other.ticks(600, rssi: nil)
+    #expect(other.locker.locks == 0)
+
+    // Until the next sighting: the phone is back (app restarted, LAN not yet), then walks away.
+    other.ticks(5, rssi: near)
+    other.ticks(80, rssi: nil)
+    #expect(other.locker.locks == 1)
+
+    // Or until the next session: the absence counts from the reconnect on.
+    rig.clock.advance(1)
+    await rig.model.connected(phoneID: phoneA.id, phoneName: phoneA.name, shared: ["proximity.v1"])
+    rig.ticks(100, rssi: nil)
+    #expect(rig.locker.locks == 0) // still within vanishHold (150 s) of the reconnect
+    rig.ticks(60, rssi: nil)
+    #expect(rig.locker.locks == 1)
+}
+
+@MainActor @Test func walkAwayWithSessionStillUpStillLocks() async {
+    let rig = await Rig()
+    rig.walkAway()
+    #expect(rig.locker.locks == 1)
+
+    // A session that dropped long before the walk-away doesn't hold it back either.
+    let later = await Rig()
+    later.ticks(5, rssi: near)
+    later.model.disconnected()
+    later.ticks(16, rssi: near)
+    later.ticks(80, rssi: nil)
+    #expect(later.locker.locks == 1)
+
+    // Nor does another phone's session ending as the chosen one vanishes.
+    let two = await Rig()
+    two.ticks(5, rssi: near)
+    await two.model.connected(phoneID: phoneB.id, phoneName: phoneB.name, shared: ["proximity.v1"])
+    two.model.disconnected()
+    await two.model.connected(phoneID: phoneA.id, phoneName: phoneA.name, shared: ["proximity.v1"])
+    two.ticks(80, rssi: nil)
+    #expect(two.locker.locks == 1)
 }
 
 @MainActor @Test func neverConnectedPhoneNeverLocks() async {
