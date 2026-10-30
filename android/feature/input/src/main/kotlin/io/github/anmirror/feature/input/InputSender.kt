@@ -28,7 +28,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * It tracks the held buttons and the laser: [close] sends an up for each and the laser off, then
  * stops. While a button is held or the laser is on and nothing has been sent for [keepaliveMs]
  * (2 s), it sends `input.button{down}` for each held button and `input.laser{on}` again (ruling
- * R35, SPEC 23), so the Mac's 5 s silence release doesn't drop a still drag or hide the laser. [send] does the gating (it returns false and sends nothing while the feature is closed).
+ * R35, SPEC 23), so the Mac's 5 s silence release doesn't drop a still drag or hide the laser.
+ * [send] does the gating (it returns false and sends nothing while the feature is closed). A send
+ * that throws is a dropped frame; the first is logged by exception class only ([log]).
  * The methods may be called from any thread.
  */
 class InputSender(
