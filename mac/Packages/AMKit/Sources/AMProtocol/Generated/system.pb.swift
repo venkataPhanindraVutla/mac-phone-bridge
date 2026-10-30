@@ -162,6 +162,8 @@ public nonisolated enum AMAvailabilityReason: SwiftProtobuf.Enum, Swift.CaseIter
   case offByUser // = 1
   case needsPermission // = 2
   case partialAccess // = 3
+  case unavailable // = 4
+  case needsSetup // = 5
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -174,6 +176,8 @@ public nonisolated enum AMAvailabilityReason: SwiftProtobuf.Enum, Swift.CaseIter
     case 1: self = .offByUser
     case 2: self = .needsPermission
     case 3: self = .partialAccess
+    case 4: self = .unavailable
+    case 5: self = .needsSetup
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -184,6 +188,8 @@ public nonisolated enum AMAvailabilityReason: SwiftProtobuf.Enum, Swift.CaseIter
     case .offByUser: return 1
     case .needsPermission: return 2
     case .partialAccess: return 3
+    case .unavailable: return 4
+    case .needsSetup: return 5
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -194,6 +200,8 @@ public nonisolated enum AMAvailabilityReason: SwiftProtobuf.Enum, Swift.CaseIter
     .offByUser,
     .needsPermission,
     .partialAccess,
+    .unavailable,
+    .needsSetup,
   ]
 
 }
@@ -298,7 +306,7 @@ nonisolated extension AMGoodbyeReason: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension AMAvailabilityReason: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AVAILABILITY_REASON_UNSPECIFIED\0\u{1}AVAILABILITY_REASON_OFF_BY_USER\0\u{1}AVAILABILITY_REASON_NEEDS_PERMISSION\0\u{1}AVAILABILITY_REASON_PARTIAL_ACCESS\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AVAILABILITY_REASON_UNSPECIFIED\0\u{1}AVAILABILITY_REASON_OFF_BY_USER\0\u{1}AVAILABILITY_REASON_NEEDS_PERMISSION\0\u{1}AVAILABILITY_REASON_PARTIAL_ACCESS\0\u{1}AVAILABILITY_REASON_UNAVAILABLE\0\u{1}AVAILABILITY_REASON_NEEDS_SETUP\0")
 }
 
 nonisolated extension AMHello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

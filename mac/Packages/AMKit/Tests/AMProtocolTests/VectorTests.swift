@@ -101,13 +101,28 @@ private struct CryptoFile: Decodable {
         let keyHex: String, unixSeconds: Int64, epoch: Int64, rid: String
         enum CodingKeys: String, CodingKey { case keyHex = "key_hex", unixSeconds = "unix_seconds", epoch, rid }
     }
+    struct BLE: Decodable {
+        let keyHex: String, phoneFpHex: String, unixSeconds: Int64, epoch: Int64, bleIdHex: String
+        enum CodingKeys: String, CodingKey {
+            case keyHex = "key_hex", phoneFpHex = "phone_fp_hex", unixSeconds = "unix_seconds"
+            case epoch, bleIdHex = "ble_id_hex"
+        }
+    }
+    struct Artwork: Decodable {
+        let jpegHex: String, key: String
+        enum CodingKeys: String, CodingKey { case jpegHex = "jpeg_hex", key }
+    }
     let fingerprints: [FP]
     let proofs: [Proof]
     let codes: [Code]
     let rotatingIds: [RID]
+    let bleIds: [BLE]
+    let artworkKeys: [Artwork]
     enum CodingKeys: String, CodingKey {
         case fingerprints, proofs, codes
         case rotatingIds = "rotating_ids"
+        case bleIds = "ble_ids"
+        case artworkKeys = "artwork_keys"
     }
 }
 
@@ -259,6 +274,40 @@ private struct URIFile: Decodable {
     #expect(try h.serializedData() == env.payload)
 }
 
+@Test func mediaStateVectorDecodesToMediaState() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "media_state_minimal" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .media)
+    #expect(env.id == 1)
+    #expect(env.type == MessageType.mediaState.rawValue)
+    let m = try AMMediaState(serializedBytes: env.payload)
+    #expect(m.active)
+    #expect(m.sessionKey == "s1")
+    #expect(m.title == "Song")
+    #expect(m.durationMs == 5_000_000_000)
+    #expect(m.playing)
+    #expect(m.speed == 1.0)
+    #expect(m.canPause)
+    #expect(!m.canPlay)
+    #expect(!m.hasVolume)
+    #expect(m.artworkKey.isEmpty)
+    #expect(try m.serializedData() == env.payload)
+}
+
+@Test func inputMoveVectorDecodesFloats() throws {
+    let file: FramingFile = load("framing.json")
+    let v = try #require(file.vectors.first { $0.name == "input_move" })
+    let env = envelope(v.envelope)
+    #expect(env.channel == .input)
+    #expect(env.id == 7)
+    #expect(env.type == MessageType.inputMove.rawValue)
+    let m = try AMInputMove(serializedBytes: env.payload)
+    #expect(m.dx == 1.5)
+    #expect(m.dy == -2.25)
+    #expect(try m.serializedData() == env.payload)
+}
+
 private struct FilenamesFile: Decodable {
     struct Sanitize: Decodable { let `in`: String; let out: String }
     struct Unique: Decodable { let name: String; let taken: [String]; let out: String }
@@ -296,7 +345,7 @@ private struct FilenamesFile: Decodable {
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 62)
+    #expect(MessageType.allCases.count == 76)
     let expected: [MessageType: String] = [
         .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
         .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
@@ -339,6 +388,13 @@ private struct FilenamesFile: Decodable {
         .browseRename: "browse.rename",
         .browseResult: "browse.result",
         .browseAvailability: "browse.availability",
+        .mediaState: "media.state", .mediaArtwork: "media.artwork",
+        .mediaCommand: "media.command", .mediaAvailability: "media.availability",
+        .dndState: "dnd.state", .dndAvailability: "dnd.availability",
+        .proximityAvailability: "proximity.availability",
+        .inputMove: "input.move", .inputButton: "input.button", .inputClick: "input.click",
+        .inputScroll: "input.scroll", .inputKey: "input.key", .inputLaser: "input.laser",
+        .inputAvailability: "input.availability",
     ]
     for (type, raw) in expected { #expect(type.rawValue == raw) }
     #expect(AMChannel.notify.rawValue == 5)
@@ -350,7 +406,13 @@ private struct FilenamesFile: Decodable {
     #expect(AMChannel.screenshots.rawValue == 11)
     #expect(AMChannel.photos.rawValue == 12)
     #expect(AMChannel.browse.rawValue == 13)
+    #expect(AMChannel.media.rawValue == 14)
+    #expect(AMChannel.dnd.rawValue == 15)
+    #expect(AMChannel.proximity.rawValue == 16)
+    #expect(AMChannel.input.rawValue == 17)
     #expect(AMAvailabilityReason.partialAccess.rawValue == 3)
+    #expect(AMAvailabilityReason.unavailable.rawValue == 4)
+    #expect(AMAvailabilityReason.needsSetup.rawValue == 5)
     #expect(Set(MessageType.allCases.map(\.rawValue)).count == MessageType.allCases.count)
 }
 
@@ -388,6 +450,45 @@ private struct FilenamesFile: Decodable {
         #expect(r.epoch == r.unixSeconds / 900)
         #expect(PairingCrypto.matchesRotatingID(r.rid, discoveryKey: key, unixSeconds: r.unixSeconds))
     }
+}
+
+@Test func bleIdVectors() {
+    let file: CryptoFile = load("crypto.json")
+    #expect(PairingCrypto.bleServiceUUID == "3d30288c-0f47-4016-a6ba-44506f920431")
+    #expect(file.bleIds.count == 12)
+    #expect(Set(file.bleIds.map(\.epoch)).count == 4)
+    for b in file.bleIds {
+        #expect(PairingCrypto.epoch(unixSeconds: b.unixSeconds) == b.epoch)
+        let id = PairingCrypto.bleID(
+            discoveryKey: data(hex: b.keyHex), phoneFingerprint: data(hex: b.phoneFpHex), epoch: b.epoch)
+        #expect(id.count == 8)
+        #expect(id.hex == b.bleIdHex, "unix \(b.unixSeconds)")
+    }
+    #expect(PairingCrypto.epoch(unixSeconds: 899) == 0)
+    #expect(PairingCrypto.epoch(unixSeconds: 900) == 1)
+    #expect(PairingCrypto.epoch(unixSeconds: -1) == -1)
+}
+
+@Test func bleIdDiffersPerPhone() {
+    let file: CryptoFile = load("crypto.json")
+    let phones = Array(Set(file.bleIds.map(\.phoneFpHex))).sorted()
+    #expect(phones.count == 2)
+    let key = data(hex: file.bleIds[0].keyHex)
+    let a = PairingCrypto.bleID(discoveryKey: key, phoneFingerprint: data(hex: phones[0]), epoch: 5)
+    let b = PairingCrypto.bleID(discoveryKey: key, phoneFingerprint: data(hex: phones[1]), epoch: 5)
+    #expect(a != b)
+    #expect(a != PairingCrypto.bleID(discoveryKey: key, phoneFingerprint: data(hex: phones[0]), epoch: 6))
+}
+
+@Test func artworkKeyVectors() {
+    let file: CryptoFile = load("crypto.json")
+    #expect(file.artworkKeys.count == 3)
+    #expect(file.artworkKeys.contains { $0.jpegHex.count == 98304 * 2 })
+    for a in file.artworkKeys {
+        #expect(ArtworkKey.of(data(hex: a.jpegHex)) == a.key)
+    }
+    #expect(ArtworkKey.of(Data()) == "")
+    #expect(ArtworkKey.of(Data("jpeg".utf8)).count == 16)
 }
 
 @Test func rotatingIDAcceptsAdjacentEpochsOnly() {

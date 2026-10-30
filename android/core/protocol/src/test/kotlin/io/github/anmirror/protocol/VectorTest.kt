@@ -166,6 +166,40 @@ class VectorTest {
     }
 
     @Test
+    fun mediaStateVectorDecodesToMediaState() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "media_state_minimal" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_MEDIA, env.channel)
+        assertEquals(1L, env.id)
+        assertEquals(MessageType.MEDIA_STATE, env.type)
+        val m = io.github.anmirror.protocol.v1.MediaState.parseFrom(env.payload)
+        assertTrue(m.active)
+        assertEquals("s1", m.sessionKey)
+        assertEquals("Song", m.title)
+        assertEquals(5_000_000_000L, m.durationMs)
+        assertTrue(m.playing)
+        assertEquals(1.0f, m.speed)
+        assertTrue(m.canPause)
+        assertFalse(m.canPlay)
+        assertFalse(m.hasVolume())
+        assertTrue(m.artworkKey.isEmpty())
+        assertEquals(env.payload, m.toByteString())
+    }
+
+    @Test
+    fun inputMoveVectorDecodesFloats() {
+        val v = load("framing.json").arr("vectors").map { it.jsonObject }.first { it.str("name") == "input_move" }
+        val env = envelopeFrom(v.getValue("envelope").jsonObject)
+        assertEquals(Channel.CHANNEL_INPUT, env.channel)
+        assertEquals(7L, env.id)
+        assertEquals(MessageType.INPUT_MOVE, env.type)
+        val m = io.github.anmirror.protocol.v1.InputMove.parseFrom(env.payload)
+        assertEquals(1.5f, m.dx)
+        assertEquals(-2.25f, m.dy)
+        assertEquals(env.payload, m.toByteString())
+    }
+
+    @Test
     fun filenameVectorsLoadAndHoldInvariants() {
         val file = load("filenames.json")
         val sanitize = file.arr("sanitize").map { it.jsonObject }
@@ -199,8 +233,8 @@ class VectorTest {
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
-        assertEquals(62, MessageType.ALL.size)
-        assertEquals(62, MessageType.ALL.toSet().size)
+        assertEquals(76, MessageType.ALL.size)
+        assertEquals(76, MessageType.ALL.toSet().size)
         val expected = mapOf(
             MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
             MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",
@@ -243,6 +277,14 @@ class VectorTest {
             MessageType.BROWSE_RENAME to "browse.rename",
             MessageType.BROWSE_RESULT to "browse.result",
             MessageType.BROWSE_AVAILABILITY to "browse.availability",
+            MessageType.MEDIA_STATE to "media.state", MessageType.MEDIA_ARTWORK to "media.artwork",
+            MessageType.MEDIA_COMMAND to "media.command", MessageType.MEDIA_AVAILABILITY to "media.availability",
+            MessageType.DND_STATE to "dnd.state", MessageType.DND_AVAILABILITY to "dnd.availability",
+            MessageType.PROXIMITY_AVAILABILITY to "proximity.availability",
+            MessageType.INPUT_MOVE to "input.move", MessageType.INPUT_BUTTON to "input.button",
+            MessageType.INPUT_CLICK to "input.click", MessageType.INPUT_SCROLL to "input.scroll",
+            MessageType.INPUT_KEY to "input.key", MessageType.INPUT_LASER to "input.laser",
+            MessageType.INPUT_AVAILABILITY to "input.availability",
         )
         for ((const, raw) in expected) {
             assertEquals(raw, const)
@@ -257,7 +299,13 @@ class VectorTest {
         assertEquals(11, Channel.CHANNEL_SCREENSHOTS_VALUE)
         assertEquals(12, Channel.CHANNEL_PHOTOS_VALUE)
         assertEquals(13, Channel.CHANNEL_BROWSE_VALUE)
+        assertEquals(14, Channel.CHANNEL_MEDIA_VALUE)
+        assertEquals(15, Channel.CHANNEL_DND_VALUE)
+        assertEquals(16, Channel.CHANNEL_PROXIMITY_VALUE)
+        assertEquals(17, Channel.CHANNEL_INPUT_VALUE)
         assertEquals(3, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_PARTIAL_ACCESS_VALUE)
+        assertEquals(4, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_UNAVAILABLE_VALUE)
+        assertEquals(5, io.github.anmirror.protocol.v1.AvailabilityReason.AVAILABILITY_REASON_NEEDS_SETUP_VALUE)
         val env = envelope(Channel.CHANNEL_FIND, 6, MessageType.FIND_RING, RingRequest.getDefaultInstance())
         assertEquals("find.ring", env.type)
         assertEquals(Channel.CHANNEL_FIND, env.channel)
@@ -290,6 +338,47 @@ class VectorTest {
             assertEquals(r.getValue("epoch").jsonPrimitive.long, secs / 900)
             assertTrue(PairingCrypto.matchesRotatingId(r.str("rid"), key, secs))
         }
+    }
+
+    @Test
+    fun bleIdVectors() {
+        val ids = load("crypto.json").arr("ble_ids").map { it.jsonObject }
+        assertEquals("3d30288c-0f47-4016-a6ba-44506f920431", PairingCrypto.BLE_SERVICE_UUID)
+        assertEquals(12, ids.size)
+        assertTrue(ids.map { it.getValue("epoch").jsonPrimitive.long }.toSet().size == 4)
+        for (b in ids) {
+            val secs = b.getValue("unix_seconds").jsonPrimitive.long
+            val epoch = b.getValue("epoch").jsonPrimitive.long
+            assertEquals(epoch, PairingCrypto.epochOf(secs))
+            val id = PairingCrypto.bleId(b.str("key_hex").unhex(), b.str("phone_fp_hex").unhex(), epoch)
+            assertEquals(8, id.size)
+            assertEquals(b.str("ble_id_hex"), id.hex(), "unix $secs")
+        }
+        assertEquals(0L, PairingCrypto.epochOf(899))
+        assertEquals(1L, PairingCrypto.epochOf(900))
+        assertEquals(-1L, PairingCrypto.epochOf(-1))
+    }
+
+    @Test
+    fun bleIdDiffersPerPhone() {
+        val ids = load("crypto.json").arr("ble_ids").map { it.jsonObject }
+        val phones = ids.map { it.str("phone_fp_hex") }.toSet().sorted()
+        assertEquals(2, phones.size)
+        val key = ids[0].str("key_hex").unhex()
+        val a = PairingCrypto.bleId(key, phones[0].unhex(), 5)
+        val b = PairingCrypto.bleId(key, phones[1].unhex(), 5)
+        assertFalse(a.contentEquals(b))
+        assertFalse(a.contentEquals(PairingCrypto.bleId(key, phones[0].unhex(), 6)))
+    }
+
+    @Test
+    fun artworkKeyVectors() {
+        val keys = load("crypto.json").arr("artwork_keys").map { it.jsonObject }
+        assertEquals(3, keys.size)
+        assertTrue(keys.any { it.str("jpeg_hex").length == 98304 * 2 })
+        for (a in keys) assertEquals(a.str("key"), ArtworkKey.of(a.str("jpeg_hex").unhex()))
+        assertEquals("", ArtworkKey.of(ByteArray(0)))
+        assertEquals(16, ArtworkKey.of("jpeg".toByteArray()).length)
     }
 
     @Test

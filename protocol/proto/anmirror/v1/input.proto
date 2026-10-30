@@ -1,0 +1,48 @@
+// Input channel: trackpad and remote. See protocol/SPEC.md section 23.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+enum MouseButton {
+  MOUSE_BUTTON_UNSPECIFIED = 0;
+  MOUSE_BUTTON_LEFT = 1;
+  MOUSE_BUTTON_RIGHT = 2;
+}
+
+enum RemoteKey {
+  REMOTE_KEY_UNSPECIFIED = 0;
+  REMOTE_KEY_PREV_SLIDE = 1;
+  REMOTE_KEY_NEXT_SLIDE = 2;
+}
+
+message InputMove {
+  float dx = 1;               // Mac points, after the phone's acceleration
+  float dy = 2;
+}
+
+message InputButton {
+  MouseButton button = 1;
+  bool down = 2;
+}
+
+message InputClick {
+  MouseButton button = 1;
+  uint32 count = 2;
+}
+
+message InputScroll {
+  float dx = 1;               // finger movement in Mac points; +dy = finger moved down
+  float dy = 2;
+}
+
+message InputKey {
+  RemoteKey key = 1;
+}
+
+message InputLaser {
+  bool on = 1;
+}

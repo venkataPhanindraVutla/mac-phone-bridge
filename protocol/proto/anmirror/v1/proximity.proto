@@ -1,0 +1,10 @@
+// Proximity channel. See protocol/SPEC.md section 22.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+// No messages of its own: proximity.availability carries FeatureAvailability (system.proto).

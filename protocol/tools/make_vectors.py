@@ -14,6 +14,7 @@ import hmac
 import json
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import unicodedata
@@ -30,10 +31,12 @@ PAIR_LABEL = b"anmirror-pair-v1"
 SAS_LABEL = b"anmirror-sas-v1"
 RID_LABEL = b"anmirror-rid-v1"
 RID_EPOCH_SECONDS = 900
+BLE_LABEL = b"anmirror-ble-v1"
 
 CHANNELS = {"SYSTEM": 1, "PAIRING": 2, "STATUS": 3, "FIND": 4,
             "NOTIFY": 5, "CONTACTS": 6, "CALLS": 7, "CLIPBOARD": 8, "SHARE": 9, "FILES": 10,
-            "SCREENSHOTS": 11, "PHOTOS": 12, "BROWSE": 13}
+            "SCREENSHOTS": 11, "PHOTOS": 12, "BROWSE": 13, "MEDIA": 14, "DND": 15, "PROXIMITY": 16,
+            "INPUT": 17}
 
 
 # ---------------------------------------------------------------- protobuf encoding
@@ -57,6 +60,11 @@ def f_varint(num: int, value: int) -> bytes:
 
 def f_bytes(num: int, value: bytes) -> bytes:
     return b"" if not value else varint(num << 3 | 2) + varint(len(value)) + value
+
+
+def f_float(num: int, value: float) -> bytes:
+    """proto3 float: fixed32, little endian; 0.0 is omitted."""
+    return b"" if value == 0 else varint(num << 3 | 5) + struct.pack("<f", value)
 
 
 def f_string(num: int, value: str) -> bytes:
@@ -105,6 +113,17 @@ def rotating_id(discovery_key: bytes, unix_seconds: int) -> str:
     epoch = unix_seconds // RID_EPOCH_SECONDS
     mac = hmac.new(discovery_key, RID_LABEL + epoch.to_bytes(8, "big"), hashlib.sha256).digest()
     return mac[:8].hex()
+
+
+def ble_id(discovery_key: bytes, phone_fp: bytes, epoch: int) -> bytes:
+    """8-byte BLE advertisement ID (SPEC section 22)."""
+    return hmac.new(discovery_key, BLE_LABEL + phone_fp + epoch.to_bytes(8, "big"),
+                    hashlib.sha256).digest()[:8]
+
+
+def artwork_key(jpeg: bytes) -> str:
+    """Lowercase hex of the first 8 bytes of SHA-256 over the JPEG; empty for no artwork."""
+    return hashlib.sha256(jpeg).digest()[:8].hex() if jpeg else ""
 
 
 def det(label: str, n: int = 32) -> bytes:
@@ -269,6 +288,12 @@ def build_framing() -> dict:
         # role 1 = BULK_ROLE_PHONE_SENDS
         ("bulk_hello", CHANNELS["FILES"], 1, 0, "bulk.hello",
          f_bytes(1, det("bulk-token")) + f_varint(2, 1)),
+        # duration is above 2**32 on purpose (int64 field)
+        ("media_state_minimal", CHANNELS["MEDIA"], 1, 0, "media.state",
+         f_varint(1, 1) + f_string(2, "s1") + f_string(4, "Song") + f_varint(7, 5_000_000_000)
+         + f_varint(9, 1) + f_float(10, 1.0) + f_varint(12, 1)),
+        ("input_move", CHANNELS["INPUT"], 7, 0, "input.move",
+         f_float(1, 1.5) + f_float(2, -2.25)),
         ("large_ids_multibyte_varint", CHANNELS["STATUS"], 300, 16384, "status.update",
          f_varint(1, 100)),
         ("unicode_type_and_payload_bytes", CHANNELS["SYSTEM"], 1, 0, "system.pongé",
@@ -335,8 +360,19 @@ def build_crypto(ids: list) -> dict:
     rids.append({"key_hex": det("discovery-key/2").hex(), "unix_seconds": 1_700_000_000,
                  "epoch": 1_700_000_000 // RID_EPOCH_SECONDS,
                  "rid": rotating_id(det("discovery-key/2"), 1_700_000_000)})
+
+    ble_times = [0, 899, 900, 1_700_000_000, 1_700_000_000 + 899, 1_700_000_000 + 900]
+    ble_ids = []
+    for fp_name, fp in (("phone", phone), ("stranger", stranger)):
+        for t in ble_times:
+            e = t // RID_EPOCH_SECONDS
+            ble_ids.append({"key_hex": key.hex(), "phone_fp_hex": fp.hex(), "unix_seconds": t,
+                            "epoch": e, "ble_id_hex": ble_id(key, fp, e).hex()})
+    artwork_inputs = [b"", b"jpeg", det("artwork", 98304)]
+    artwork_keys = [{"jpeg_hex": j.hex(), "key": artwork_key(j)} for j in artwork_inputs]
     return {"notes": "code is a zero-padded 6-digit string",
-            "fingerprints": fingerprints, "proofs": proofs, "codes": codes, "rotating_ids": rids}
+            "fingerprints": fingerprints, "proofs": proofs, "codes": codes, "rotating_ids": rids,
+            "ble_ids": ble_ids, "artwork_keys": artwork_keys}
 
 
 def build_pairing_uri(ids: list) -> dict:

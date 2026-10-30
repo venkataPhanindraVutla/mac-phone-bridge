@@ -1,0 +1,57 @@
+// Media channel: the phone's playing session, artwork and Mac commands. See protocol/SPEC.md section 20.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message MediaVolume {
+  uint32 current = 1;
+  uint32 max = 2;
+  bool fixed = 3;
+}
+
+message MediaState {
+  bool active = 1;            // false = nothing playing; every other field empty
+  string session_key = 2;     // opaque, per session
+  string app_label = 3;
+  string title = 4;
+  string artist = 5;
+  string album = 6;
+  int64 duration_ms = 7;      // 0 = unknown or live
+  int64 position_ms = 8;      // sampled when sent
+  bool playing = 9;
+  float speed = 10;           // playback speed; the Mac uses 1.0 when playing and 0
+  bool can_play = 11;
+  bool can_pause = 12;
+  bool can_next = 13;
+  bool can_previous = 14;
+  bool can_seek = 15;
+  MediaVolume volume = 16;
+  string artwork_key = 17;    // "" = none
+}
+
+message MediaArtwork {
+  string artwork_key = 1;
+  bytes jpeg = 2;
+}
+
+enum MediaCommandKind {
+  MEDIA_COMMAND_KIND_UNSPECIFIED = 0;
+  MEDIA_COMMAND_KIND_PLAY = 1;
+  MEDIA_COMMAND_KIND_PAUSE = 2;
+  MEDIA_COMMAND_KIND_TOGGLE = 3;
+  MEDIA_COMMAND_KIND_NEXT = 4;
+  MEDIA_COMMAND_KIND_PREVIOUS = 5;
+  MEDIA_COMMAND_KIND_SEEK = 6;
+  MEDIA_COMMAND_KIND_SET_VOLUME = 7;
+}
+
+message MediaCommand {
+  string session_key = 1;
+  MediaCommandKind kind = 2;
+  int64 position_ms = 3;
+  uint32 volume = 4;
+}

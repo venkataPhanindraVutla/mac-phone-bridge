@@ -156,6 +156,28 @@
       "frame_hex": "00000036080a1001220a62756c6b2e68656c6c6f2a240a20d038c019096a978d7f929d78c23066690cd708d3c60a429b9be538b043da223a1001"
     },
     {
+      "name": "media_state_minimal",
+      "envelope": {
+        "channel": 14,
+        "id": 1,
+        "reply_to": 0,
+        "type": "media.state",
+        "payload_hex": "0801120273312204536f6e673880e497d0124801550000803f6001"
+      },
+      "frame_hex": "0000002e080e1001220b6d656469612e73746174652a1b0801120273312204536f6e673880e497d0124801550000803f6001"
+    },
+    {
+      "name": "input_move",
+      "envelope": {
+        "channel": 17,
+        "id": 7,
+        "reply_to": 0,
+        "type": "input.move",
+        "payload_hex": "0d0000c03f15000010c0"
+      },
+      "frame_hex": "0000001c08111007220a696e7075742e6d6f76652a0a0d0000c03f15000010c0"
+    },
+    {
       "name": "large_ids_multibyte_varint",
       "envelope": {
         "channel": 3,

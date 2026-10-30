@@ -121,6 +121,16 @@ message Envelope {
 | `browse.rename` | Mac to phone | `BrowseRename` | BROWSE |
 | `browse.result` | phone to Mac | `BrowseResult` | BROWSE |
 | `browse.availability` | phone to Mac | `FeatureAvailability` | BROWSE |
+| `media.state` | phone to Mac | `MediaState` | MEDIA |
+| `media.artwork` | phone to Mac | `MediaArtwork` | MEDIA |
+| `media.command` | Mac to phone | `MediaCommand` | MEDIA |
+| `media.availability` | phone to Mac | `FeatureAvailability` | MEDIA |
+| `dnd.state` | both | `DndState` | DND |
+| `dnd.availability` | both | `DndAvailability` | DND |
+| `proximity.availability` | phone to Mac | `FeatureAvailability` | PROXIMITY |
+| `input.move` / `input.button` / `input.click` | phone to Mac | `InputMove` / `InputButton` / `InputClick` | INPUT |
+| `input.scroll` / `input.key` / `input.laser` | phone to Mac | `InputScroll` / `InputKey` / `InputLaser` | INPUT |
+| `input.availability` | Mac to phone | `FeatureAvailability` | INPUT |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -131,7 +141,8 @@ encoded, so `0` and `-1` stay distinct.
 `Hello.capabilities` lists feature strings the sender supports. Version 0.1 defines
 `status.v1` and `find.v1`. Version 0.2 adds `notify.v1`, `contacts.v1` and `calls.v1`
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
-`screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19). A side MUST NOT send messages of a feature the peer did not list.
+`screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
+Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23). A side MUST NOT send messages of a feature the peer did not list.
 
 `Hello.protocol_version` is the integer **1**. If versions differ, the receiver answers
 `system.error` with `ERROR_CODE_PROTOCOL_MISMATCH` and closes.
@@ -247,6 +258,7 @@ publishes TXT `r`, a rotating ID derived from the discovery key:
 - `r = lowercase hex of HMAC-SHA256(key = discovery_key, msg = "anmirror-rid-v1" || uint64_be(epoch))[0..8]`
   (the first 8 bytes, so 16 hex characters)
 - The phone accepts `epoch - 1`, `epoch` and `epoch + 1`, to tolerate clock skew.
+- The Bluetooth advertisement of section 22 uses the same epoch with its own ID (the BLE ID).
 
 Vectors: `vectors/crypto.json` `rotating_ids` (each entry also lists the `epoch`, and includes
 values on both sides of an epoch boundary).
@@ -306,7 +318,9 @@ Channel `NOTIFY`. Messages are listed in section 3.
 - Icons go request to response (`notify.icon_request`, `notify.icon`), once per package per
   Mac cache.
 - `notify.availability` reports whether the feature works on the phone: `enabled` and, when
-  not, a `reason` (`OFF_BY_USER` or `NEEDS_PERMISSION`). It is sent on connect and on change.
+  not, a `reason`: `OFF_BY_USER`, `NEEDS_PERMISSION`, `PARTIAL_ACCESS`, `UNAVAILABLE` (this device
+  cannot do it at all) or `NEEDS_SETUP` (the user must set something up first). It is sent on connect
+  and on change. `dnd.availability` and `input.availability` also go from Mac to phone.
 - Wire limits:
   - `image_jpeg`: long edge at most 720 px, at most 300 KB; dropped if it does not fit.
   - `AppIcon.png`: 96x96, at most 32 KB.
@@ -454,3 +468,72 @@ Channel `BROWSE`.
 - **Revoked folders.** A picked folder whose permission was revoked answers `REVOKED`, and the
   phone pushes an updated `browse.roots`.
 - `browse.availability` is as in section 10.
+
+## 20. Media (`media.v1`)
+
+Channel `MEDIA`.
+
+- The phone reports the session it picks: the one in `STATE_PLAYING` (the most recently started
+  if several), else the most recently active.
+- It sends `media.state` on change, at most 4 per second (leading and trailing edge), and right
+  after connect. `active = false` means nothing is playing, and every other field is empty.
+- `position_ms` is the position at send time. While `playing`, the Mac extrapolates with its own
+  clock at `speed` (1.0 when the speed is 0).
+- `media.artwork` is sent before the first `media.state` that names its key, once per key per
+  connection. It is a JPEG, long edge 300 px, at most 98,304 bytes; artwork that does not fit is
+  not sent and the key is empty.
+- The artwork key is the lowercase hex of the first 8 bytes of SHA-256 over the JPEG bytes.
+- `media.command` names a `session_key`. A command for any other key is ignored. A command whose
+  action the state does not offer (for example `SEEK` without `can_seek`) is ignored.
+- `SET_VOLUME.volume` is in the phone's own steps, `0..volume.max`. It is ignored when `fixed`.
+- The text limits are as in section 10 (256 bytes each).
+- `media.availability` is as in section 10.
+
+Vectors: `framing.json` `media_state_minimal`; `crypto.json` `artwork_keys`.
+
+## 21. Do Not Disturb (`dnd.v1`)
+
+Channel `DND`.
+
+- "On" means the phone's interruption filter is anything but ALL, or the Mac has any Focus on.
+- Each side sends transitions only (`snapshot = false`) while its own `sends` is enabled and the
+  peer's last `applies` is enabled (nil = off).
+- Right after connect it also sends one `snapshot = true` state, whenever its `sends` is enabled.
+  A snapshot is shown, never applied.
+- **Applying.** A side applies a peer transition only when `origin = USER`, and only if its own
+  state differs. It then remembers (state, time).
+- **Echoes.** A local transition to that state within 10 s is not sent. A later one that matches
+  the last applied state, with no other local transition in between, is sent with
+  `origin = SYNC`. `SYNC` states are never applied.
+- `dnd.availability` is sent both ways on connect and on change.
+
+## 22. Proximity (`proximity.v1`)
+
+Channel `PROXIMITY`.
+
+- The BLE ID is `HMAC-SHA256(key = discovery_key, msg = "anmirror-ble-v1" || phone_fp || uint64_be(epoch))[0..8]`
+  (the first 8 bytes), with the epoch of section 6.
+- **The advertisement** is legacy, non-connectable, without the device name or TX power, and
+  carries only service data: UUID `3d30288c-0f47-4016-a6ba-44506f920431` and the 8 bytes of the
+  BLE ID. The phone restarts it at each epoch.
+- The Mac accepts `epoch - 1` to `epoch + 1`.
+- `proximity.availability` says whether the phone is advertising. It is not a protocol message
+  over BLE.
+- No personal data is advertised.
+
+Vectors: `crypto.json` `ble_ids`, with values on both sides of an epoch boundary and for two
+different phone fingerprints.
+
+## 23. Input (`input.v1`)
+
+Channel `INPUT`.
+
+- The phone sends `input.*` only while the Mac's last `input.availability` is enabled.
+- `input.move` and `input.scroll` are relative, in Mac points. A scroll is the finger's movement;
+  the Mac applies its Natural scrolling setting.
+- `input.click.count` is the click count (2 = double-click).
+- A button held 5 s after the last `input.*` frame, or at disconnect, is released by the Mac.
+- The Mac drops frames beyond 240 per second, except button-up and laser-off.
+- `REMOTE_KEY_PREV_SLIDE` and `REMOTE_KEY_NEXT_SLIDE` are the Left and Right arrow keys.
+
+Vectors: `framing.json` `input_move`.

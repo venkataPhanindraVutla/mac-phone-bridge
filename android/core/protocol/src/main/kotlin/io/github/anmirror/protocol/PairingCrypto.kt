@@ -6,14 +6,18 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Fingerprints, pairing proofs, confirmation codes and rotating IDs.
- * Definitions: protocol/SPEC.md sections 4, 5.1 and 6.
+ * Fingerprints, pairing proofs, confirmation codes, rotating IDs and BLE IDs.
+ * Definitions: protocol/SPEC.md sections 4, 5.1, 6 and 22.
  */
 object PairingCrypto {
     private val proofLabel = "anmirror-pair-v1".toByteArray(Charsets.US_ASCII)
     private val sasLabel = "anmirror-sas-v1".toByteArray(Charsets.US_ASCII)
+    private val bleLabel = "anmirror-ble-v1".toByteArray(Charsets.US_ASCII)
     private val ridLabel = "anmirror-rid-v1".toByteArray(Charsets.US_ASCII)
     private const val EPOCH_SECONDS = 900L
+
+    /** Service UUID of the proximity advertisement (SPEC section 22). */
+    const val BLE_SERVICE_UUID = "3d30288c-0f47-4016-a6ba-44506f920431"
     private val random = SecureRandom()
 
     /** SHA-256 of the certificate DER, 32 raw bytes. */
@@ -44,6 +48,15 @@ object PairingCrypto {
             if (MessageDigest.isEqual(expected, given)) matched = true
         }
         return matched
+    }
+
+    /** The 15-minute epoch containing [unixSeconds]: floor(unix / 900). */
+    fun epochOf(unixSeconds: Long): Long = Math.floorDiv(unixSeconds, EPOCH_SECONDS)
+
+    /** The 8-byte BLE advertisement ID: HMAC-SHA256(discoveryKey, "anmirror-ble-v1" || phoneFp || uint64_be(epoch))[0..8]. */
+    fun bleId(discoveryKey: ByteArray, phoneFp: ByteArray, epoch: Long): ByteArray {
+        val epochBytes = ByteArray(8) { (epoch ushr (56 - 8 * it)).toByte() }
+        return hmac(discoveryKey, bleLabel + phoneFp + epochBytes).copyOf(8)
     }
 
     fun randomBytes(n: Int): ByteArray = ByteArray(n).also { random.nextBytes(it) }

@@ -2,11 +2,12 @@ import CryptoKit
 import Foundation
 import Security
 
-/// Fingerprints, pairing proofs, confirmation codes and rotating IDs.
-/// Definitions: protocol/SPEC.md sections 4, 5.1 and 6.
+/// Fingerprints, pairing proofs, confirmation codes, rotating IDs and BLE IDs.
+/// Definitions: protocol/SPEC.md sections 4, 5.1, 6 and 22.
 public enum PairingCrypto {
     private static let proofLabel = Data("anmirror-pair-v1".utf8)
     private static let sasLabel = Data("anmirror-sas-v1".utf8)
+    private static let bleLabel = Data("anmirror-ble-v1".utf8)
     private static let ridLabel = Data("anmirror-rid-v1".utf8)
     private static let epochSeconds: Int64 = 900
 
@@ -44,6 +45,23 @@ public enum PairingCrypto {
             if expected.count == given.count && constantTimeEqual(expected, given) { matched = true }
         }
         return matched
+    }
+
+    /// Service UUID of the proximity advertisement (SPEC section 22).
+    public static let bleServiceUUID = "3d30288c-0f47-4016-a6ba-44506f920431"
+
+    /// The 15-minute epoch containing `unixSeconds`: floor(unix / 900).
+    public static func epoch(unixSeconds: Int64) -> Int64 {
+        floorDiv(unixSeconds, epochSeconds)
+    }
+
+    /// The 8-byte BLE advertisement ID: HMAC-SHA256(discoveryKey, "anmirror-ble-v1" || phoneFp || uint64_be(epoch))[0..8].
+    public static func bleID(discoveryKey: Data, phoneFingerprint: Data, epoch: Int64) -> Data {
+        var be = UInt64(bitPattern: epoch).bigEndian
+        let epochBytes = withUnsafeBytes(of: &be) { Data($0) }
+        let mac = HMAC<SHA256>.authenticationCode(
+            for: bleLabel + phoneFingerprint + epochBytes, using: SymmetricKey(data: discoveryKey))
+        return Data(mac).prefix(8)
     }
 
     public static func randomBytes(_ count: Int) -> Data {

@@ -1,0 +1,27 @@
+// Do Not Disturb channel. See protocol/SPEC.md section 21.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+import "anmirror/v1/system.proto";
+
+enum DndOrigin {
+  DND_ORIGIN_UNSPECIFIED = 0;
+  DND_ORIGIN_USER = 1;
+  DND_ORIGIN_SYNC = 2;
+}
+
+message DndState {
+  bool on = 1;
+  DndOrigin origin = 2;
+  bool snapshot = 3;
+}
+
+message DndAvailability {
+  FeatureAvailability sends = 1;
+  FeatureAvailability applies = 2;
+}

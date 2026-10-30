@@ -43,6 +43,10 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
   case screenshots // = 11
   case photos // = 12
   case browse // = 13
+  case media // = 14
+  case dnd // = 15
+  case proximity // = 16
+  case input // = 17
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -65,6 +69,10 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 11: self = .screenshots
     case 12: self = .photos
     case 13: self = .browse
+    case 14: self = .media
+    case 15: self = .dnd
+    case 16: self = .proximity
+    case 17: self = .input
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -85,6 +93,10 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .screenshots: return 11
     case .photos: return 12
     case .browse: return 13
+    case .media: return 14
+    case .dnd: return 15
+    case .proximity: return 16
+    case .input: return 17
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -105,6 +117,10 @@ public nonisolated enum AMChannel: SwiftProtobuf.Enum, Swift.CaseIterable {
     .screenshots,
     .photos,
     .browse,
+    .media,
+    .dnd,
+    .proximity,
+    .input,
   ]
 
 }
@@ -138,7 +154,7 @@ public nonisolated struct AMEnvelope: Sendable {
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
 
 nonisolated extension AMChannel: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0\u{1}CHANNEL_NOTIFY\0\u{1}CHANNEL_CONTACTS\0\u{1}CHANNEL_CALLS\0\u{1}CHANNEL_CLIPBOARD\0\u{1}CHANNEL_SHARE\0\u{1}CHANNEL_FILES\0\u{1}CHANNEL_SCREENSHOTS\0\u{1}CHANNEL_PHOTOS\0\u{1}CHANNEL_BROWSE\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CHANNEL_UNSPECIFIED\0\u{1}CHANNEL_SYSTEM\0\u{1}CHANNEL_PAIRING\0\u{1}CHANNEL_STATUS\0\u{1}CHANNEL_FIND\0\u{1}CHANNEL_NOTIFY\0\u{1}CHANNEL_CONTACTS\0\u{1}CHANNEL_CALLS\0\u{1}CHANNEL_CLIPBOARD\0\u{1}CHANNEL_SHARE\0\u{1}CHANNEL_FILES\0\u{1}CHANNEL_SCREENSHOTS\0\u{1}CHANNEL_PHOTOS\0\u{1}CHANNEL_BROWSE\0\u{1}CHANNEL_MEDIA\0\u{1}CHANNEL_DND\0\u{1}CHANNEL_PROXIMITY\0\u{1}CHANNEL_INPUT\0")
 }
 
 nonisolated extension AMEnvelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

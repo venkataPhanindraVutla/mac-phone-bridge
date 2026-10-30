@@ -64,6 +64,20 @@ object MessageType {
     const val BROWSE_RENAME = "browse.rename"
     const val BROWSE_RESULT = "browse.result"
     const val BROWSE_AVAILABILITY = "browse.availability"
+    const val MEDIA_STATE = "media.state"
+    const val MEDIA_ARTWORK = "media.artwork"
+    const val MEDIA_COMMAND = "media.command"
+    const val MEDIA_AVAILABILITY = "media.availability"
+    const val DND_STATE = "dnd.state"
+    const val DND_AVAILABILITY = "dnd.availability"
+    const val PROXIMITY_AVAILABILITY = "proximity.availability"
+    const val INPUT_MOVE = "input.move"
+    const val INPUT_BUTTON = "input.button"
+    const val INPUT_CLICK = "input.click"
+    const val INPUT_SCROLL = "input.scroll"
+    const val INPUT_KEY = "input.key"
+    const val INPUT_LASER = "input.laser"
+    const val INPUT_AVAILABILITY = "input.availability"
 
     val ALL: List<String> = listOf(
         HELLO, PING, PONG, ERROR, GOODBYE, PAIR_REQUEST, PAIR_VERIFIED, PAIR_CONFIRM,
@@ -78,5 +92,8 @@ object MessageType {
         PHOTOS_THUMBS, PHOTOS_FETCH, PHOTOS_AVAILABILITY, BROWSE_ROOTS_REQUEST, BROWSE_ROOTS,
         BROWSE_LIST, BROWSE_LISTING, BROWSE_STAT, BROWSE_MKDIR, BROWSE_DELETE, BROWSE_READ,
         BROWSE_RENAME, BROWSE_RESULT, BROWSE_AVAILABILITY,
+        MEDIA_STATE, MEDIA_ARTWORK, MEDIA_COMMAND, MEDIA_AVAILABILITY, DND_STATE, DND_AVAILABILITY,
+        PROXIMITY_AVAILABILITY, INPUT_MOVE, INPUT_BUTTON, INPUT_CLICK, INPUT_SCROLL, INPUT_KEY,
+        INPUT_LASER, INPUT_AVAILABILITY,
     )
 }
