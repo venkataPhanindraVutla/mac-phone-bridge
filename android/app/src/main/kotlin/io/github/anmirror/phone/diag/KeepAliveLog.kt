@@ -1,5 +1,6 @@
 package io.github.anmirror.phone.diag
 
+import io.github.anmirror.connection.SessionEndCode
 import java.io.File
 import java.time.Instant
 
@@ -9,8 +10,12 @@ enum class KeepAliveEvent(val code: String) {
     SERVICE_CREATE("service-create"), SERVICE_START("service-start"), SERVICE_DESTROY("service-destroy"),
     SERVICE_SELF_STOP("service-self-stop"), STATE("state"), STORE_UNREADABLE("store-unreadable"),
     SCREEN_ON("screen-on"), NETWORK("network"), WATCHDOG("watchdog"), EXEMPT("exempt"),
-    SOCKET_TUNE("socket-tune"),
+    SOCKET_TUNE("socket-tune"), SESSION_END("session-end"),
 }
+
+/** `session-end <reason>,matured=<bool>,liveness=<bool>,s=<seconds>` (ConnectionManager's onSessionEnd). */
+fun KeepAliveLog.recordSessionEnd(reason: String, connectedMs: Long, liveness: Boolean) =
+    record(KeepAliveEvent.SESSION_END, SessionEndCode.logDetail(reason, connectedMs, liveness))
 
 /**
  * A small content-free event log: one line per event, `<UTC time> <code> <detail>`, newest

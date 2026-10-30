@@ -165,6 +165,11 @@
             android:name=".service.KeepAliveWatchdogReceiver"
             android:exported="false" />
 
+        <!-- "Tap to reconnect" was dismissed: not posted again until the phone connects (deleteIntent). -->
+        <receiver
+            android:name=".service.ReconnectNoticeDismissReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="false">

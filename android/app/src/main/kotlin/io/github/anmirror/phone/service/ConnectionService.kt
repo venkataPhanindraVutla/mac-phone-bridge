@@ -1052,6 +1052,7 @@ class ConnectionService : LifecycleService() {
                     onSelfStop = {
                         graph.keepAliveLog.record(KeepAliveEvent.SERVICE_SELF_STOP, "no-mac")
                         watchdog.cancel()
+                        ReconnectNotice.clear(this@ConnectionService)
                         Log.i(TAG, "service: no Mac paired, stopping")
                         ServiceCompat.stopForeground(this@ConnectionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
@@ -1066,7 +1067,11 @@ class ConnectionService : LifecycleService() {
         if (state == PhoneConnectionState.Stopped) return
         // A new session (also one without status.v1): the exemption may have changed in Settings
         // while the app was closed.
-        if (state is Connected) graph.refreshBackgroundExempt()
+        if (state is Connected) {
+            graph.refreshBackgroundExempt()
+            // A new episode: "Tap to reconnect" may be posted again after the next disconnect (K6).
+            ReconnectNotice.gate(this).onConnected()
+        }
         val name = state.macOrNull?.name ?: macs?.maxByOrNull { it.lastConnectedAt }?.name
         val text = when {
             state.copyNamesMac() && name != null -> getString(state.messageRes(), name)

@@ -63,6 +63,7 @@ import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
 import io.github.anmirror.phone.platform.Battery
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.diag.KeepAliveLog
+import io.github.anmirror.phone.diag.recordSessionEnd
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
 import io.github.anmirror.phone.platform.StoreRead
 import io.github.anmirror.phone.platform.KeystoreCipher
@@ -156,7 +157,8 @@ class AppGraph private constructor(context: Context) {
         onUnreadable = { keepAliveLog.record(KeepAliveEvent.STORE_UNREADABLE, it) },
     )
 
-    val store = ObservablePairedMacStore(encryptedStore)
+    /** An unreadable store reads as none for the manager, and as unknown (null) for the UI. */
+    val store = ObservablePairedMacStore(encryptedStore, encryptedStore::readStore)
 
     /** True only when the store confirms no Mac is paired; an unreadable store is not "none". */
     suspend fun noMacPaired(): Boolean = encryptedStore.confirmedEmpty()
@@ -205,6 +207,8 @@ class AppGraph private constructor(context: Context) {
         connector = connector,
         hello = ::hello,
         log = { message, e -> Log.e(TAG, "connection: $message", e) },
+        elapsedMs = SystemClock::elapsedRealtime,
+        onSessionEnd = keepAliveLog::recordSessionEnd,
     )
 
     val pairing = PairingController(
@@ -1082,23 +1086,36 @@ class AppGraph private constructor(context: Context) {
     }
 }
 
-/** A [PairedMacStore] that also publishes the list, so the UI can show it. */
-class ObservablePairedMacStore(private val inner: PairedMacStore) : PairedMacStore {
+/**
+ * A [PairedMacStore] that also publishes the list, so the UI can show it. With [read], a store
+ * that cannot be read just now publishes null (the UI's blank frame, not onboarding) while
+ * [all] still returns none; one that is lost for good publishes an empty list.
+ */
+class ObservablePairedMacStore(
+    private val inner: PairedMacStore,
+    private val read: (suspend () -> StoreRead)? = null,
+) : PairedMacStore {
     private val _macs = MutableStateFlow<List<PairedMac>?>(null)
 
-    /** Null until first read. */
+    /** Null until first read, and while the store cannot be read. */
     val macs: StateFlow<List<PairedMac>?> = _macs.asStateFlow()
 
-    override suspend fun all(): List<PairedMac> = inner.all().also { _macs.value = it }
+    override suspend fun all(): List<PairedMac> {
+        val r = read ?: return inner.all().also { _macs.value = it }
+        return when (val got = r()) {
+            is StoreRead.Macs -> got.macs.also { _macs.value = it }
+            is StoreRead.Unreadable -> emptyList<PairedMac>().also { _macs.value = if (got.permanent) it else null }
+        }
+    }
 
     override suspend fun save(mac: PairedMac) {
         inner.save(mac)
-        _macs.value = inner.all()
+        all()
     }
 
     override suspend fun remove(id: String) {
         inner.remove(id)
-        _macs.value = inner.all()
+        all()
     }
 }
 

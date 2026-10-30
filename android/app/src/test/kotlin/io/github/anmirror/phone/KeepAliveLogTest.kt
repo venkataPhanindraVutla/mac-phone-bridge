@@ -2,6 +2,7 @@ package io.github.anmirror.phone
 
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.diag.KeepAliveLog
+import io.github.anmirror.phone.diag.recordSessionEnd
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -40,5 +41,15 @@ class KeepAliveLogTest {
         val dir = tmp()
         val f = File(File(dir, "gone"), "k.log")
         KeepAliveLog(f).record(KeepAliveEvent.APP_OPEN, "x")
+    }
+
+    @Test
+    fun sessionEndLineCarriesReasonMaturedAndMode() {
+        val f = File(tmp(), "k.log")
+        KeepAliveLog(f, clock = { 1_700_000_000_000 }).recordSessionEnd("GOODBYE_SHUTDOWN", connectedMs = 3_600_000, liveness = true)
+        assertEquals(
+            listOf("2023-11-14T22:13:20Z session-end GOODBYE_SHUTDOWN,matured=true,liveness=true,s=3600"),
+            f.readLines(),
+        )
     }
 }
