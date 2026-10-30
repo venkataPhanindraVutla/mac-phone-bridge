@@ -11,8 +11,10 @@ import SwiftProtobuf
 ///   authorized. A transition goes through `EchoGuard` and is sent only while the phone's last
 ///   `applies` is enabled (ruling R22: nil is off). One `snapshot` goes on connect.
 /// - **Phone to Mac:** a `USER` transition that is not a snapshot runs the "Android Mirroring
-///   Focus On" or "Off" shortcut, when both are installed and the Mac's Focus differs. The
-///   shortcut runs detached: `message` returns at once, so the ordered queue never waits on it.
+///   Focus On" or "Off" shortcut, when both are installed and the Mac's Focus differs (or will,
+///   once the runs already asked for are done). The shortcut runs detached: `message` returns at
+///   once, so the ordered queue never waits on it. One run at a time: a request that arrives
+///   meanwhile waits, and a later one replaces it, so the phone's latest state is the last run.
 ///
 /// Authorization is asked for only in `setEnabled(true)`. Nothing about the Focus or the
 /// shortcuts' output is logged.
@@ -57,13 +59,20 @@ public final class FocusModel: SessionFeature {
     @ObservationIgnored private let now: () -> Date
     /// The phone in session, while it shares `dnd.v1`.
     @ObservationIgnored private var phoneID: String?
-    /// Bumped on every connect and disconnect, so a late shortcut result is dropped.
+    /// Bumped on every connect, disconnect and switch-off, so a late shortcut result is dropped.
     @ObservationIgnored private var session = 0
-    @ObservationIgnored private var echo = EchoGuard()
-    /// The state a running shortcut is turning Focus to: seeing it is our own doing, not the user's.
-    @ObservationIgnored private var applying: Bool?
+    /// Bumped on every `setEnabled`, so a call still waiting stops once a later one has run.
+    @ObservationIgnored private var enableCall = 0
+    @ObservationIgnored private(set) var echo = EchoGuard()
+    /// The run in flight: the state its shortcut turns Focus to, and whether a poll has seen
+    /// Focus reach it. The first sight is our own doing, not the user's.
+    @ObservationIgnored private var applying: (on: Bool, seen: Bool)?
+    /// The state to run next, once the run in flight returns; the latest request replaces it.
+    @ObservationIgnored private var pending: Bool?
     @ObservationIgnored private var lastSentAvailability: AMDndAvailability?
-    @ObservationIgnored private var pollTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var pollTask: Task<Void, Never>?
+    /// How the poll loop waits between reads (internal, so tests can tick it by hand).
+    @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// The last shortcut run and the last shortcut check (internal, for tests).
     @ObservationIgnored var runTask: Task<Void, Never>?
     @ObservationIgnored var shortcutCheck: Task<Void, Never>?
@@ -111,8 +120,10 @@ public final class FocusModel: SessionFeature {
         case .dndState:
             guard let s = try? AMDndState(serializedBytes: envelope.payload) else { return }
             phoneOn = s.on
-            guard enabled, !s.snapshot, s.origin == .user, shortcutsInstalled == true, macFocused != s.on else { return }
-            apply(s.on)
+            guard enabled, !s.snapshot, s.origin == .user, shortcutsInstalled == true else { return }
+            // Compared with where the runs already asked for leave Focus, not with the last read.
+            guard (pending ?? applying?.on ?? macFocused) != s.on else { return }
+            if applying == nil { apply(s.on) } else { pending = s.on }
         case .dndAvailability:
             guard let a = try? AMDndAvailability(serializedBytes: envelope.payload) else { return }
             phoneAvailability = a
@@ -131,23 +142,33 @@ public final class FocusModel: SessionFeature {
 
     /// The setting. Turning it on asks for Focus status access (the only place that does) and
     /// checks the shortcuts.
+    ///
+    /// The last call wins: one still waiting (on the access prompt, say) stops once a later call
+    /// has changed the setting.
     public func setEnabled(_ on: Bool) async {
         guard on != enabled else { return }
         enabled = on
+        enableCall += 1
+        let call = enableCall
         if !on {
+            // A shortcut still running belongs to the old setting: its result is dropped.
+            session += 1
             macFocused = nil
             echo = EchoGuard()
             applying = nil
+            pending = nil
             updatePolling()
             await sendAvailability()
             return
         }
         await sendAvailability()
+        guard call == enableCall else { return }
         if authorization != .authorized, authorization != .unavailable {
             let granted = await reader.requestAuthorization()
-            guard enabled else { return }
+            guard call == enableCall else { return }
             authorization = granted
             await sendAvailability()
+            guard call == enableCall else { return }
         }
         if phoneID != nil, authorization == .authorized { macFocused = reader.isFocused() }
         updatePolling()
@@ -188,8 +209,9 @@ public final class FocusModel: SessionFeature {
         macFocused = on
         // The first value read is where we start, not a transition.
         guard previous != nil else { return }
-        if applying == on {
-            // A running shortcut did this; its result is recorded when it returns.
+        if let run = applying, run.on == on, !run.seen {
+            // The running shortcut did this. Only its first sight: later ones are the user's.
+            applying?.seen = true
             return
         }
         let kind = echo.classify(on, at: now())
@@ -203,21 +225,28 @@ public final class FocusModel: SessionFeature {
         let shortcuts = shortcuts
         let name = on ? Self.onShortcut : Self.offShortcut
         let session = session
-        applying = on
+        applying = (on, false)
         runTask = Task.detached { [weak self] in
             let result = await shortcuts.run(name)
             await self?.ran(on, result, session: session)
         }
     }
 
+    /// A run returned. Its state is remembered for the echo guard unless a poll already saw
+    /// Focus reach it (that sight was the echo). Then the waiting request runs, if it differs.
     private func ran(_ on: Bool, _ result: ShortcutRunResult, session: Int) {
         guard session == self.session else { return }
-        if applying == on { applying = nil }
+        let seen = applying?.seen ?? false
+        applying = nil
         if result == .ok {
-            echo.applied(on, at: now())
+            if !seen { echo.applied(on, at: now()) }
             lastRunFailed = false
         } else {
             lastRunFailed = true
+        }
+        if let next = pending {
+            pending = nil
+            if next != on { apply(next) }
         }
     }
 
@@ -225,9 +254,10 @@ public final class FocusModel: SessionFeature {
         let should = phoneID != nil && enabled && authorization == .authorized
         if should, pollTask == nil {
             let interval = pollInterval
+            let sleep = sleep
             pollTask = Task { [weak self] in
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: interval)
+                    try? await sleep(interval)
                     guard !Task.isCancelled, let self else { return }
                     await self.poll()
                 }
@@ -256,6 +286,7 @@ public final class FocusModel: SessionFeature {
         macFocused = nil
         echo = EchoGuard()
         applying = nil
+        pending = nil
         lastSentAvailability = nil
     }
 

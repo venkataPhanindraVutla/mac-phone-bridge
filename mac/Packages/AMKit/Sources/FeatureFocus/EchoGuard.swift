@@ -21,6 +21,9 @@ public struct EchoGuard {
         self.window = window
     }
 
+    /// The state last applied and not yet classified (internal, for tests).
+    var lastApplied: Bool? { last?.on }
+
     /// The peer's state was applied here at `at`.
     public mutating func applied(_ on: Bool, at: Date) {
         last = (on, at)

@@ -325,12 +325,14 @@ final class AppModel {
             #endif
             await model.handleResponse(actionID: actionID, userInfo: userInfo, replyText: reply)
         }
-        // The user may allow notifications in System Settings and come back.
+        // The user may allow notifications or Focus status in System Settings and come back.
+        // Delivered on the main queue, so the main-actor work runs under assumeIsolated.
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
                 if model.authorized == false { Task { await model.refreshAuthorization() } }
+                Task { await focus.refreshAuthorization() }
             }
         }
         refreshPhones()
@@ -486,15 +488,20 @@ final class AppModel {
         UserDefaults.standard.set(on, forKey: Self.clipboardKey)
     }
 
-    /// The "Sync Focus with <phone>" switch in Settings (default off). Turning it on asks for
-    /// Focus status access, and only then.
-    var syncFocus: Bool { focus.enabled }
+    /// The "Sync Focus with <phone>" switch in Settings (default off), as last clicked. Turning
+    /// it on asks for Focus status access, and only then.
+    private(set) var syncFocus: Bool = AppModel.savedSyncFocus
 
+    /// Each click applies the latest value when its task runs, so the last click wins however
+    /// quickly the switch is toggled (the model drops a call that a later one overtakes).
     func setSyncFocus(_ on: Bool) {
-        guard on != focus.enabled else { return }
+        guard on != syncFocus else { return }
+        syncFocus = on
         UserDefaults.standard.set(on, forKey: Self.syncFocusKey)
-        let focus = focus
-        Task { await focus.setEnabled(on) }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.focus.setEnabled(self.syncFocus)
+        }
     }
 
     /// "Save phone screenshots to" in Settings. Applies from the next screenshot offered.

@@ -35,7 +35,7 @@ public struct SystemShortcuts: ShortcutRunner {
     }
 
     public func list() async -> [String]? {
-        let (end, output) = await Self.execute(tool, ["list"], timeout: timeout)
+        let (end, output) = await Self.execute(tool, ["list"], timeout: timeout).result
         switch end {
         case .exited(0):
             let names = String(decoding: output, as: UTF8.self)
@@ -57,7 +57,7 @@ public struct SystemShortcuts: ShortcutRunner {
     }
 
     public func run(_ name: String) async -> ShortcutRunResult {
-        let (end, _) = await Self.execute(tool, ["run", name], timeout: timeout)
+        let (end, _) = await Self.execute(tool, ["run", name], timeout: timeout).result
         switch end {
         case .exited(0):
             Self.log.info("shortcuts run exit 0")
@@ -78,9 +78,15 @@ public struct SystemShortcuts: ShortcutRunner {
         case exited(Int32), timedOut, notStarted
     }
 
+    /// How a run ended, and how often its stdout was read (for tests).
+    struct Outcome: Sendable {
+        let result: (End, Data)
+        let reads: Int
+    }
+
     /// Runs the tool to its end: it exited and its stdout reached end of file, or `timeout` passed.
     /// Past the timeout it is terminated, then killed a second later if it is still there.
-    static func execute(_ tool: URL, _ arguments: [String], timeout: Duration) async -> (End, Data) {
+    static func execute(_ tool: URL, _ arguments: [String], timeout: Duration) async -> Outcome {
         let process = Process()
         process.executableURL = tool
         process.arguments = arguments
@@ -91,11 +97,17 @@ public struct SystemShortcuts: ShortcutRunner {
         let reading = pipe.fileHandleForReading
         let state = RunState()
 
-        return await withCheckedContinuation { continuation in
+        let result = await withCheckedContinuation { continuation in
             state.start(continuation, process: process) {
                 reading.readabilityHandler = nil
             }
-            reading.readabilityHandler = { handle in state.received(handle.availableData) }
+            reading.readabilityHandler = { handle in
+                let data = handle.availableData
+                // End of file: stop at once, or the handler keeps firing with nothing to read
+                // until the process exits.
+                if data.isEmpty { handle.readabilityHandler = nil }
+                state.received(data)
+            }
             process.terminationHandler = { finished in state.exited(finished.terminationStatus) }
             do {
                 try process.run()
@@ -112,6 +124,7 @@ public struct SystemShortcuts: ShortcutRunner {
                 if state.stillRunning { kill(pid, SIGKILL) }
             }
         }
+        return Outcome(result: result, reads: state.reads)
     }
 }
 
@@ -150,8 +163,13 @@ private final class RunState: @unchecked Sendable {
 
     var stillRunning: Bool { lock.withLock { !processGone } }
 
+    /// Calls of the readability handler so far.
+    var reads: Int { lock.withLock { _reads } }
+    private var _reads = 0
+
     func received(_ data: Data) {
         let end: (SystemShortcuts.End, Data)? = lock.withLock {
+            _reads += 1
             if data.isEmpty { endOfFile = true } else { output.append(data) }
             return ended()
         }

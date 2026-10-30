@@ -13,6 +13,9 @@ private final class FakeReader: FocusReader {
     var focused: Bool?
     var requests = 0
     var reads = 0
+    /// While set, `requestAuthorization` waits until `answer()`.
+    var holdRequest = false
+    private var asked: CheckedContinuation<Void, Never>?
 
     init(_ authorization: FocusAuthorization = .authorized, focused: Bool? = false) {
         self.authorization = authorization
@@ -21,8 +24,14 @@ private final class FakeReader: FocusReader {
 
     func requestAuthorization() async -> FocusAuthorization {
         requests += 1
+        if holdRequest { await withCheckedContinuation { asked = $0 } }
         authorization = grant
         return grant
+    }
+
+    func answer() {
+        asked?.resume()
+        asked = nil
     }
 
     func isFocused() -> Bool? {
@@ -39,6 +48,7 @@ private final class FakeRunner: ShortcutRunner, @unchecked Sendable {
     private var _hold = false
     private var _runs: [String] = []
     private var held: [CheckedContinuation<Void, Never>] = []
+    private var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     init(names: [String]? = [FocusModel.onShortcut, FocusModel.offShortcut]) { _names = names }
 
@@ -59,22 +69,96 @@ private final class FakeRunner: ShortcutRunner, @unchecked Sendable {
     func list() async -> [String]? { names }
 
     func run(_ name: String) async -> ShortcutRunResult {
-        let holding = lock.withLock { () -> Bool in
+        let (holding, ready) = lock.withLock { () -> (Bool, [CheckedContinuation<Void, Never>]) in
             _runs.append(name)
-            return _hold
+            let ready = watchers.filter { $0.count <= _runs.count }.map(\.continuation)
+            watchers.removeAll { $0.count <= _runs.count }
+            return (_hold, ready)
         }
+        ready.forEach { $0.resume() }
         if holding {
             await withCheckedContinuation { c in lock.withLock { held.append(c) } }
         }
         return result
     }
 
+    /// Returns once `count` runs have started.
+    func waitForRuns(_ count: Int) async {
+        await withCheckedContinuation { c in
+            let now = lock.withLock { () -> Bool in
+                if _runs.count >= count { return true }
+                watchers.append((count, c))
+                return false
+            }
+            if now { c.resume() }
+        }
+    }
+
+    /// Lets the held runs return.
     func release() {
         let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
             defer { held = [] }
             return held
         }
         waiting.forEach { $0.resume() }
+    }
+}
+
+/// Stands in for the poll loop's sleep: each sleep waits for `tick()`.
+private final class Ticks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sleepers: [CheckedContinuation<Void, any Error>] = []
+    private var watchers: [CheckedContinuation<Void, Never>] = []
+
+    var sleep: @Sendable (Duration) async throws -> Void {
+        { [self] _ in try await wait() }
+    }
+
+    /// Like `Task.sleep`, it throws when the task is cancelled. The check and the append share the
+    /// lock with the cancel handler, so a cancel can't slip in between.
+    private func wait() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
+                let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>]? in
+                    if Task.isCancelled { return nil }
+                    sleepers.append(c)
+                    defer { watchers = [] }
+                    return watchers
+                }
+                guard let ready else {
+                    c.resume(throwing: CancellationError())
+                    return
+                }
+                ready.forEach { $0.resume() }
+            }
+        } onCancel: {
+            let cancelled = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
+                defer { sleepers = [] }
+                return sleepers
+            }
+            cancelled.forEach { $0.resume(throwing: CancellationError()) }
+        }
+    }
+
+    /// Returns once the loop is asleep.
+    func asleep() async {
+        await withCheckedContinuation { c in
+            let now = lock.withLock { () -> Bool in
+                if !sleepers.isEmpty { return true }
+                watchers.append(c)
+                return false
+            }
+            if now { c.resume() }
+        }
+    }
+
+    /// Wakes the sleeping loop.
+    func tick() {
+        let woken = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
+            defer { sleepers = [] }
+            return sleepers
+        }
+        woken.forEach { $0.resume() }
     }
 }
 
@@ -97,6 +181,7 @@ private struct Rig {
     let runner: FakeRunner
     let sent: Sent
     let clock: TestClock
+    let ticks: Ticks
 }
 
 @MainActor
@@ -117,7 +202,10 @@ private func rig(enabled: Bool = true, reader: FakeReader? = nil, runner: FakeRu
         },
         pollInterval: pollInterval,
         now: { clock.now })
-    return Rig(model: model, reader: reader, runner: runner, sent: sent, clock: clock)
+    // The poll loop never waits on the wall clock: the test ticks it.
+    let ticks = Ticks()
+    model.sleep = ticks.sleep
+    return Rig(model: model, reader: reader, runner: runner, sent: sent, clock: clock, ticks: ticks)
 }
 
 private let shared: Set<String> = ["status.v1", "dnd.v1"]
@@ -160,11 +248,20 @@ private func connect(_ r: Rig) async {
     await r.model.shortcutCheck?.value
 }
 
+/// Waits until no shortcut run is left, including one started when another returned.
+@MainActor
+private func settle(_ r: Rig) async {
+    while let task = r.model.runTask {
+        await task.value
+        if r.model.runTask == task { return }
+    }
+}
+
 /// Applies the phone's state and waits for the shortcut to finish.
 @MainActor
 private func receive(_ r: Rig, _ e: AMEnvelope) async {
     await r.model.message(e)
-    await r.model.runTask?.value
+    await settle(r)
 }
 
 @MainActor @Test func availabilityReflectsSettingAuthorizationAndShortcuts() async {
@@ -286,14 +383,159 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
     await r.model.message(phoneAvailability(applies: true))
     let before = r.sent.states.count
     await r.model.message(phoneState(true))
-    for _ in 0..<200 where r.runner.runs.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
+    await r.runner.waitForRuns(1)
     // The shortcut has turned Focus on but not returned yet.
     r.reader.focused = true
     await r.model.poll()
     #expect(r.sent.states.count == before)
     r.runner.release()
-    await r.model.runTask?.value
+    await settle(r)
     #expect(r.model.lastRunFailed == false)
+    // Already seen, so nothing is left to suppress: the guard holds nothing.
+    #expect(r.model.echo.lastApplied == nil)
+}
+
+/// The marker covers the first sight of the target only: the user's own off and on while the
+/// shortcut is still running both go to the phone.
+@MainActor @Test func inFlightMarkerIsConsumedOnce() async {
+    let runner = FakeRunner()
+    runner.hold = true
+    let r = rig(runner: runner)
+    await connect(r)
+    await r.model.message(phoneAvailability(applies: true))
+    let before = r.sent.states.count
+    await r.model.message(phoneState(true))
+    await r.runner.waitForRuns(1)
+    r.reader.focused = true
+    await r.model.poll()
+    #expect(r.sent.states.count == before)
+    r.clock.advance(1)
+    r.reader.focused = false
+    await r.model.poll()
+    r.clock.advance(1)
+    r.reader.focused = true
+    await r.model.poll()
+    #expect(r.sent.states.count == before + 2)
+    #expect(r.sent.states.suffix(2).map(\.on) == [false, true])
+    #expect(r.sent.states.suffix(2).map(\.origin) == [.user, .user])
+    r.runner.release()
+    await settle(r)
+    // Its target was already seen: nothing recorded that could hide a later change.
+    #expect(r.model.echo.lastApplied == nil)
+}
+
+/// On then off from the phone while the first shortcut runs: both run, in order, and the last
+/// one is what the guard remembers.
+@MainActor @Test func quickOnOffRunsBothInOrder() async {
+    let runner = FakeRunner()
+    runner.hold = true
+    let r = rig(runner: runner)
+    await connect(r)
+    await r.model.message(phoneState(true))
+    await r.model.message(phoneState(false))
+    await r.runner.waitForRuns(1)
+    #expect(r.runner.runs == [FocusModel.onShortcut])
+    r.runner.hold = false
+    r.runner.release()
+    await settle(r)
+    #expect(r.runner.runs == [FocusModel.onShortcut, FocusModel.offShortcut])
+    #expect(r.model.echo.lastApplied == false)
+}
+
+@MainActor @Test func quickOnOffRunsBothWhenFocusIsUnknown() async {
+    let runner = FakeRunner()
+    runner.hold = true
+    // Not authorized: the Mac's Focus is never read, so macFocused stays nil.
+    let r = rig(reader: FakeReader(.denied), runner: runner)
+    await connect(r)
+    #expect(r.model.macFocused == nil)
+    await r.model.message(phoneState(true))
+    await r.model.message(phoneState(false))
+    await r.runner.waitForRuns(1)
+    r.runner.hold = false
+    r.runner.release()
+    await settle(r)
+    #expect(r.runner.runs == [FocusModel.onShortcut, FocusModel.offShortcut])
+    #expect(r.model.echo.lastApplied == false)
+}
+
+/// On, off, on while the first runs: only the latest request is queued, and it matches what
+/// is already running, so nothing more runs.
+@MainActor @Test func latestQueuedRequestWins() async {
+    let runner = FakeRunner()
+    runner.hold = true
+    let r = rig(runner: runner)
+    await connect(r)
+    await r.model.message(phoneState(true))
+    await r.model.message(phoneState(false))
+    await r.model.message(phoneState(true))
+    await r.runner.waitForRuns(1)
+    r.runner.hold = false
+    r.runner.release()
+    await settle(r)
+    #expect(r.runner.runs == [FocusModel.onShortcut])
+    #expect(r.model.echo.lastApplied == true)
+}
+
+/// Turning the setting off drops a run still in flight: its result changes nothing.
+@MainActor @Test func disablingDropsALateRunResult() async {
+    let runner = FakeRunner()
+    runner.hold = true
+    runner.result = .failed(2)
+    let r = rig(runner: runner)
+    await connect(r)
+    await r.model.message(phoneState(true))
+    await r.runner.waitForRuns(1)
+    await r.model.setEnabled(false)
+    r.runner.release()
+    await settle(r)
+    #expect(r.model.lastRunFailed == false)
+    #expect(r.model.echo.lastApplied == nil)
+    // Nor does a successful one record anything.
+    let ok = FakeRunner()
+    ok.hold = true
+    let r2 = rig(runner: ok)
+    await connect(r2)
+    await r2.model.message(phoneState(true))
+    await ok.waitForRuns(1)
+    await r2.model.setEnabled(false)
+    await r2.model.setEnabled(true)
+    ok.release()
+    await settle(r2)
+    #expect(r2.model.echo.lastApplied == nil)
+}
+
+/// On, then off while the access prompt is up: the last call wins.
+@MainActor @Test func quickToggleLastCallWins() async {
+    let reader = FakeReader(.notDetermined)
+    reader.holdRequest = true
+    let r = rig(enabled: false, reader: reader)
+    await connect(r)
+    let on = Task { await r.model.setEnabled(true) }
+    for _ in 0..<1000 where reader.requests == 0 { await Task.yield() }
+    #expect(reader.requests == 1)
+    await r.model.setEnabled(false)
+    reader.answer()
+    await on.value
+    #expect(r.model.enabled == false)
+    #expect(r.model.isPolling == false)
+    #expect(r.sent.availabilities.last?.sends.reason == .offByUser)
+
+    // Off, on, off, on: still the last.
+    let reader2 = FakeReader(.notDetermined)
+    reader2.holdRequest = true
+    let r2 = rig(enabled: false, reader: reader2)
+    await connect(r2)
+    let first = Task { await r2.model.setEnabled(true) }
+    for _ in 0..<1000 where reader2.requests == 0 { await Task.yield() }
+    await r2.model.setEnabled(false)
+    reader2.holdRequest = false
+    await r2.model.setEnabled(true)
+    reader2.answer()
+    await first.value
+    #expect(r2.model.enabled)
+    #expect(r2.model.isPolling)
+    #expect(r2.sent.availabilities.last?.sends.enabled == true)
 }
 
 @MainActor @Test func lateEchoIsSentAsSync() async {
@@ -387,10 +629,10 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
     // The next message on the queue is handled anyway.
     await r.model.message(phoneAvailability(applies: true))
     #expect(r.model.phoneAvailability?.applies.enabled == true)
-    for _ in 0..<200 where r.runner.runs.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
+    await r.runner.waitForRuns(1)
     #expect(r.runner.runs == [FocusModel.onShortcut])
     r.runner.release()
-    await r.model.runTask?.value
+    await settle(r)
 }
 
 @MainActor @Test func failedRunIsReported() async {
@@ -442,20 +684,29 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
 }
 
 @MainActor @Test func disabledStopsPolling() async {
-    let r = rig(pollInterval: .milliseconds(10))
+    let r = rig()
     await connect(r)
     #expect(r.model.isPolling)
-    for _ in 0..<400 where r.reader.reads < 4 { try? await Task.sleep(for: .milliseconds(5)) }
-    #expect(r.reader.reads >= 4)
+    // Each tick is one read.
+    for expected in 2...4 {
+        await r.ticks.asleep()
+        r.ticks.tick()
+        await r.ticks.asleep()
+        #expect(r.reader.reads == expected)
+    }
+    let loop = r.model.pollTask
     await r.model.setEnabled(false)
     #expect(r.model.isPolling == false)
+    // The loop has ended: its sleep was cancelled, and no tick reaches it.
+    await loop?.value
     let reads = r.reader.reads
-    try? await Task.sleep(for: .milliseconds(100))
+    r.ticks.tick()
+    await r.model.poll()
     #expect(r.reader.reads == reads)
 }
 
 @MainActor @Test func pollingNeedsConnectionDndAndAuthorization() async {
-    let r = rig(pollInterval: .milliseconds(10))
+    let r = rig(pollInterval: .seconds(2))
     #expect(r.model.isPolling == false)
     await r.model.connected(phoneID: "phone-1", phoneName: "Pixel", shared: ["status.v1"])
     #expect(r.model.isPolling == false)
@@ -465,7 +716,7 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
     r.model.disconnected()
     #expect(r.model.isPolling == false)
 
-    let denied = rig(reader: FakeReader(.denied), pollInterval: .milliseconds(10))
+    let denied = rig(reader: FakeReader(.denied), pollInterval: .seconds(2))
     await connect(denied)
     #expect(denied.model.isPolling == false)
     #expect(denied.reader.reads == 0)

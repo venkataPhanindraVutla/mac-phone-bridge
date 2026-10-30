@@ -88,3 +88,13 @@ private func tool(_ body: String) throws -> URL {
     let fail = try tool("exit 4")
     #expect(await SystemShortcuts(tool: fail).run("x") == .failed(4))
 }
+
+/// stdout closed long before the tool exits: end of file is read once, and the handler is not
+/// called again and again while the process runs on.
+@Test func earlyClosedStdoutIsReadOnce() async throws {
+    let url = try tool("echo done; exec >&-; sleep 0.5; exit 0")
+    let outcome = await SystemShortcuts.execute(url, ["list"], timeout: .seconds(5))
+    #expect(outcome.result.0 == .exited(0))
+    #expect(String(decoding: outcome.result.1, as: UTF8.self) == "done\n")
+    #expect(outcome.reads <= 2)
+}
