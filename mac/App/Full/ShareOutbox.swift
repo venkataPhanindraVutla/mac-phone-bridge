@@ -11,9 +11,14 @@ import os
 /// sent by the app (rulings R18, R21). Each share goes only to the phone its sheet named, when
 /// that phone is connected: at launch, on connect, and on the extension's Darwin notification.
 /// It is dropped once that phone is forgotten, 24 hours after it was shared, or when dated more
-/// than 5 minutes ahead. Files go with the transfer engine (only with `files.v1`, and only
-/// regular files still there and readable); links and text with the share model (only with
-/// `share.v1`). Items whose capability is not shared now wait in a rewritten envelope.
+/// than 5 minutes ahead. Files go with the transfer engine (only with `files.v1`); links and text
+/// with the share model (only with `share.v1`). Items whose capability is not shared now wait in
+/// a rewritten envelope.
+/// Files (ruling R24): the extension cloned each into `Outbox/<share>/<n>/<name>`, and the envelope
+/// names only that share-relative path. The app takes it with `StagedUpload` (no link followed, a
+/// regular file only) into a folder of its own, sends that copy, and deletes it when the transfer
+/// ends; the share folder goes once its items are queued or dropped. So an envelope another
+/// process planted can only send bytes that process already put in the container.
 /// At most once: a share is sent only after its outbox file was removed.
 /// Also tells the extension, through the App Group defaults, which phone to name.
 /// Only counts are logged, never paths, links or text.
@@ -22,6 +27,10 @@ final class ShareOutbox: SessionFeature {
     let messagePrefixes: [String] = []
 
     private let folder: URL
+    /// The app's own copies of shared files, each in a folder of its own, while they are sent.
+    private let copies: URL
+    /// That folder, by transfer ID, until its transfer ends.
+    private var sending: [String: URL] = [:]
     private let defaults: UserDefaults?
     private let transfers: TransferEngine
     private let share: ShareModel
@@ -35,6 +44,11 @@ final class ShareOutbox: SessionFeature {
     init(container: URL, defaults: UserDefaults?, transfers: TransferEngine, share: ShareModel,
          pairedPhoneIDs: @escaping @MainActor () -> Set<String>) {
         folder = container.appendingPathComponent(FullBuild.outboxFolder, isDirectory: true)
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        copies = caches.appendingPathComponent("io.github.anmirror.mac/outbox-sends", isDirectory: true)
+        // Copies an earlier run was still sending.
+        try? FileManager.default.removeItem(at: copies)
         self.defaults = defaults
         self.transfers = transfers
         self.share = share
@@ -79,9 +93,16 @@ final class ShareOutbox: SessionFeature {
         var dropped = 0
         for (url, envelope) in pending() where envelope?.phoneID == phoneID {
             try? FileManager.default.removeItem(at: url)
+            if let envelope { removeShareFolders(envelope.shareFolders) }
             dropped += 1
         }
         if dropped > 0 { Self.log.info("dropped \(dropped, privacy: .public) shares of a forgotten phone") }
+    }
+
+    /// A transfer ended: the copy it sent goes.
+    func transferFinished(_ item: TransferItem) {
+        guard let copy = sending.removeValue(forKey: item.id) else { return }
+        try? FileManager.default.removeItem(at: copy)
     }
 
     // MARK: draining
@@ -118,19 +139,23 @@ final class ShareOutbox: SessionFeature {
     private func drain() async {
         let paired = pairedPhoneIDs()
         let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let outbox = folder
         for (url, envelope) in pending() {
             guard let envelope else {
-                // Not an outbox file this app can read.
+                // Not an outbox file this app can read (or one naming a path outside its share);
+                // its share folder goes with the orphans.
                 try? FileManager.default.removeItem(at: url)
                 continue
             }
             let decision = envelope.decision(connectedPhoneID: session?.phoneID, shared: session?.shared ?? [],
-                                             pairedPhoneIDs: paired, nowMs: now)
+                                             pairedPhoneIDs: paired, nowMs: now,
+                                             isSendable: { OutboxFiles.isSendable($0, in: outbox) })
             switch decision {
             case .keep:
                 continue
             case .drop:
                 try? FileManager.default.removeItem(at: url)
+                removeShareFolders(envelope.shareFolders)
                 Self.log.info("dropped a share of \(envelope.items.count, privacy: .public) items unsent")
             case let .deliver(delivery):
                 // What waits is written first, under a name the drain does not read.
@@ -152,7 +177,31 @@ final class ShareOutbox: SessionFeature {
                     Self.log.info("\(delivery.kept.count, privacy: .public) items wait for the phone to take them")
                 }
                 await deliver(delivery, to: envelope.phoneID)
+                // Its files are queued (copied out) or dropped; files still waiting keep theirs.
+                removeShareFolders(envelope.shareFolders.subtracting(envelope.keeping(delivery.kept).shareFolders))
             }
+        }
+        removeOrphanShareFolders(nowMs: now)
+    }
+
+    /// Share folders no envelope (or pending rewrite) names, older than a few minutes.
+    private func removeOrphanShareFolders(nowMs: Int64) {
+        var referenced = Set<String>()
+        for (_, envelope) in pending() { if let envelope { referenced.formUnion(envelope.shareFolders) } }
+        let rewrites = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        for url in rewrites where OutboxFiles.original(ofPending: url.lastPathComponent) != nil {
+            if let data = try? Data(contentsOf: url), let envelope = try? OutboxEnvelope.decode(data) {
+                referenced.formUnion(envelope.shareFolders)
+            }
+        }
+        let orphans = OutboxFiles.orphanFolders(in: folder, referenced: referenced, nowMs: nowMs)
+        for url in orphans { try? FileManager.default.removeItem(at: url) }
+        if !orphans.isEmpty { Self.log.info("removed \(orphans.count, privacy: .public) orphan share folders") }
+    }
+
+    private func removeShareFolders(_ names: Set<String>) {
+        for name in names where name.utf8.count == 36 && UUID(uuidString: name) != nil {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name, isDirectory: true))
         }
     }
 
@@ -172,7 +221,28 @@ final class ShareOutbox: SessionFeature {
             \(delivery.shares.count, privacy: .public) links or texts, \(delivery.skipped, privacy: .public) skipped
             """)
         if !delivery.files.isEmpty {
-            transfers.send(files: delivery.files.map { URL(fileURLWithPath: $0) })
+            // Each file taken out of the outbox into a folder of the app's own, off the main actor.
+            let outbox = folder, copies = copies
+            let staged: [(folder: URL, file: URL)] = await Task.detached(priority: .userInitiated) {
+                delivery.files.compactMap { path -> (URL, URL)? in
+                    guard let steps = OutboxFiles.steps(ofShared: path), let name = steps.last else { return nil }
+                    let own = copies.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    let copy = own.appendingPathComponent(name)
+                    do {
+                        try FileManager.default.createDirectory(at: own, withIntermediateDirectories: true)
+                        try StagedUpload.copy(steps, under: outbox, to: copy)
+                        return (own, copy)
+                    } catch {
+                        try? FileManager.default.removeItem(at: own)
+                        return nil
+                    }
+                }
+            }.value
+            if staged.count < delivery.files.count {
+                Self.log.info("\(delivery.files.count - staged.count, privacy: .public) files not taken from the outbox")
+            }
+            let ids = transfers.send(files: staged.map(\.file))
+            for (id, copy) in zip(ids, staged) { sending[id] = copy.folder }
         }
         for (i, item) in delivery.shares.enumerated() {
             guard session?.phoneID == phoneID else {

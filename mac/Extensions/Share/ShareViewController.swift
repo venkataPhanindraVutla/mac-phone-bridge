@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
 /// The Share menu's "Send to Phone" (F-04, F-10): the sheet names the phone the app last
 /// connected to ("Send to <phone>"). Send writes one `OutboxEnvelope` for that phone into the
 /// App Group's `Outbox/` and posts the Darwin notification; the app sends it now if that phone
-/// is connected, else when it next connects (within 24 hours). Files go by path, not copied:
-/// the unsandboxed app reads them. Nothing shared is logged, only counts.
+/// is connected, else when it next connects (within 24 hours). Each file is cloned into the
+/// outbox (`Outbox/<share>/<n>/<name>`, ruling R24) and the envelope names only that relative
+/// path: the unsandboxed app never opens a path a share names elsewhere on the Mac. Nothing
+/// shared is logged, only counts.
 final class ShareViewController: NSViewController {
     private static let log = Logger(subsystem: "io.github.anmirror.mac.share", category: "share")
 
@@ -61,17 +63,23 @@ final class ShareViewController: NSViewController {
         sendButton.isEnabled = false
         let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
         let input = Unchecked(providers)
+        guard let outbox = Self.outboxFolder() else { return finish(false) }
+        let share = UUID()
         Task {
             var items: [OutboxItem] = []
-            for provider in input.value.prefix(OutboxEnvelope.maxItems) {
-                if let item = await Self.item(from: provider) { items.append(item) }
+            for (index, provider) in input.value.prefix(OutboxEnvelope.maxItems).enumerated() {
+                if let item = await Self.item(from: provider, outbox: outbox, share: share, index: index) { items.append(item) }
             }
             switch OutboxEnvelope.check(items) {
             case .ok:
-                self.finish(Self.write(items, for: phone.id))
+                let written = Self.write(items, for: phone.id, in: outbox)
+                if !written { Self.removeShare(share, in: outbox) }
+                self.finish(written)
             case .nothingToSend:
+                Self.removeShare(share, in: outbox)
                 self.refuse(String(localized: "Nothing to send."))
             case .textTooLong:
+                Self.removeShare(share, in: outbox)
                 self.refuse(String(localized: "The text is too long to send."))
             }
         }
@@ -103,15 +111,16 @@ final class ShareViewController: NSViewController {
         return (id, name)
     }
 
-    /// A file URL as a file, a web (or other) URL as a link, plain text as text.
-    private static func item(from provider: NSItemProvider) async -> OutboxItem? {
+    /// A file URL as a file (cloned into the share's outbox folder; a folder, a package or an
+    /// unreadable file is skipped), a web (or other) URL as a link, plain text as text.
+    private static func item(from provider: NSItemProvider, outbox: URL, share: UUID, index: Int) async -> OutboxItem? {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
            let url = await loadURL(provider, UTType.fileURL), url.isFileURL {
-            return .file(url.path)
+            return await stage(url, outbox: outbox, share: share, index: index)
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
            let url = await loadURL(provider, UTType.url) {
-            return url.isFileURL ? .file(url.path) : .link(url.absoluteString)
+            return url.isFileURL ? await stage(url, outbox: outbox, share: share, index: index) : .link(url.absoluteString)
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
            let text = await loadText(provider), !text.isEmpty {
@@ -152,12 +161,35 @@ final class ShareViewController: NSViewController {
         }
     }
 
-    /// Writes the share for `phoneID` into `Outbox/` and tells the app; false if it could not.
-    private static func write(_ items: [OutboxItem], for phoneID: String) -> Bool {
+    /// The App Group's `Outbox/`; nil without a group (an unsigned build).
+    private static func outboxFolder() -> URL? {
         guard let group = FullBuild.appGroupID(in: .main),
               let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
-        else { return false }
-        let outbox = container.appendingPathComponent(FullBuild.outboxFolder, isDirectory: true)
+        else { return nil }
+        return container.appendingPathComponent(FullBuild.outboxFolder, isDirectory: true)
+    }
+
+    /// The file's clone in the share's folder, as an outbox item; nil when it can't be one.
+    /// Off the main thread: off APFS the copy is a full one.
+    private static func stage(_ url: URL, outbox: URL, share: UUID, index: Int) async -> OutboxItem? {
+        do {
+            let path = try await Task.detached(priority: .userInitiated) {
+                try OutboxFiles.stage(url, in: outbox, share: share, index: index)
+            }.value
+            return .file(path)
+        } catch {
+            log.info("a shared file was skipped")
+            return nil
+        }
+    }
+
+    /// A share that is not written leaves no copies behind.
+    private static func removeShare(_ share: UUID, in outbox: URL) {
+        try? FileManager.default.removeItem(at: outbox.appendingPathComponent(share.uuidString, isDirectory: true))
+    }
+
+    /// Writes the share for `phoneID` into `Outbox/` and tells the app; false if it could not.
+    private static func write(_ items: [OutboxItem], for phoneID: String, in outbox: URL) -> Bool {
         let envelope = OutboxEnvelope(phoneID: phoneID, createdMs: Int64(Date().timeIntervalSince1970 * 1000), items: items)
         do {
             try FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: true)

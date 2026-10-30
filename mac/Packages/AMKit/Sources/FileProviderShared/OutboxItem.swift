@@ -1,7 +1,8 @@
 import Foundation
 
-/// One thing shared with "Send to Phone": a file (by its path; the unsandboxed app reads it), a
-/// link, or text.
+/// One thing shared with "Send to Phone": a file, a link, or text. A file is the extension's own
+/// copy in the outbox (ruling R24), named by its share-relative path `<share>/<n>/<name>`: the
+/// app never opens a path a share names anywhere else.
 public struct OutboxItem: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable { case file, link, text }
 
@@ -53,9 +54,20 @@ public struct OutboxEnvelope: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self)
     }
 
+    /// Refuses data too large to be a share, and any file path that is not share-relative
+    /// (`<share UUID>/<n>/<name>`): absolute, climbing (`..`), with empty steps, or of another shape.
     public static func decode(_ data: Data) throws -> OutboxEnvelope {
         guard data.count <= maxBytes else { throw CocoaError(.fileReadTooLarge) }
-        return try JSONDecoder().decode(OutboxEnvelope.self, from: data)
+        let envelope = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
+        for item in envelope.items where item.kind == .file {
+            if let path = item.path, OutboxFiles.steps(ofShared: path) == nil { throw CocoaError(.fileReadCorruptFile) }
+        }
+        return envelope
+    }
+
+    /// The outbox folders (`<share>`) this share's files are in.
+    public var shareFolders: Set<String> {
+        Set(items.compactMap { item in item.kind == .file ? item.path.flatMap(OutboxFiles.steps(ofShared:))?.first : nil })
     }
 
     /// The same share (phone and time) with only `items`: what waits after a partial delivery.
@@ -86,12 +98,12 @@ public struct OutboxEnvelope: Codable, Equatable, Sendable {
 
     /// What to do with this share now. It is dropped once its phone is no longer paired, when it
     /// is older than 24 hours, or dated more than 5 minutes ahead. It waits (`keep`) until its
-    /// own phone is connected. For its phone: files go with `files.v1` while each is a readable
-    /// regular file (else dropped); links and text with `share.v1`. Items whose capability is
-    /// not shared now are `kept` for a rewritten envelope (R21). Nothing to send and nothing
-    /// dropped leaves it as it is (`keep`).
+    /// own phone is connected. For its phone: files go with `files.v1` while `isSendable` says
+    /// the outbox copy is there (else dropped); links and text with `share.v1`. Items whose
+    /// capability is not shared now are `kept` for a rewritten envelope (R21). Nothing to send
+    /// and nothing dropped leaves it as it is (`keep`).
     public func decision(connectedPhoneID: String?, shared: Set<String>, pairedPhoneIDs: Set<String>, nowMs: Int64,
-                         isSendable: (String) -> Bool = OutboxFiles.isSendable) -> OutboxDecision {
+                         isSendable: (String) -> Bool) -> OutboxDecision {
         guard pairedPhoneIDs.contains(phoneID), nowMs - createdMs <= Self.maxAgeMs,
               createdMs - nowMs <= Self.maxFutureMs else { return .drop }
         guard connectedPhoneID == phoneID else { return .keep }
@@ -140,7 +152,7 @@ public enum OutboxDecision: Equatable, Sendable {
 }
 
 public struct OutboxDelivery: Equatable, Sendable {
-    /// File paths, in the order shared.
+    /// Share-relative file paths, in the order shared.
     public var files: [String]
     /// Links and text, in the order shared.
     public var shares: [OutboxItem]
@@ -174,14 +186,64 @@ public enum OutboxFiles {
         return original.hasSuffix(".json") ? original : nil
     }
 
-    /// Whether `path` is an absolute path to a regular file (or a link to one) that can be read
-    /// now. Folders and packages are not sent, as with any other send (`SendableFiles`).
-    public static func isSendable(_ path: String) -> Bool {
-        guard path.hasPrefix("/") else { return false }
-        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isPackageKey]),
-              values.isRegularFile == true, values.isPackage != true
-        else { return false }
-        return FileManager.default.isReadableFile(atPath: url.path)
+    /// Share folders no envelope names stay this long (the extension may still be writing one)
+    /// before they count as orphans.
+    public static let orphanGraceMs: Int64 = 5 * 60 * 1000
+
+    /// The steps of a share-relative file path `<share UUID>/<n>/<name>`; nil for anything else:
+    /// an absolute path, `.` or `..`, an empty step, a name over 255 bytes, or another shape.
+    public static func steps(ofShared path: String) -> [String]? {
+        let steps = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard steps.count == 3, steps.allSatisfy(StagedUpload.isStep),
+              steps[0].utf8.count == 36, UUID(uuidString: steps[0]) != nil,
+              (1...4).contains(steps[1].utf8.count), steps[1].utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }),
+              steps[2].utf8.count <= 255
+        else { return nil }
+        return steps
+    }
+
+    /// Whether the share-relative `path` names a regular file in `outbox`, reached with no link.
+    /// Folders and packages are not sent, as with any other send (`SendableFiles`).
+    public static func isSendable(_ path: String, in outbox: URL) -> Bool {
+        guard let steps = steps(ofShared: path) else { return false }
+        return StagedUpload.isRegularFile(steps, under: outbox)
+    }
+
+    /// The name a shared file is copied under: its own, unless that is no single safe step.
+    public static func stagedName(_ name: String) -> String {
+        StagedUpload.isStep(name) && name.utf8.count <= 255 ? name : "file"
+    }
+
+    /// The Share extension's side (R24): copies (an APFS clone where it can be) the regular file
+    /// `source` into `outbox/<share>/<index>/<name>` and returns that share-relative path. A
+    /// folder, a package or anything unreadable is refused.
+    public static func stage(_ source: URL, in outbox: URL, share: UUID, index: Int) throws -> String {
+        let fm = FileManager.default
+        let resolved = source.resolvingSymlinksInPath()
+        let values = try resolved.resourceValues(forKeys: [.isRegularFileKey, .isPackageKey])
+        guard values.isRegularFile == true, values.isPackage != true else { throw StagedUpload.Refused() }
+        let relative = "\(share.uuidString)/\(index)/\(stagedName(source.lastPathComponent))"
+        guard steps(ofShared: relative) != nil else { throw StagedUpload.Refused() }
+        let target = outbox.appendingPathComponent(relative)
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.copyItem(at: resolved, to: target)
+        return relative
+    }
+
+    /// The share folders in `outbox` that `referenced` does not name and that are older than
+    /// `orphanGraceMs`: what a crashed extension, an unreadable envelope or a lost rewrite left.
+    public static func orphanFolders(in outbox: URL, referenced: Set<String>, nowMs: Int64) -> [URL] {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .creationDateKey]
+        guard let urls = try? fm.contentsOfDirectory(at: outbox, includingPropertiesForKeys: keys) else { return [] }
+        return urls.filter { url in
+            let name = url.lastPathComponent
+            guard name.utf8.count == 36, UUID(uuidString: name) != nil, !referenced.contains(name),
+                  let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true || values.isSymbolicLink == true
+            else { return false }
+            let created = values.creationDate.map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
+            return nowMs - created >= orphanGraceMs
+        }
     }
 }

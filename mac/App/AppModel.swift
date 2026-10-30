@@ -271,6 +271,12 @@ final class AppModel {
                                      transfers: transfers, share: share, pairedPhoneIDs: paired)
             notifyWork.register(bridge)
             notifyWork.register(outbox)
+            // The outbox's own copies of shared files go once their transfer ends.
+            let finished = transfers.onFinished
+            transfers.onFinished = { item, offer, url in
+                finished?(item, offer, url)
+                outbox.transferFinished(item)
+            }
             fileProviderBridge = bridge
             shareOutbox = outbox
         }
