@@ -28,6 +28,8 @@
 	<string>Android Mirroring saves files from your phone to Downloads.</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>Android Mirroring saves phone screenshots to your Desktop.</string>
+	<key>NSFocusStatusUsageDescription</key>
+	<string>Android Mirroring reads whether a Focus is on, to turn on Do Not Disturb on your phone.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_anmirror._tcp</string>

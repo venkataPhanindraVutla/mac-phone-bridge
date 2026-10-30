@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "FeaturePhotos", targets: ["FeaturePhotos"]),
         .library(name: "FeatureBrowse", targets: ["FeatureBrowse"]),
         .library(name: "FeatureMedia", targets: ["FeatureMedia"]),
+        .library(name: "FeatureFocus", targets: ["FeatureFocus"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         // The Full build's extensions and the app's FULL_BUILD code only (docs/ARCHITECTURE.md section 4).
         .library(name: "FileProviderShared", targets: ["FileProviderShared"]),
@@ -97,6 +98,11 @@ let package = Package(
             name: "FeatureMedia",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
             linkerSettings: [.linkedFramework("MediaPlayer")]
+        ),
+        .target(
+            name: "FeatureFocus",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
+            linkerSettings: [.linkedFramework("Intents")]
         ),
         .target(
             name: "AppSession",
@@ -181,6 +187,10 @@ let package = Package(
         .testTarget(
             name: "FeatureMediaTests",
             dependencies: ["FeatureMedia", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .testTarget(
+            name: "FeatureFocusTests",
+            dependencies: ["FeatureFocus", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .testTarget(name: "FileProviderSharedTests", dependencies: ["FileProviderShared"]),
         .testTarget(

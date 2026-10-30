@@ -52,6 +52,8 @@ targets:
       - package: AMKit
         product: FeatureMedia
       - package: AMKit
+        product: FeatureFocus
+      - package: AMKit
         product: AppSession
     settings:
       base:

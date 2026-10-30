@@ -9,6 +9,7 @@ import FeatureClipboard
 import FeatureContacts
 import FeatureFiles
 import FeatureFind
+import FeatureFocus
 import FeatureMedia
 import FeatureNotify
 import FeaturePhotos
@@ -26,7 +27,7 @@ import os
 final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
-        "screenshots.v1", "photos.v1", "browse.v1", "media.v1",
+        "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -49,6 +50,8 @@ final class AppModel {
     let browse: BrowseModel
     /// The phone's media session, in macOS Now Playing, the menu and the Phone window's Now Playing tab.
     let media: MediaModel
+    /// Focus on this Mac and Do Not Disturb on the phone, kept in step ("Sync Focus" in Settings).
+    let focus: FocusModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -87,11 +90,15 @@ final class AppModel {
     @ObservationIgnored private static let contactsKey = "contactsForNames"
     @ObservationIgnored private static let callsKey = "showPhoneCalls"
     @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
+    @ObservationIgnored private static let syncFocusKey = "syncFocus"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
     }
     private static var savedSendMacClipboard: Bool {
         UserDefaults.standard.object(forKey: clipboardKey) as? Bool ?? true
+    }
+    private static var savedSyncFocus: Bool {
+        UserDefaults.standard.object(forKey: syncFocusKey) as? Bool ?? false
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
@@ -266,6 +273,15 @@ final class AppModel {
             }
         )
         self.media = media
+        let focus = FocusModel(
+            reader: SystemFocusReader(), shortcuts: SystemShortcuts(), enabled: Self.savedSyncFocus,
+            send: { type, message in
+                // Only a phone that shares dnd.v1 gets dnd messages.
+                guard server.activePhone?.shared.contains("dnd.v1") == true else { return }
+                try? await server.send(type, message, channel: .dnd)
+            }
+        )
+        self.focus = focus
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
@@ -273,6 +289,7 @@ final class AppModel {
         notifyWork.register(photos)
         notifyWork.register(browse)
         notifyWork.register(media)
+        notifyWork.register(focus)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -467,6 +484,17 @@ final class AppModel {
         guard on != clipboard.sendEnabled else { return }
         clipboard.sendEnabled = on
         UserDefaults.standard.set(on, forKey: Self.clipboardKey)
+    }
+
+    /// The "Sync Focus with <phone>" switch in Settings (default off). Turning it on asks for
+    /// Focus status access, and only then.
+    var syncFocus: Bool { focus.enabled }
+
+    func setSyncFocus(_ on: Bool) {
+        guard on != focus.enabled else { return }
+        UserDefaults.standard.set(on, forKey: Self.syncFocusKey)
+        let focus = focus
+        Task { await focus.setEnabled(on) }
     }
 
     /// "Save phone screenshots to" in Settings. Applies from the next screenshot offered.

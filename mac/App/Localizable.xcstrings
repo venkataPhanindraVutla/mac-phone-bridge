@@ -2003,6 +2003,182 @@
           }
         }
       }
+    },
+    "Focus": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus"
+          }
+        }
+      }
+    },
+    "Sync Focus with %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync Focus with %@"
+          }
+        }
+      }
+    },
+    "Your phone's Do Not Disturb turns on Focus on this Mac.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your phone's Do Not Disturb turns on Focus on this Mac."
+          }
+        }
+      }
+    },
+    "Install the two Shortcuts to let your phone turn on Focus": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install the two Shortcuts to let your phone turn on Focus"
+          }
+        }
+      }
+    },
+    "Focus on this Mac turns on Do Not Disturb on your phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus on this Mac turns on Do Not Disturb on your phone."
+          }
+        }
+      }
+    },
+    "Allow Android Mirroring to read your Focus status in System Settings.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Android Mirroring to read your Focus status in System Settings."
+          }
+        }
+      }
+    },
+    "This build of Android Mirroring can't read Focus status.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build of Android Mirroring can't read Focus status."
+          }
+        }
+      }
+    },
+    "Turn on Do Not Disturb sync in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on Do Not Disturb sync in the phone app."
+          }
+        }
+      }
+    },
+    "Allow Do Not Disturb access in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Do Not Disturb access in the phone app."
+          }
+        }
+      }
+    },
+    "Couldn't run the Focus shortcut.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't run the Focus shortcut."
+          }
+        }
+      }
+    },
+    "Check Again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Again"
+          }
+        }
+      }
+    },
+    "Open the Shortcuts app and create a new shortcut.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the Shortcuts app and create a new shortcut."
+          }
+        }
+      }
+    },
+    "Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On."
+          }
+        }
+      }
+    },
+    "Name the shortcut “Android Mirroring Focus On”.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name the shortcut “Android Mirroring Focus On”."
+          }
+        }
+      }
+    },
+    "Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”."
+          }
+        }
+      }
+    },
+    "Come back here and click Check Again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Come back here and click Check Again."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
