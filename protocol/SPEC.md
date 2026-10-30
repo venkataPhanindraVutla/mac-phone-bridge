@@ -291,8 +291,10 @@ not need its own timer, because its CPU may be suspended; it wakes on an incomin
   received. The 75 s silence rule does not apply to that session.
 - The phone MUST answer each Mac `system.ping` immediately with `system.pong`, `reply_to` set to
   the ping's `id`, without waiting for any timer. This is what makes the Mac's drop rule safe.
-- The phone sends its own `system.ping` only after **45 s** with nothing received, measured on
-  monotonic uptime (which stops in deep sleep). The Mac MUST answer it with `system.pong`, as in
+- The phone sends its own `system.ping` after **45 s** with nothing received, measured on
+  monotonic uptime (which stops in deep sleep), and also at once on a *kick* (a network change or
+  the screen turning on), to check the link quickly. A kick while one of its pings is still
+  unanswered sends nothing; that ping's 10 s deadline stands. The Mac MUST answer it with `system.pong`, as in
   0.1. The phone's 10 s wait is satisfied by **any** incoming envelope, not only the pong; if
   nothing arrives within **10 s** of its ping, the phone drops the connection.
 - A Mac MUST NOT ping a phone that did not list `liveness.v1` (section 3).
