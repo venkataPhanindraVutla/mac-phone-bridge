@@ -94,6 +94,9 @@ struct MenuContent: View {
            !(availability.reason == .needsPermission && notifyNeedsPermission) {
             Text(notice)
         }
+        if let notice = model.mirrorNotice {
+            Text(verbatim: notice)
+        }
         mediaSection
         if model.isConnected {
             sendSection
@@ -176,6 +179,10 @@ struct MenuContent: View {
     @ViewBuilder private var sendSection: some View {
         Button("Show Phone Window") { show(WindowID.phone) }
             .accessibilityLabel(Text("Show Phone Window"))
+        if model.canMirror {
+            Button("Show Phone Screen") { model.showMirror() }
+                .accessibilityLabel(Text("Show Phone Screen"))
+        }
         if model.canSendFiles {
             Button("Send File to Phone…") { model.chooseFilesToSend() }
                 .accessibilityLabel(Text("Send File to Phone"))

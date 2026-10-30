@@ -12,6 +12,7 @@ import FeatureFind
 import FeatureFocus
 import FeatureInput
 import FeatureMedia
+import FeatureMirror
 import FeatureNotify
 import FeaturePhotos
 import FeatureProximity
@@ -30,7 +31,7 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
-        "proximity.v1", "input.v1",
+        "proximity.v1", "input.v1", "mirror.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -60,6 +61,8 @@ final class AppModel {
     let proximity: ProximityModel
     /// The phone as trackpad and remote ("Trackpad and Remote" in Settings).
     let input: InputModel
+    /// The phone's screen in a window of its own ("Show Phone Screen").
+    let mirror: MirrorModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -94,6 +97,10 @@ final class AppModel {
     #endif
     /// Held for the life of the process (the model is never deallocated).
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
+    /// Ends a mirror session before the Mac sleeps; held for the life of the process.
+    @ObservationIgnored private var sleepObserver: NSObjectProtocol?
+    /// The mirror window, made the first time it is shown; it makes each session's sink.
+    @ObservationIgnored private let mirrorWindow = MirrorWindowHost()
     @ObservationIgnored private static let portKey = "listenPort"
     @ObservationIgnored private static let contactsKey = "contactsForNames"
     @ObservationIgnored private static let callsKey = "showPhoneCalls"
@@ -255,11 +262,25 @@ final class AppModel {
         self.photos = photos
         // Drag-out files a previous run left behind.
         try? FileManager.default.removeItem(at: FilePromise.folder)
-        // Thumbnail streams go to the photos model; the transfer roles to the engine.
-        bulk.onLink = { [weak transfers, weak photos] pipe, grant in
+        let mirrorWindow = mirrorWindow
+        let mirror = MirrorModel(
+            bulk: bulk,
+            send: { type, message in
+                // Only a phone that shares mirror.v1 gets mirror messages.
+                guard server.activePhone?.shared.contains("mirror.v1") == true else { return }
+                try? await server.send(type, message, channel: .mirror)
+            },
+            makeSink: { mirrorWindow.makeSink() }
+        )
+        self.mirror = mirror
+        // Thumbnail streams go to the photos model, the mirror streams to the mirror model (never
+        // through the session's work queue); the transfer roles to the engine.
+        bulk.onLink = { [weak transfers, weak photos, weak mirror] pipe, grant in
             switch grant.role {
             case .thumbnails:
                 if let photos { Task { await photos.thumbnailLink(pipe) } } else { pipe.close() }
+            case .mirrorVideo, .mirrorAudio, .mirrorControl:
+                if let mirror { mirror.link(pipe, grant: grant) } else { pipe.close() }
             default:
                 if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
             }
@@ -321,6 +342,8 @@ final class AppModel {
         notifyWork.register(focus)
         notifyWork.register(proximity)
         notifyWork.register(input)
+        // Only mirror.* control-channel messages go through the queue; mirror bytes ride the bulk links.
+        notifyWork.register(mirror)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -375,6 +398,10 @@ final class AppModel {
                 self?.server.handleWake()
                 self?.bulk.handleWake()
             }
+        }
+        sleepObserver = MacSleepObserver.install { [weak self] in
+            guard let self else { return }
+            Task { await self.mirror.macWillSleep() }
         }
         start()
     }
@@ -606,6 +633,27 @@ final class AppModel {
     var menuBarStatusAccessibilityLabel: String? {
         guard isConnected, let status = phoneStatus.status else { return nil }
         return String(localized: "Android Mirroring, phone connected") + ", " + StatusFormatter.accessibilityLabel(status)
+    }
+
+    // MARK: mirroring
+
+    /// "Show Phone Screen" is offered while the connected phone can show its screen now.
+    var canMirror: Bool { isConnected && mirror.canStart }
+
+    /// The menu notice when the connected phone can't show its screen; nil otherwise.
+    var mirrorNotice: String? {
+        guard isConnected else { return nil }
+        return MirrorCopy.notice(mirror.phoneAvailability)
+    }
+
+    /// "Show Phone Screen": opens the mirror window and starts a session.
+    func showMirror() {
+        let controller = mirrorWindow.controller(model: mirror, title: { [weak self] in
+            self?.currentPhone?.name ?? ""
+        })
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        Task { await mirror.start() }
     }
 
     // MARK: pairing
