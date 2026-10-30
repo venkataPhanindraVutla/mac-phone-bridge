@@ -60,6 +60,7 @@ import io.github.anmirror.feature.screenshots.ScreenshotDetector
 import io.github.anmirror.feature.share.ShareReceiver
 import io.github.anmirror.phone.platform.AndroidKeepAliveTuner
 import io.github.anmirror.phone.platform.AndroidKeystoreIdentity
+import io.github.anmirror.phone.platform.Battery
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.diag.KeepAliveLog
 import io.github.anmirror.phone.platform.EncryptedPairedMacStore
@@ -111,6 +112,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -161,6 +163,34 @@ class AppGraph private constructor(context: Context) {
 
     /** The store as read now; [StoreRead.Unreadable] is reported to the event log. */
     suspend fun readPairings(): StoreRead = encryptedStore.readStore()
+
+    /** The maker whose own battery setting the keep-connected screen points at; null for most phones. */
+    val maker: Maker? = MakerGuidance.makerOf(Build.MANUFACTURER)
+
+    private val _backgroundExempt = MutableStateFlow(Battery.isExempt(app))
+
+    /**
+     * Whether Android exempts this app from battery optimisation. Re-read on every app resume, at
+     * service start and on every session open; the Mac is told the opposite as
+     * `background_restricted`.
+     */
+    val backgroundExempt: StateFlow<Boolean> = _backgroundExempt.asStateFlow()
+
+    fun refreshBackgroundExempt() {
+        val now = Battery.isExempt(app)
+        if (_backgroundExempt.getAndUpdate { now } != now) keepAliveLog.record(KeepAliveEvent.EXEMPT, now.toString())
+    }
+
+    private val keepPrefs = app.getSharedPreferences("keepalive", Context.MODE_PRIVATE)
+    private val _makerStepDone = MutableStateFlow(keepPrefs.getBoolean(KEY_MAKER_STEP_DONE, false))
+
+    /** The user tapped Done on the keep-connected screen of a phone with a [maker] step (the phone can't read that setting). */
+    val makerStepDone: StateFlow<Boolean> = _makerStepDone.asStateFlow()
+
+    fun setMakerStepDone() {
+        keepPrefs.edit { putBoolean(KEY_MAKER_STEP_DONE, true) }
+        _makerStepDone.value = true
+    }
 
     /** SPEC 7's TCP keepalive timings on every dialed socket; a phone that cannot set them keeps the system's. */
     private val connector = TlsConnector(
@@ -981,6 +1011,7 @@ class AppGraph private constructor(context: Context) {
 
     init {
         keepAliveLog.record(KeepAliveEvent.PROCESS_START, lastExitDetail())
+        keepAliveLog.record(KeepAliveEvent.EXEMPT, _backgroundExempt.value.toString())
         scope.launch {
             for (event in notifyEvents) {
                 try {
@@ -1034,6 +1065,7 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_DND_ON = "sync_with_mac"
         private const val KEY_PROXIMITY_ON = "lock_when_away"
         private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
+        private const val KEY_MAKER_STEP_DONE = "maker_step_done"
         private const val ALL_FILES_ROOT_ID = "all"
 
         /** The Mac announces its bulk port right after connect (SPEC 13); a share just after connecting waits this long. */

@@ -100,6 +100,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -147,9 +148,14 @@ class ConnectionService : LifecycleService() {
         }
         screenOn.start()
         graph.manager.start()
-        // Phone status goes out only while the Mac shares status.v1.
+        graph.refreshBackgroundExempt()
+        // Phone status goes out only while the Mac shares status.v1. A change in the battery
+        // exemption is a new status, so the Mac's "may disconnect when locked" line follows it
+        // without a reconnect. The publisher collects the source anew on each connect: re-reading
+        // the exemption there makes a session's first status current.
+        val exempt = graph.backgroundExempt.onStart { graph.refreshBackgroundExempt() }
         StatusPublisher(
-            source = AndroidStatusSource(this),
+            source = combine(AndroidStatusSource(this), exempt) { s, e -> s.copy(backgroundRestricted = !e) },
             connected = graph.manager.state.map { it is Connected && "status.v1" in it.shared },
             send = { graph.manager.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, it) },
         ).launchIn(lifecycleScope)
@@ -1052,6 +1058,9 @@ class ConnectionService : LifecycleService() {
         notPairedJob?.cancel()
         notPairedJob = null
         if (state == PhoneConnectionState.Stopped) return
+        // A new session (also one without status.v1): the exemption may have changed in Settings
+        // while the app was closed.
+        if (state is Connected) graph.refreshBackgroundExempt()
         val name = state.macOrNull?.name ?: macs?.maxByOrNull { it.lastConnectedAt }?.name
         val text = when {
             state.copyNamesMac() && name != null -> getString(state.messageRes(), name)
