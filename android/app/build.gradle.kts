@@ -71,6 +71,7 @@ dependencies {
     implementation(project(":feature:screenshots"))
     implementation(project(":feature:photos"))
     implementation(project(":feature:browse"))
+    implementation(project(":feature:media"))
     implementation(project(":core:transfer"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)

@@ -71,6 +71,7 @@
     <string name="home_notify_title">Show notifications on your Mac</string>
     <string name="home_notify_needs_access">Android Mirroring needs notification access to do this. Allow it in Settings.</string>
     <string name="home_notify_allow">Allow notification access</string>
+    <string name="home_media_title">Control media from your Mac</string>
     <!-- Home: calls on the Mac -->
     <string name="home_calls_title">Calls on your Mac</string>
     <string name="home_calls_needs_permission">Android Mirroring needs access to your phone\'s call state to do this. Allow it in Settings.</string>

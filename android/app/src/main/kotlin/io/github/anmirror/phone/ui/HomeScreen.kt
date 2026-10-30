@@ -64,6 +64,8 @@ fun HomeScreen(
     notifyOn: Boolean,
     notifyAccess: Boolean,
     onNotifyToggle: (Boolean) -> Unit,
+    mediaControlOn: Boolean,
+    onMediaControlToggle: (Boolean) -> Unit,
     contactsOn: Boolean,
     contactsGranted: Boolean,
     onContactsToggle: (Boolean) -> Unit,
@@ -130,6 +132,7 @@ fun HomeScreen(
             Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.home_retry)) }
         }
         NotifyRow(on = notifyOn, access = notifyAccess, onToggle = onNotifyToggle)
+        MediaRow(on = mediaControlOn, access = notifyAccess, onToggle = onMediaControlToggle)
         ContactsRow(on = contactsOn, granted = contactsGranted, onToggle = onContactsToggle, onPermissionResult = onContactsPermissionResult)
         CallsRow(on = callsOn, granted = callsGranted, onToggle = onCallsToggle, onPermissionResult = onCallsPermissionResult)
         ClipboardRow(on = clipboardOn, onToggle = onClipboardToggle)
@@ -220,6 +223,45 @@ private fun FindMyPhoneRow() {
 private fun NotifyRow(on: Boolean, access: Boolean, onToggle: (Boolean) -> Unit) {
     val context = LocalContext.current
     val title = stringResource(R.string.home_notify_title)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            Switch(
+                checked = on,
+                onCheckedChange = { checked ->
+                    onToggle(checked)
+                    if (checked && !access) context.openNotificationAccessSettings()
+                },
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (on && !access) {
+            Text(stringResource(R.string.home_notify_needs_access), style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(
+                onClick = { context.openNotificationAccessSettings() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.home_notify_allow)) }
+        }
+    }
+}
+
+/**
+ * "Control media from your Mac": on by default. The phone's media sessions are read through the
+ * notification listener, so it needs notification access, granted in Settings; turning the switch
+ * on without it opens that page.
+ */
+@Composable
+private fun MediaRow(on: Boolean, access: Boolean, onToggle: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.home_media_title)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),

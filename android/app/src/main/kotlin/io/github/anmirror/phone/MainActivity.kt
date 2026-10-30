@@ -84,6 +84,7 @@ private fun AppRoot(graph: AppGraph) {
     val ringing by ConnectionService.ringing.collectAsStateWithLifecycle()
     val notifyOn by graph.notifyOn.collectAsStateWithLifecycle()
     val notifyAccess by graph.notifyAccess.collectAsStateWithLifecycle()
+    val mediaControlOn by graph.mediaControlOn.collectAsStateWithLifecycle()
     val contactsOn by graph.contactsOn.collectAsStateWithLifecycle()
     val contactsGranted by graph.contactsGranted.collectAsStateWithLifecycle()
     val callsOn by graph.callsOn.collectAsStateWithLifecycle()
@@ -124,6 +125,8 @@ private fun AppRoot(graph: AppGraph) {
                         notifyOn = notifyOn,
                         notifyAccess = notifyAccess,
                         onNotifyToggle = graph::setNotifyOn,
+                        mediaControlOn = mediaControlOn,
+                        onMediaControlToggle = graph::setMediaControlOn,
                         contactsOn = contactsOn,
                         contactsGranted = contactsGranted,
                         onContactsToggle = graph::setContactsOn,

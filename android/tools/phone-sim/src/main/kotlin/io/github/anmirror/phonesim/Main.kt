@@ -13,6 +13,7 @@
 //   EVENT files-sent bytes=<n>                              (with --send-bytes)
 //   EVENT files-failed <id> <reason>                        (with --send-bytes; the process then exits 1)
 //   EVENT notify-invoke key=<key> action=<n> reply=<text>   (with --notify; the process then exits 0)
+//   EVENT media-command kind=TOGGLE playing=<bool>          (with --media; exits 0 after the second command)
 //   EVENT unpaired <mac-id>
 //   EVENT disconnected <reason>
 //   EVENT failed <reason>
@@ -52,12 +53,13 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.channels.Channel as KChannel
 
 private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> --state-dir <dir> [--auto-confirm]
-                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--send-bytes <n>] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [--send-bytes <n>] [common options]
        phone-sim connect --state-dir <dir> --identity <p12>
-                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [common options]
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
+  --media: advertise media.v1, send media.availability and a paused session "sim"; TOGGLE flips it; exit 0 after the second media.command
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
   Exit status: 0 after a session ends, 1 after EVENT failed, 2 on bad arguments."""
 
@@ -89,6 +91,7 @@ private class Options(
     val autoConfirm: Boolean,
     val status: StatusUpdate?,
     val notify: Boolean,
+    val media: Boolean,
     val sendBytes: Long?,
     val name: String,
     val model: String,
@@ -130,6 +133,7 @@ private fun parse(args: Array<String>): Options {
     var autoConfirm = false
     var status: StatusUpdate? = null
     var notify = false
+    var media = false
     var sendBytes: Long? = null
     var name = "phone-sim"
     var model = "phone-sim"
@@ -144,6 +148,7 @@ private fun parse(args: Array<String>): Options {
             "--auto-confirm" -> autoConfirm = true
             "--status" -> status = parseStatus(value(arg))
             "--notify" -> notify = true
+            "--media" -> media = true
             "--send-bytes" -> sendBytes = value(arg).toLongOrNull()?.takeIf { it >= 0 } ?: usageError("--send-bytes needs a size in bytes")
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
@@ -161,7 +166,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, notify, sendBytes, name, model,
+        autoConfirm, status, notify, media, sendBytes, name, model,
     )
 }
 
@@ -193,7 +198,11 @@ fun main(args: Array<String>) {
         .setProtocolVersion(PROTOCOL_VERSION)
         .setAppVersion("0.1.0-sim")
         .addAllCapabilities(
-            (CAPABILITIES + listOfNotNull("notify.v1".takeIf { options.notify }, "files.v1".takeIf { options.sendBytes != null })).sorted(),
+            (CAPABILITIES + listOfNotNull(
+                "notify.v1".takeIf { options.notify },
+                "media.v1".takeIf { options.media },
+                "files.v1".takeIf { options.sendBytes != null },
+            )).sorted(),
         )
         .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
         .setDeviceName(options.name)
@@ -306,8 +315,11 @@ private suspend fun session(
         SimTransfers(channel, connector, mac.fingerprintHex, bytes, tempDir, ::emit) { ok -> exitProcess(if (ok) 0 else 1) }
             .also { it.start() }
     }
+    val media = if (options.media && "media.v1" in shared) SimMedia(channel, ::emit) { exitProcess(0) } else null
+    media?.start()
     val end = PhoneSession(channel, shared).run { env ->
         if (transfers?.onMessage(env) == true) return@run
+        if (media?.onMessage(env) == true) return@run
         when (env.type) {
             MessageType.NOTIFY_INVOKE -> {
                 val i = InvokeAction.parseFrom(env.payload)

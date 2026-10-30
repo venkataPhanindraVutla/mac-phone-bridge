@@ -70,6 +70,7 @@ import io.github.anmirror.protocol.v1.ContactsSyncRequest
 import io.github.anmirror.protocol.v1.DismissNotification
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
+import io.github.anmirror.protocol.v1.MediaCommand
 import io.github.anmirror.protocol.v1.NotificationFilter
 import io.github.anmirror.protocol.v1.PhotoFetch
 import io.github.anmirror.protocol.v1.PhotosListRequest
@@ -89,6 +90,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -130,6 +132,7 @@ class ConnectionService : LifecycleService() {
         setUpScreenshots()
         setUpPhotos()
         setUpBrowse()
+        setUpMedia()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -155,6 +158,10 @@ class ConnectionService : LifecycleService() {
         if (::ring.isInitialized) ring.stop() // the service going away must not leave an alarm behind
         stopContactsObserver()
         stopScreenshotObserver()
+        if (mediaBridgeOpen) {
+            mediaBridgeOpen = false
+            graph.mediaBridge.onDisconnected()
+        }
         graph.callNotifications.onDialerCallPosted = null
         calls.stop()
         network.stop()
@@ -588,6 +595,58 @@ class ConnectionService : LifecycleService() {
                     if (open) graph.launchQuietly("browse: roots changed") { graph.browse.onRootsChanged() }
                     if (wasOpen && !open) graph.browse.cancelAll()
                     wasOpen = open
+                }
+        }
+    }
+
+    /** Whether [AppGraph.mediaBridge] is started; touched only by the media collector and onDestroy (main thread). */
+    private var mediaBridgeOpen = false
+
+    /**
+     * Media (F-07): while the feature is open (the Mac shares media.v1, the switch is on and
+     * notification access is granted) the bridge watches the phone's media sessions and sends
+     * the picked one's state; `media.command` goes to it then and is dropped otherwise.
+     * `media.availability` is sent regardless, while the Mac shares media.v1. Each new session,
+     * and each change of access, starts the bridge afresh (the sessions are read again, the
+     * artwork sent again).
+     */
+    private fun setUpMedia() {
+        graph.manager.on(MessageType.MEDIA_COMMAND) { env ->
+            val command = MediaCommand.parseFrom(env.payload)
+            if (graph.mediaOpen()) graph.mediaBridge.onCommand(command)
+        }
+        lifecycleScope.launch {
+            var lastSession: Connected? = null
+            combine(
+                // By identity: a new session of the same Mac with the same capabilities is still new.
+                graph.manager.state
+                    .map { s -> (s as? Connected)?.takeIf { "media.v1" in it.shared } }
+                    .distinctUntilChanged { a, b -> a === b },
+                graph.mediaControlOn,
+                graph.notifyAccess,
+            ) { session, on, access -> Triple(session, on, access) }
+                .distinctUntilChanged { a, b -> a.first === b.first && a.second == b.second && a.third == b.third }
+                .collect { (session, on, access) ->
+                    val open = session != null && on && access
+                    if (mediaBridgeOpen && (!open || session !== lastSession)) {
+                        mediaBridgeOpen = false
+                        graph.mediaBridge.onDisconnected()
+                    }
+                    lastSession = session
+                    if (session != null) {
+                        graph.manager.send(Channel.CHANNEL_MEDIA, MessageType.MEDIA_AVAILABILITY, featureAvailability(granted = access, userOn = on))
+                    }
+                    if (open && !mediaBridgeOpen) {
+                        mediaBridgeOpen = true
+                        // Off the main thread (session reads, artwork encoding), and finished before the next change.
+                        try {
+                            withContext(Dispatchers.Default) { graph.mediaBridge.onConnected() }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.e(TAG, "media: start failed (${e.javaClass.simpleName})")
+                        }
+                    }
                 }
         }
     }
