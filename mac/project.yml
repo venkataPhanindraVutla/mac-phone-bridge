@@ -54,6 +54,8 @@ targets:
       - package: AMKit
         product: FeatureFocus
       - package: AMKit
+        product: FeatureProximity
+      - package: AMKit
         product: AppSession
     settings:
       base:

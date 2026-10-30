@@ -13,6 +13,7 @@ import FeatureFocus
 import FeatureMedia
 import FeatureNotify
 import FeaturePhotos
+import FeatureProximity
 import FeatureScreenshots
 import FeatureShare
 import FeatureStatus
@@ -28,6 +29,7 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
+        "proximity.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -52,6 +54,9 @@ final class AppModel {
     let media: MediaModel
     /// Focus on this Mac and Do Not Disturb on the phone, kept in step ("Sync Focus" in Settings).
     let focus: FocusModel
+    /// Locks this Mac when the chosen phone is away ("Auto-Lock" in Settings). Runs whether or not
+    /// the phone is connected.
+    let proximity: ProximityModel
     /// "Save phone screenshots to" in Settings (default Desktop).
     private(set) var screenshotDestination: ScreenshotDestination = .saved(in: .standard)
     /// Whether phone calls show on this Mac (default on). Off ignores call states and missed calls.
@@ -282,6 +287,11 @@ final class AppModel {
             }
         )
         self.focus = focus
+        let proximity = ProximityModel(
+            scanner: CoreBluetoothScanner(), locker: LoginFrameworkLocker(), activity: SystemMacActivity(),
+            defaults: .standard
+        )
+        self.proximity = proximity
         notifyWork.register(clipboard)
         notifyWork.register(transfers)
         notifyWork.register(share)
@@ -290,6 +300,7 @@ final class AppModel {
         notifyWork.register(browse)
         notifyWork.register(media)
         notifyWork.register(focus)
+        notifyWork.register(proximity)
         #if FULL_BUILD
         // After the models they use, so those are connected first.
         if let group = AppGroup.id, let container = AppGroup.container {
@@ -754,6 +765,7 @@ final class AppModel {
 
     private func refreshPhones() {
         pairedPhones = (try? phoneStore.all()) ?? []
+        proximity.setPhones(pairedPhones, discoveryKey: try? KeychainSecretStore().discoveryKey())
     }
 }
 

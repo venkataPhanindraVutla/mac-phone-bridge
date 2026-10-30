@@ -39,6 +39,7 @@ struct SettingsView: View {
                     .accessibilityLabel(Text("Send Mac clipboard to the phone"))
                 }
                 FocusSettings(model: model, phoneName: phone.name)
+                AutoLockSettings(proximity: model.proximity, phone: phone)
                 Section("Screenshots") {
                     Picker("Save phone screenshots to", selection: Binding(
                         get: { model.screenshotDestination },

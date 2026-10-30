@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "FeatureBrowse", targets: ["FeatureBrowse"]),
         .library(name: "FeatureMedia", targets: ["FeatureMedia"]),
         .library(name: "FeatureFocus", targets: ["FeatureFocus"]),
+        .library(name: "FeatureProximity", targets: ["FeatureProximity"]),
         .library(name: "AppSession", targets: ["AppSession"]),
         // The Full build's extensions and the app's FULL_BUILD code only (docs/ARCHITECTURE.md section 4).
         .library(name: "FileProviderShared", targets: ["FileProviderShared"]),
@@ -103,6 +104,11 @@ let package = Package(
             name: "FeatureFocus",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
             linkerSettings: [.linkedFramework("Intents")]
+        ),
+        .target(
+            name: "FeatureProximity",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")],
+            linkerSettings: [.linkedFramework("CoreBluetooth")]
         ),
         .target(
             name: "AppSession",
@@ -191,6 +197,13 @@ let package = Package(
         .testTarget(
             name: "FeatureFocusTests",
             dependencies: ["FeatureFocus", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .testTarget(
+            name: "FeatureProximityTests",
+            dependencies: [
+                "FeatureProximity", "AMProtocol", "ConnectionCore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
         ),
         .testTarget(name: "FileProviderSharedTests", dependencies: ["FileProviderShared"]),
         .testTarget(

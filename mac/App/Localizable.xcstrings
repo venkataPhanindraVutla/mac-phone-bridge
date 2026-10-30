@@ -2179,6 +2179,237 @@
           }
         }
       }
+    },
+    "Auto-Lock": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-Lock"
+          }
+        }
+      }
+    },
+    "Lock this Mac when %@ is away": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lock this Mac when %@ is away"
+          }
+        }
+      }
+    },
+    "Signal threshold": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signal threshold"
+          }
+        }
+      }
+    },
+    "%lld dBm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld dBm"
+          }
+        }
+      }
+    },
+    "Lock after": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lock after"
+          }
+        }
+      }
+    },
+    "%lld seconds": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld seconds"
+          }
+        }
+      }
+    },
+    "Test mode": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test mode"
+          }
+        }
+      }
+    },
+    "Signal: %lld dBm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signal: %lld dBm"
+          }
+        }
+      }
+    },
+    "No signal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No signal"
+          }
+        }
+      }
+    },
+    "Near": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Near"
+          }
+        }
+      }
+    },
+    "Away": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Away"
+          }
+        }
+      }
+    },
+    "Locking in %lld s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locking in %lld s"
+          }
+        }
+      }
+    },
+    "Would lock now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Would lock now"
+          }
+        }
+      }
+    },
+    "Mac idle for %lld s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac idle for %lld s"
+          }
+        }
+      }
+    },
+    "Turn on Bluetooth on this Mac.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on Bluetooth on this Mac."
+          }
+        }
+      }
+    },
+    "Allow Bluetooth for Android Mirroring in System Settings.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Bluetooth for Android Mirroring in System Settings."
+          }
+        }
+      }
+    },
+    "Locking isn't available on this macOS version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locking isn't available on this macOS version"
+          }
+        }
+      }
+    },
+    "Turn on “Let your Mac lock when you walk away” in the phone app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on “Let your Mac lock when you walk away” in the phone app."
+          }
+        }
+      }
+    },
+    "Bluetooth is off on the phone, or it can't advertise.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth is off on the phone, or it can't advertise."
+          }
+        }
+      }
+    },
+    "Auto-Lock is paused until %@ connects to this Mac again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-Lock is paused until %@ connects to this Mac again."
+          }
+        }
+      }
+    },
+    "This Mac never unlocks itself.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This Mac never unlocks itself."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
