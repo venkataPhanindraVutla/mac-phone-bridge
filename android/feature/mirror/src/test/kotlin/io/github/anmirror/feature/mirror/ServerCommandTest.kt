@@ -12,7 +12,7 @@ class ServerCommandTest {
     fun commandMatchesPinnedLine() {
         val o = HelperOptions(0x0a1b2c3d, 1920, 8_000_000, 60, VideoCodec.VIDEO_CODEC_H264, true, AudioCodec.AUDIO_CODEC_OPUS, true)
         assertEquals(
-            "CLASSPATH=/data/local/tmp/anmirror-helper.jar app_process / com.genymobile.scrcpy.Server 5.0.1-am1 " +
+            "CLASSPATH=/data/local/tmp/anmirror-helper-0a1b2c3d.jar app_process / com.genymobile.scrcpy.Server 5.0.1-am1 " +
                 "scid=0a1b2c3d log_level=warn tunnel_forward=true video=true audio=true control=true video_codec=h264 " +
                 "audio_codec=opus max_size=1920 video_bit_rate=8000000 max_fps=60 clipboard_autosync=true cleanup=true " +
                 "power_off_on_close=false",
@@ -59,6 +59,24 @@ class ServerCommandTest {
         assertTrue(!pattern.containsMatchIn("app_process / com.genymobile.scrcpy.CleanUp 0 -1 false false -1 -1"))
         assertTrue(!pattern.containsMatchIn("sh -c $kill"))
         assertTrue(!pattern.containsMatchIn("app_process / com.genymobile.scrcpy.Server 3.3.1 scid=1234abcd"))
+    }
+
+    /** M3: each session pushes its own jar, so an earlier session's clean-up unlinks only that one. */
+    @Test
+    fun jarPathIsPerSession() {
+        assertEquals("/data/local/tmp/anmirror-helper-0a1b2c3d.jar", ServerCommand.jarPath(0x0a1b2c3d))
+        assertEquals("/data/local/tmp/anmirror-helper-00000001.jar", ServerCommand.jarPath(1))
+        val o = HelperOptions(1, 960, 2_000_000, 30, VideoCodec.VIDEO_CODEC_H264, false, AudioCodec.AUDIO_CODEC_OPUS, false)
+        assertTrue(ServerCommand.build(o, "5.0.1-am1").startsWith("CLASSPATH=/data/local/tmp/anmirror-helper-00000001.jar "))
+    }
+
+    /** Jars a session pushed but never launched (its clean-up unlinks a launched one at once), older than a minute. */
+    @Test
+    fun sweepRemovesOnlyOldLeftoverJars() {
+        assertEquals(
+            "find /data/local/tmp -maxdepth 1 -name 'anmirror-helper*.jar' -mmin +1 -delete",
+            ServerCommand.sweepStaleJars(),
+        )
     }
 
     @Test

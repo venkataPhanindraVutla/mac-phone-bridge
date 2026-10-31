@@ -1,17 +1,20 @@
 package io.github.anmirror.feature.mirror
 
 import io.github.anmirror.adb.AdbClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import kotlin.coroutines.CoroutineContext
 
 /**
- * Puts the helper jar on the phone before every session: `exec:cat > <path>`, then `sha256sum`
- * against [sha256] up to [VERIFY_TRIES] times, [VERIFY_GAP_MS] apart (the write may still be
- * landing). [io] runs the blocking copy.
+ * Puts the helper jar on the phone before every session, at the session's own path: old leftover
+ * jars are swept first ([ServerCommand.sweepStaleJars]), then `exec:cat > <path>`, then
+ * `sha256sum` against [sha256] up to [VERIFY_TRIES] times, [VERIFY_GAP_MS] apart (the write may
+ * still be landing). [io] runs the blocking copy.
  */
 class HelperInstaller(
     private val adb: AdbClient,
@@ -19,11 +22,24 @@ class HelperInstaller(
     private val sha256: String,
     private val io: CoroutineContext = Dispatchers.IO,
 ) {
-    /** Throws [IOException] when the push fails or the jar on the phone never matches. */
-    suspend fun install() {
+    /**
+     * Pushes to [path] and checks it. The push pipe goes to [register] (the session's close group,
+     * review M4), so a stop or deadline that closes the group ends a push adbd stopped answering;
+     * false means the session already ended. Throws [IOException] when the push fails or the jar on
+     * the phone never matches.
+     */
+    suspend fun install(path: String, register: (Closeable) -> Boolean) {
         // Fail closed: an empty expected hash must not match an empty sha256sum.
         if (!SHA256_HEX.matches(sha256)) throw IOException("expected helper hash is not a SHA-256")
-        val pipe = adb.open("exec:cat > ${ServerCommand.JAR_PATH}")
+        try {
+            adb.shell(ServerCommand.sweepStaleJars())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            // Best effort: leftovers wait for the next session.
+        }
+        val pipe = adb.open("exec:cat > $path")
+        if (!register(pipe)) throw IOException("session ended")
         try {
             withContext(io) {
                 jar().use { it.copyTo(pipe.output, BUFFER_BYTES) }
@@ -34,7 +50,7 @@ class HelperInstaller(
         }
         val want = sha256.lowercase()
         repeat(VERIFY_TRIES) { attempt ->
-            val got = adb.shell("sha256sum ${ServerCommand.JAR_PATH}").trim().substringBefore(' ').lowercase()
+            val got = adb.shell("sha256sum $path").trim().substringBefore(' ').lowercase()
             if (got == want) return
             if (attempt < VERIFY_TRIES - 1) delay(VERIFY_GAP_MS)
         }

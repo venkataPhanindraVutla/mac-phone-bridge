@@ -5,7 +5,13 @@ import io.github.anmirror.protocol.v1.MirrorPhase
 import io.github.anmirror.protocol.v1.MirrorReason
 import io.github.anmirror.protocol.v1.MirrorStart
 import io.github.anmirror.protocol.v1.MirrorState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
@@ -365,13 +371,100 @@ class MirrorSessionTest {
         assertTrue(adb.opens.none { it.startsWith("shell:") })
     }
 
+    /** M2 (R59): 18 s, inside the Mac's 20 s, so the Mac shows the phone's reason. */
     @Test
-    fun notRunningIn20sFails() = runTest {
+    fun notRunningIn18sFails() = runTest {
         val s = session(connect = { awaitCancellation() })
         val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
-        assertEquals(20_000L, currentTime)
+        assertEquals(18_000L, currentTime)
+        job.join()
+    }
+
+    /** M1 (R59): the end reason reaches the Mac before its links close (its 1 s grace) and before pkill. */
+    @Test
+    fun endReasonIsReportedBeforeTheLinksCloseAndPkill() = runTest {
+        planAll()
+        val seen = mutableListOf<String>()
+        val s = MirrorSession(
+            start = mirrorStart(), adb = adb,
+            installer = HelperInstaller(adb, { ByteArray(64).inputStream() }, MirrorAdb.SHA, io = EmptyCoroutineContext),
+            dialer = dialer, clipboardAutosync = true, version = "5.0.1-am1",
+            report = { state ->
+                if (state.phase == MirrorPhase.MIRROR_PHASE_FAILED) {
+                    seen += "links closed=${dialer.links.count { it.closes.get() > 0 }} kills=${adb.shells.count { it == KILL }}"
+                }
+                states.send(state)
+            },
+            scope = backgroundScope, clock = { currentTime }, connect = { null }, onAdbLost = { adbLost++ },
+            io = EmptyCoroutineContext, newScid = { 0x0a1b2c3d },
+        )
+        val job = launch { s.run {} }
+        assertEquals(starting, next())
+        assertEquals(running, next())
+        adb.shellStream.helperCloses()
+        assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
+        job.join()
+        assertEquals(listOf("links closed=0 kills=1"), seen)
+        // Then everything closes and the end's pkill runs.
+        assertTrue(dialer.links.all { it.closes.get() == 1 })
+        assertEquals(2, adb.shells.count { it == KILL })
+    }
+
+    /** M1: an ADB drop that only pkill reveals still marks Full mode for re-enabling. */
+    @Test
+    fun adbLossFoundByTheEndsPkillStillNeedsSetup() = runTest {
+        val (_, job) = runningSession()
+        // The helper ends; ADB still looks up, and turns out gone when the end's pkill tries it.
+        adb.shellHook = { command ->
+            if (command == KILL) {
+                adb.isConnected = false
+                throw java.io.IOException("adb gone")
+            }
+        }
+        adb.shellStream.helperCloses()
+        assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
+        job.join()
+        assertEquals(1, adbLost)
+    }
+
+    /** M4: adbd going silent mid-push can't wedge the session: a stop ends it, and the push pipe closes. */
+    @Test
+    fun stopDuringAStalledPushEndsTheSession() = runBlocking {
+        // Real threads and time: the push blocks a thread, as it would on the phone.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            adb.pushStalls = true
+            val s = MirrorSession(
+                start = mirrorStart(), adb = adb,
+                installer = HelperInstaller(adb, { ByteArray(64).inputStream() }, MirrorAdb.SHA),
+                dialer = dialer, clipboardAutosync = true, version = "5.0.1-am1",
+                report = { states.send(it) }, scope = scope, clock = System::currentTimeMillis,
+                connect = { null }, onAdbLost = { adbLost++ }, newScid = { 0x0a1b2c3d },
+            )
+            val job = scope.launch { s.run {} }
+            withTimeout(5_000) { assertEquals(starting, next()) }
+            assertTrue(adb.pushEntered.await(5, TimeUnit.SECONDS))
+            s.stop(MirrorReason.MIRROR_REASON_USER)
+            withTimeout(5_000) {
+                assertEquals(stopped(MirrorReason.MIRROR_REASON_USER), next())
+                job.join()
+            }
+            assertEquals(0L, adb.pushClosed.count, "the push pipe was closed")
+            assertTrue(adb.opens.none { it.startsWith("shell:") }, "never launched")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** M3: the push and the launch use this session's own jar. */
+    @Test
+    fun sessionPushesAndLaunchesItsOwnJar() = runTest {
+        val (s, job) = runningSession()
+        assertTrue("exec:cat > /data/local/tmp/anmirror-helper-0a1b2c3d.jar" in adb.opens)
+        assertTrue(adb.opens.single { it.startsWith("shell:") }.startsWith("shell:CLASSPATH=/data/local/tmp/anmirror-helper-0a1b2c3d.jar "))
+        s.stop(null)
         job.join()
     }
 

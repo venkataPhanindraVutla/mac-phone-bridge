@@ -627,7 +627,7 @@ Channel `MIRROR`.
   with the reason that matches the availability (`TURNED_OFF`, `NEEDS_SETUP` or `UNAVAILABLE`).
 - The phone's other end reasons: `USER` (a `mirror.stop` from either side), `REPLACED`,
   `NEEDS_SETUP` (Wireless debugging turned off), `ADB_FAILED` (its connection to Wireless
-  debugging failed or dropped), `HELPER_FAILED` (the helper did not start within 20 s, or ended),
+  debugging failed or dropped), `HELPER_FAILED` (the helper did not start within 18 s, or ended),
   `LINK_FAILED` (a bulk connection failed or ended without the Mac's `mirror.stop`) and
   `LINK_SLOW`: the Mac fell too far behind, with more than about 3 s of video waiting on the
   phone (`video_bit_rate` / 8 × 3 bytes, kept within 512 KiB to 4 MiB) or more than 512 KiB of
@@ -652,6 +652,24 @@ Channel `MIRROR`.
 - `mirror.test_pattern` asks the phone to show the delay test screen (`DELAY`), the frame-rate
   test screen (`FPS`), or neither (`OFF`), while a session runs.
 - A control disconnect ends the session.
+- Timing across the two sides:
+  - Start deadlines: the Mac's is 20 s from sending `mirror.start` to `RUNNING` and a first
+    decoded frame (then it sends `mirror.stop` `USER` and shows the timeout line); the phone's is
+    18 s to `RUNNING` (then `FAILED` `HELPER_FAILED`), so the phone's own reason reaches the Mac
+    first.
+  - When the phone ends a session it sends its `mirror.state` first, then closes the bulk
+    connections and stops the helper.
+  - A video or control bulk connection that ends without a `mirror.stop` (or, on the Mac, a final
+    `mirror.state`) ends the session after a 1 s grace, on either side (`LINK_FAILED`).
+  - The Mac's own stop: it turns the phone's screen back on first, if it turned it off, and
+    flushes that (at most 200 ms); then it sends `mirror.stop`, drains its last control bytes (a
+    touch release; at most 200 ms) and closes the links. The phone, on the Mac's stop, lets the
+    control link drain into the helper for up to 500 ms before closing the helper's sockets.
+  - The Mac ends a running session before it sleeps: the screen-on is queued ahead of the release,
+    the links close at once and `mirror.stop` follows. The control connection may survive sleep
+    (section 7), so the disconnect no longer does it. If the screen-on can't get out first, the
+    phone ends the session (`LINK_FAILED` or `LINK_SLOW`) and the helper's clean-up turns the
+    screen back on.
 
 Vectors: `framing.json` `mirror_start_minimal`; `scrcpy.json` `control`, `device` and `stream`.
 The canned stream `testdata/mirror/sample-h264-320x640.scrcpy` holds the video socket bytes after

@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
@@ -37,12 +38,13 @@ import kotlin.coroutines.CoroutineContext
  * Ends: [stop] (from the Mac, the phone, a newer start or a disconnect), a Mac link ending
  * (LINK_FAILED, unless the Mac's stop arrives within [LINK_END_GRACE_MS]), a helper pipe or the
  * shell ending (HELPER_FAILED; ADB_FAILED and [onAdbLost] when the ADB connection went with it),
- * no RUNNING within [START_DEADLINE_MS], or the Mac falling behind (LINK_SLOW, ruling R54: libadb
- * takes in the helper's output however slowly the Mac reads, so a watchdog ends the session when
- * more than about 3 s of video ([maxVideoQueuedBytes], ruling R57) or [MAX_AUDIO_QUEUED_BYTES] of
- * audio wait on the phone, or one write to the Mac is blocked longer than [MAX_WRITE_BLOCKED_MS]). Then the Mac
- * links, the ADB pipes and the shell close, once each, and `pkill` runs while ADB is up. [io] runs blocking reads; [log] gets IDs, phases,
- * reasons, role names and byte counts only.
+ * no RUNNING within [START_DEADLINE_MS] (18 s), or the Mac falling behind (LINK_SLOW, ruling R54:
+ * libadb takes in the helper's output however slowly the Mac reads, so a watchdog ends the session
+ * when more than about 3 s of video ([maxVideoQueuedBytes], ruling R57) or
+ * [MAX_AUDIO_QUEUED_BYTES] of audio wait on the phone, or one write to the Mac is blocked longer
+ * than [MAX_WRITE_BLOCKED_MS]). Then the end is reported, the Mac links, the ADB pipes (the jar
+ * push among them) and the shell close, once each, and `pkill` runs while ADB is up ([finish]).
+ * [io] runs blocking reads; [log] gets IDs, phases, reasons, role names and byte counts only.
  */
 class MirrorSession(
     val start: MirrorStart,
@@ -168,15 +170,16 @@ class MirrorSession(
             }
 
             helperTouched = true
+            val scid = newScid()
             try {
                 adb.shell(ServerCommand.killStale(version))
-                installer.install()
+                // The push joins the ADB pipes, so an end closes it even if adbd stops answering (M4).
+                installer.install(ServerCommand.jarPath(scid), adbPipes::add)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 return fail(MirrorReason.MIRROR_REASON_HELPER_FAILED, "install ${e.javaClass.simpleName}")
             }
-            val scid = newScid()
             val command = ServerCommand.build(HelperOptions.from(start, scid, clipboardAutosync), version)
             val shell = try {
                 adb.open("shell:$command")
@@ -313,14 +316,16 @@ class MirrorSession(
         }
     }
 
+    /**
+     * The end, in this order (ruling R59): the reason to the Mac first, while its links are still
+     * open (a link end becomes LINK_FAILED on the Mac after its 1 s grace) and before `pkill`
+     * (up to [KILL_TIMEOUT_MS]); then the Mac's last control bytes (after its own stop), the
+     * links and pipes, and `pkill`. Whether ADB was lost is judged before `pkill`; when only
+     * `pkill` shows it gone after a helper failure, [onAdbLost] still runs (the reason sent stays
+     * HELPER_FAILED).
+     */
     private suspend fun finish(end: End, began: Long) {
-        // The Mac sends its last control bytes (the screen back on, a touch UP) right after its
-        // stop and then closes the link: let them through to the helper first.
-        if (end is End.Stopped && end.drain) controlDown?.let { t -> withContext(io) { t.join(CONTROL_DRAIN_MS) } }
-        closeAll()
-        var adbUp = adb.isConnected
-        if (adbUp && helperTouched) adbUp = killStale()
-        val adbLost = adbWasUp && !adbUp
+        val adbLost = adbWasUp && !adb.isConnected
         val state = when (end) {
             is End.Stopped -> end.reason?.let { state(MirrorPhase.MIRROR_PHASE_STOPPED, it) }
             is End.Failed -> state(
@@ -332,9 +337,22 @@ class MirrorSession(
                 if (adbLost) MirrorReason.MIRROR_REASON_ADB_FAILED else MirrorReason.MIRROR_REASON_HELPER_FAILED,
             )
         }
-        if (state?.reason == MirrorReason.MIRROR_REASON_ADB_FAILED && adbLost) onAdbLost()
         log("session $id ended ${state?.phase?.name ?: "quietly"} ${state?.reason?.name ?: ""} after ${clock() - began} ms")
-        state?.let { report(it) }
+        state?.let { tell(it) }
+        // The Mac sends its last control bytes (the screen back on, a touch UP) right after its
+        // stop and then closes the link: let them through to the helper first.
+        if (end is End.Stopped && end.drain) controlDown?.let { t -> withContext(io) { t.join(CONTROL_DRAIN_MS) } }
+        closeAll()
+        var adbUp = adb.isConnected
+        if (adbUp && helperTouched) adbUp = killStale()
+        val helperEnd = state?.reason == MirrorReason.MIRROR_REASON_HELPER_FAILED || state?.reason == MirrorReason.MIRROR_REASON_ADB_FAILED
+        if (helperEnd && adbWasUp && !adbUp) onAdbLost()
+    }
+
+    /** Reports [state], waiting at most [REPORT_WAIT_MS]: a stuck control connection must not keep the links open. */
+    private suspend fun tell(state: MirrorState) {
+        val told = scope.launch { report(state) }
+        withTimeoutOrNull(REPORT_WAIT_MS) { told.join() }
     }
 
     /** `pkill` while ADB is up; false when that showed ADB is gone. */
@@ -406,13 +424,15 @@ class MirrorSession(
     }
 
     companion object {
-        const val START_DEADLINE_MS = 20_000L
+        /** Inside the Mac's 20 s (to RUNNING and a first frame), so the phone's reason reaches the Mac first (R59). */
+        const val START_DEADLINE_MS = 18_000L
         const val OPEN_RETRY_MS = 100L
         const val OPEN_TRIES = 50
         const val SEND_BUFFER_BYTES = 262_144
         const val LINK_END_GRACE_MS = 1_000L
         const val CONTROL_DRAIN_MS = 500L
         const val KILL_TIMEOUT_MS = 5_000L
+        const val REPORT_WAIT_MS = 1_000L
         const val WATCH_MS = 100L
         const val MIN_VIDEO_QUEUED_BYTES = 512L * 1024
         const val MAX_VIDEO_QUEUED_BYTES = 4L * 1024 * 1024

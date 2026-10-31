@@ -419,7 +419,12 @@ internal object LibAdbQueue {
         return { queuedBytes(queue, buffer) }
     }
 
-    /** The bytes in [queue]'s payloads plus [buffer]'s remainder, read under the queue's lock (libadb's own). */
+    /**
+     * The bytes in [queue]'s payloads plus [buffer]'s remainder. The queue is summed under its own
+     * lock, the one libadb takes to add to it. The buffer is not guarded by that lock (the reading
+     * thread drains it without it), so its remainder may be a moment stale: at most one payload
+     * off, which is fine for a watchdog limit of hundreds of KiB.
+     */
     fun queuedBytes(queue: java.util.Queue<*>, buffer: java.nio.ByteBuffer?): Long = synchronized(queue) {
         queue.sumOf { (it as? ByteArray)?.size?.toLong() ?: 0L } + (buffer?.remaining()?.toLong() ?: 0L)
     }

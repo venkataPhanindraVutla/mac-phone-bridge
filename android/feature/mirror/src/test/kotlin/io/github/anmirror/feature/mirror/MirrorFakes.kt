@@ -125,14 +125,23 @@ class MirrorAdb(private val sha: String = SHA) : AdbClient {
     val shellStream = FakeSocket()
 
     /** The pushed jar's sha256sum line; replace to fail the check. */
-    @Volatile var shaLine: (Int) -> String = { "$sha  ${ServerCommand.JAR_PATH}\n" }
+    @Volatile var shaLine: (Int) -> String = { "$sha  /data/local/tmp/anmirror-helper-0a1b2c3d.jar\n" }
     private val shaCalls = AtomicInteger()
+
+    /** Set: the push's writes block (adbd went silent mid-push) until its pipe is closed. */
+    @Volatile var pushStalls = false
+    val pushClosed = CountDownLatch(1)
+    val pushEntered = CountDownLatch(1)
 
     override suspend fun pair(host: String, port: Int, code: String) = throw UnsupportedOperationException()
     override suspend fun connect(host: String, port: Int) = throw UnsupportedOperationException()
 
+    /** Runs first in [shell] (after the connected check): a test can fail a command or drop ADB there. */
+    @Volatile var shellHook: (String) -> Unit = {}
+
     override suspend fun shell(command: String): String {
         if (!isConnected) throw IOException("adb not connected")
+        shellHook(command)
         shells += command
         return if (command.startsWith("sha256sum ")) shaLine(shaCalls.incrementAndGet()) else ""
     }
@@ -141,7 +150,7 @@ class MirrorAdb(private val sha: String = SHA) : AdbClient {
         if (!isConnected) throw IOException("adb not connected")
         opens += service
         return when {
-            service.startsWith("exec:cat > ") -> AdbPipe(InputStream.nullInputStream(), pushed, closer = {})
+            service.startsWith("exec:cat > ") -> AdbPipe(InputStream.nullInputStream(), pushOutput(), closer = { pushClosed.countDown() })
             service.startsWith("shell:") -> shellStream.pipe()
             service.startsWith("localabstract:") -> when (val next = synchronized(plan) { plan.removeFirstOrNull() } ?: SocketPlan.Refuse) {
                 SocketPlan.Refuse -> throw IOException("refused")
@@ -149,6 +158,19 @@ class MirrorAdb(private val sha: String = SHA) : AdbClient {
                 is SocketPlan.Open -> next.socket.pipe()
             }
             else -> throw IOException("unexpected $service")
+        }
+    }
+
+    private fun pushOutput(): OutputStream = object : OutputStream() {
+        override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            if (pushStalls) {
+                pushEntered.countDown()
+                pushClosed.await()
+                throw IOException("stream closed")
+            }
+            synchronized(pushed) { pushed.write(b, off, len) }
         }
     }
 

@@ -37,8 +37,22 @@ data class HelperOptions(
  * only from numbers and fixed words, so nothing from the Mac can reach the shell as text.
  */
 object ServerCommand {
-    const val JAR_PATH = "/data/local/tmp/anmirror-helper.jar"
+    private const val JAR_DIR = "/data/local/tmp"
     private const val SERVER_CLASS = "com.genymobile.scrcpy.Server"
+
+    /**
+     * The session's own copy of the helper jar (review M3). The helper's clean-up process unlinks
+     * the jar in its CLASSPATH as soon as it has started, so with one shared path an earlier
+     * session's clean-up could delete the jar the next session had just pushed.
+     */
+    fun jarPath(scid: Int): String = "$JAR_DIR/anmirror-helper-${hex(scid)}.jar"
+
+    /**
+     * Removes jars a session pushed but never launched (a launched one is unlinked by its clean-up
+     * at once), and the shared jar of earlier builds: only those older than a minute, so no jar a
+     * starting helper or clean-up still needs.
+     */
+    fun sweepStaleJars(): String = "find $JAR_DIR -maxdepth 1 -name 'anmirror-helper*.jar' -mmin +1 -delete"
 
     /**
      * Kills our helper of this [version] (ruling R53): its own command line is
@@ -50,7 +64,7 @@ object ServerCommand {
     fun killStale(version: String): String = "pkill -f '" + SERVER_CLASS.replace(".Server", ".[S]erver") + " " + version + "'"
 
     fun build(o: HelperOptions, version: String): String = buildString {
-        append("CLASSPATH=").append(JAR_PATH)
+        append("CLASSPATH=").append(jarPath(o.scid))
         append(" app_process / ").append(SERVER_CLASS).append(' ').append(version)
         append(" scid=").append(hex(o.scid))
         append(" log_level=warn tunnel_forward=true video=true")
