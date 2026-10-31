@@ -107,6 +107,8 @@ final class AppModel {
     @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
     @ObservationIgnored private static let syncFocusKey = "syncFocus"
     @ObservationIgnored private static let pointerControlKey = "allowPointerControl"
+    @ObservationIgnored private static let mirrorAudioKey = "mirrorAudio"
+    @ObservationIgnored private static let mirrorScreenOffKey = "mirrorScreenOff"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
     }
@@ -121,6 +123,12 @@ final class AppModel {
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
+    }
+    private static var savedMirrorAudio: Bool {
+        UserDefaults.standard.object(forKey: mirrorAudioKey) as? Bool ?? true
+    }
+    private static var savedMirrorScreenOff: Bool {
+        UserDefaults.standard.object(forKey: mirrorScreenOffKey) as? Bool ?? false
     }
     @ObservationIgnored private static let appLog = Logger(subsystem: "io.github.anmirror.mac", category: "app")
     #if DEBUG
@@ -272,6 +280,15 @@ final class AppModel {
             },
             makeSink: { mirrorWindow.makeSink() }
         )
+        mirror.audioEnabled = Self.savedMirrorAudio
+        mirror.screenOffByDefault = Self.savedMirrorScreenOff
+        // Text pasted or typed into the mirror is on the phone's clipboard now ("the peer has",
+        // R6): the helper's report of it is not written back to the pasteboard.
+        mirror.onPasteSent = { [weak clipboard] text in clipboard?.noteSentToPhone(text) }
+        // The phone's clipboard while mirroring (R38), by the clipboard model's rules.
+        mirror.onPhoneClipboard = { [weak clipboard] text, explicit in
+            clipboard?.acceptFromHelper(text, explicit: explicit)
+        }
         self.mirror = mirror
         // Thumbnail streams go to the photos model, the mirror streams to the mirror model (never
         // through the session's work queue); the transfer roles to the engine.
@@ -398,6 +415,11 @@ final class AppModel {
                 self?.server.handleWake()
                 self?.bulk.handleWake()
             }
+        }
+        // Files dropped on the mirror go like files dropped on the menu (only while files.v1 is shared).
+        mirror.onDropFiles = { [weak self] urls in
+            guard let self else { return }
+            self.sendNotes = self.send(fileURLs: urls)
         }
         // The session ends and its links close right here, before the Mac sleeps.
         sleepObserver = MacSleepObserver.install { [weak self] in self?.mirror.macWillSleepNow() }
@@ -634,6 +656,25 @@ final class AppModel {
     }
 
     // MARK: mirroring
+
+    /// The "Play phone audio on this Mac" switch in Settings (default on); applies at the next start.
+    var playMirrorAudio: Bool { mirror.audioEnabled }
+
+    func setPlayMirrorAudio(_ on: Bool) {
+        guard on != mirror.audioEnabled else { return }
+        mirror.audioEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.mirrorAudioKey)
+    }
+
+    /// The "Turn the phone's screen off while mirroring" switch in Settings (default off); applies
+    /// from the next session's first frame.
+    var mirrorScreenOff: Bool { mirror.screenOffByDefault }
+
+    func setMirrorScreenOff(_ on: Bool) {
+        guard on != mirror.screenOffByDefault else { return }
+        mirror.screenOffByDefault = on
+        UserDefaults.standard.set(on, forKey: Self.mirrorScreenOffKey)
+    }
 
     /// "Show Phone Screen" is offered while the connected phone can show its screen now.
     var canMirror: Bool { isConnected && mirror.canStart }

@@ -88,16 +88,19 @@ private final class Rig {
         #expect(rig.model.sessionID == 1)
         #expect(rig.model.phase == .starting)
         #expect(rig.model.session != nil)
-        #expect(rig.bulk.issued.map(\.role) == [.mirrorVideo, .mirrorControl])
-        #expect(rig.bulk.issued.map(\.context) == ["mirror-1", "mirror-1"])
+        // Audio is on by default ("Play phone audio on this Mac").
+        #expect(rig.bulk.issued.map(\.role) == [.mirrorVideo, .mirrorAudio, .mirrorControl])
+        #expect(rig.bulk.issued.map(\.context) == ["mirror-1", "mirror-1", "mirror-1"])
         let start = try #require(rig.starts.first)
         #expect(rig.sent.types == [.mirrorStart])
         #expect(start.session == 1)
         #expect(start.port == 4242)
         #expect(start.tokens.video == rig.bulk.issued[0].token)
-        #expect(start.tokens.control == rig.bulk.issued[1].token)
-        #expect(start.tokens.audio.isEmpty)
-        #expect(!start.audio)
+        #expect(start.tokens.audio == rig.bulk.issued[1].token)
+        #expect(start.tokens.control == rig.bulk.issued[2].token)
+        #expect(start.audio)
+        #expect(start.audioCodec == (AudioDecoder.supports(.opus) ? .opus : .aac))
+        #expect(rig.model.audioActive)
         #expect(start.maxSize == 1920 && start.videoBitRate == 8_000_000 && start.maxFps == 60)
         #expect(start.videoCodec == .h264)
     }
@@ -218,7 +221,9 @@ private final class Rig {
         #expect(rig.bulk.revoked == ["mirror-1"])
         #expect(rig.model.phase == .ended(.user))
         #expect(rig.model.session == nil)
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         // A second stop, or the phone's STOPPED answer, changes nothing.
         await rig.model.stop()
         await rig.state(1, .stopped, .user)
@@ -235,7 +240,9 @@ private final class Rig {
         #expect(rig.model.phoneAvailability == nil)
         #expect(!rig.model.canStart)
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         #expect(rig.stops.isEmpty)
     }
 
@@ -269,7 +276,9 @@ private final class Rig {
         #expect(rig.model.phase == .ended(.macSleep))
         #expect(rig.model.session == nil)
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         try await until("stop sent") { rig.stops.count == 1 }
         #expect(rig.stops.first?.reason == .user)
         #expect(rig.stops.first?.session == 1)
@@ -336,12 +345,14 @@ private final class Rig {
         #expect(rig.model.sessionID == 2)
         #expect(rig.model.session !== first)
         #expect(rig.model.phase == .starting)
-        #expect(links.video.mac.isClosed && links.control.mac.isClosed)
+        // Video closes at once; control once its queue has gone out (at most 200 ms).
+        #expect(links.video.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
         #expect(rig.bulk.revoked == ["mirror-1"])
         // The phone ends the old one itself (REPLACED); the Mac sends no stop.
         #expect(rig.stops.isEmpty)
         #expect(rig.starts.map(\.session) == [1, 2])
-        #expect(rig.bulk.issued.map(\.context) == ["mirror-1", "mirror-1", "mirror-2", "mirror-2"])
+        #expect(rig.bulk.issued.map(\.context) == ["mirror-1", "mirror-1", "mirror-1", "mirror-2", "mirror-2", "mirror-2"])
     }
 
     @Test func linkEndedWhileRunningEndsWithLinkFailed() async throws {
@@ -351,7 +362,7 @@ private final class Rig {
         try await until("link failed") { rig.model.phase == .ended(.phone(.linkFailed)) }
         #expect(rig.stops.map(\.reason) == [.user])
         #expect(rig.bulk.revoked == ["mirror-1"])
-        #expect(links.control.mac.isClosed)
+        try await until("control closed") { links.control.mac.isClosed }
     }
 
     @Test func linkEndedThenStateWithinGraceUsesTheState() async throws {
@@ -435,5 +446,118 @@ private final class Rig {
             center.post(name: NSWorkspace.willSleepNotification, object: nil)
         }
         try await until("sleep seen") { calls.count == 1 }
+    }
+    // MARK: audio
+
+    @Test func audioSettingOffSendsAudioFalse() async throws {
+        let rig = Rig()
+        await rig.ready()
+        rig.model.audioEnabled = false
+        await rig.model.start()
+        let start = try #require(rig.starts.first)
+        #expect(!start.audio)
+        #expect(start.tokens.audio.isEmpty)
+        #expect(rig.bulk.issued.map(\.role) == [.mirrorVideo, .mirrorControl])
+        #expect(!rig.model.audioActive)
+        // Turning it back on applies at the next start.
+        rig.model.audioEnabled = true
+        #expect(rig.starts.count == 1)
+        await rig.model.start()
+        let next = try #require(rig.starts.last)
+        #expect(next.audio)
+        #expect(!next.tokens.audio.isEmpty)
+        #expect(rig.model.audioActive)
+    }
+
+    @Test func opusUnsupportedChoosesAac() async throws {
+        let rig = Rig()
+        await rig.ready()
+        rig.model.opusSupported = { false }
+        await rig.model.start()
+        #expect(rig.starts.last?.audioCodec == .aac)
+        rig.model.opusSupported = { true }
+        await rig.model.start()
+        #expect(rig.starts.last?.audioCodec == .opus)
+    }
+
+    /// The phone can't capture (codec 0) or failed to (codec 1): only the audio path ends.
+    @Test func audioUnavailableKeepsVideo() async throws {
+        for prelude in ["audio_prelude_disabled", "audio_prelude_error"] {
+            let rig = Rig()
+            let links = try await rig.running()
+            let audio = rig.link(.mirrorAudio, session: 1)
+            #expect(rig.model.audioActive)
+            try await audio.phone.send(try #require(streamVector(prelude)).bytes)
+            try await until("audio ended") { !rig.model.audioActive }
+            // The phone then closes its end: still only audio.
+            audio.phone.close()
+            try await until("audio link closed") { audio.mac.isClosed }
+            try await Task.sleep(for: .milliseconds(250)) // past the link grace
+            #expect(rig.model.phase == .running(width: 320, height: 640))
+            #expect(rig.model.session != nil)
+            #expect(!rig.model.linkEndPending)
+            #expect(!links.video.mac.isClosed && !links.control.mac.isClosed)
+            #expect(rig.stops.isEmpty)
+        }
+    }
+
+    @Test func audioLinkEndingKeepsVideo() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        let audio = rig.link(.mirrorAudio, session: 1)
+        audio.phone.close()
+        try await until("audio ended") { !rig.model.audioActive }
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(!links.video.mac.isClosed)
+    }
+
+    /// Muted, the session keeps reading and decoding; the output drops it and the link stays up.
+    @Test func muteKeepsLink() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        let audio = rig.link(.mirrorAudio, session: 1)
+        rig.model.muted = true
+        let session = try #require(rig.model.session)
+        #expect(session.audioMuted)
+        let packets = try #require(TestAudioEncoder.encode(.aac, sine: Array(repeating: 0.25, count: 9_600)))
+        var stream = try #require(streamVector("audio_prelude_aac")).bytes
+        stream += packetBytes(config: true, pts: 0, payload: TestAudioEncoder.aacConfig)
+        for (i, packet) in packets.enumerated() { stream += packetBytes(pts: UInt64(i) * 21_333, payload: packet) }
+        try await audio.phone.send(stream)
+        try await until("decoded") { session.audioBuffersDecoded >= packets.count - 1 }
+        #expect(!audio.mac.isClosed)
+        #expect(rig.model.audioActive)
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(session.audioBuffersAccepted == 0) // muted: the output took nothing to play
+        rig.model.muted = false
+        #expect(!session.audioMuted)
+    }
+
+    /// 50 packets in a row that decode to nothing end the audio path like `audioEnded`: Mute is
+    /// disabled, video goes on, the link stays up.
+    @Test func repeatedDecodeFailuresEndTheAudioPath() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        let audio = rig.link(.mirrorAudio, session: 1)
+        var stream = try #require(streamVector("audio_prelude_aac")).bytes
+        stream += packetBytes(config: true, pts: 0, payload: TestAudioEncoder.aacConfig)
+        for i in 0..<49 { stream += packetBytes(pts: UInt64(i) * 21_333, payload: Data([0xFF, 0xFF, 0xFF, UInt8(i)])) }
+        try await audio.phone.send(stream)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(rig.model.audioActive) // 49 is not yet enough
+        try await audio.phone.send(packetBytes(pts: 49 * 21_333, payload: Data([0xFF, 0xFF, 0xFF, 49])))
+        try await until("audio ended") { !rig.model.audioActive }
+        #expect(!audio.mac.isClosed)
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(!links.video.mac.isClosed)
+    }
+
+    @Test func muteCarriesToTheNextSession() async throws {
+        let rig = Rig()
+        await rig.ready()
+        rig.model.muted = true
+        await rig.model.start()
+        #expect(rig.model.session?.audioMuted == true)
     }
 }

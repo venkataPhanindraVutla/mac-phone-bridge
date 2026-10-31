@@ -201,6 +201,8 @@ import Testing
         case let .size(w, h): "size \(w)x\(h)"
         case let .linkEnded(role): "linkEnded \(role)"
         case .needsReset: "needsReset"
+        case .audioEnded: "audioEnded"
+        case .clipboard: "clipboard"
         }
     }
 }

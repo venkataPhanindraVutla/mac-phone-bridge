@@ -227,7 +227,7 @@ let package = Package(
         .testTarget(
             name: "FeatureMirrorTests",
             dependencies: [
-                "FeatureMirror", "AMProtocol", "ConnectionCore", "AMTestSupport",
+                "FeatureMirror", "FeatureClipboard", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),

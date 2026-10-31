@@ -47,6 +47,17 @@ public final class ClipboardModel: SessionFeature {
     /// send and every receive, cleared on disconnect. Equal text is never sent to it again.
     @ObservationIgnored private var phoneHas: SHA256.Digest?
     @ObservationIgnored private var loop: Task<Void, Never>?
+    /// How long the helper's report of text the Mac gave the phone is expected (its echo).
+    public static let echoWindow: Duration = .seconds(5)
+    /// At most this many echoes are expected at once; the oldest goes first.
+    static let maxEchoes = 64
+    /// Texts the Mac gave the phone in the last `echoWindow`, whose echo from the Full-mode helper
+    /// has not come yet. The helper reports each one back, possibly after the Mac has given the
+    /// phone something newer (typing in another script pastes every keystroke), when `phoneHas`
+    /// alone no longer matches it. Each is ignored once. Cleared on disconnect.
+    @ObservationIgnored private var echoes: [(digest: SHA256.Digest, until: ContinuousClock.Instant)] = []
+    /// The clock the expected echoes expire by (internal, so tests can move it).
+    @ObservationIgnored var now: () -> ContinuousClock.Instant = { ContinuousClock.now }
 
     public init(pasteboard: any PasteboardAccess, sendEnabled: Bool,
                 send: @escaping @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void,
@@ -81,6 +92,7 @@ public final class ClipboardModel: SessionFeature {
         phoneAvailability = nil
         // The phone's clipboard may change while apart, and the next phone may be another one.
         phoneHas = nil
+        echoes = []
     }
 
     public func message(_ envelope: AMEnvelope) async {
@@ -120,7 +132,7 @@ public final class ClipboardModel: SessionFeature {
         guard let text, !text.isEmpty, text.utf8.count <= Self.maxBytes else { return }
         let digest = SHA256.hash(data: Data(text.utf8))
         guard digest != phoneHas else { return }
-        phoneHas = digest
+        gave(digest)
         var message = AMClipboardText()
         message.text = text
         await send(.clipboardText, message)
@@ -132,10 +144,37 @@ public final class ClipboardModel: SessionFeature {
         pasteboard.writeString(text)
     }
 
-    /// `text` was sent another way (`share.text`), and the phone put it on its clipboard: the
-    /// same text copied on the Mac is not sent again.
+    /// The phone's clipboard as the Full-mode helper reports it while mirroring (ruling R38).
+    /// Written like `acceptFromPhone`, unless `clipboard.v1` is not shared; or it is not `explicit`
+    /// (an answer to ⌘C / ⌘X in the mirror) and the phone's switch is not on; or the phone has it
+    /// because the Mac gave it (the echo of a Mac copy, a ⌘V or typed text: `noteSentToPhone`); or
+    /// it is over `maxBytes`. The echo of something the Mac gave it within `echoWindow` is
+    /// ignored too, once, even when the Mac has given it something newer since.
+    public func acceptFromHelper(_ text: String, explicit: Bool) {
+        guard active, explicit || phoneAvailability?.enabled == true, text.utf8.count <= Self.maxBytes else { return }
+        let digest = SHA256.hash(data: Data(text.utf8))
+        let at = now()
+        echoes.removeAll { $0.until < at }
+        if let echo = echoes.firstIndex(where: { $0.digest == digest }) {
+            echoes.remove(at: echo)
+            return
+        }
+        guard digest != phoneHas else { return }
+        acceptFromPhone(text)
+    }
+
+    /// `text` was sent another way (`share.text`, or pasted into the mirror), and the phone put it
+    /// on its clipboard: the same text copied on the Mac is not sent again, and the phone's
+    /// report of it is not written back.
     public func noteSentToPhone(_ text: String) {
-        phoneHas = SHA256.hash(data: Data(text.utf8))
+        gave(SHA256.hash(data: Data(text.utf8)))
+    }
+
+    /// The phone has `digest` from the Mac now; the helper will report it back.
+    private func gave(_ digest: SHA256.Digest) {
+        phoneHas = digest
+        echoes.append((digest, now() + Self.echoWindow))
+        if echoes.count > Self.maxEchoes { echoes.removeFirst(echoes.count - Self.maxEchoes) }
     }
 
     /// The pasteboard's text for an explicit send; nil when there is none. Skips no type: the

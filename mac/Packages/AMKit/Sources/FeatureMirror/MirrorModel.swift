@@ -34,6 +34,14 @@ public enum MirrorEndReason: Equatable, Sendable {
 ///
 /// Mirror bytes never pass through here or the app's NotifyWork queue; only `mirror.*` messages
 /// do. Logs carry session IDs, phases, reasons, sizes, presets, codecs and counts only.
+///
+/// Screen off: with `screenOffByDefault` the phone's screen is turned off (SET_DISPLAY_POWER) after
+/// each session's first frame; `setScreenOff` toggles it. Before any end from this side (stop,
+/// closing the window, sleep, a new start for "Show Again" or a quality change) it is turned back
+/// on first, if off. The helper's cleanup restores it on every other end.
+///
+/// The helper's clipboard goes to `onPhoneClipboard`, and files dropped on the view to
+/// `onDropFiles`; the app decides what to do with them.
 @MainActor
 @Observable
 public final class MirrorModel: SessionFeature {
@@ -41,7 +49,7 @@ public final class MirrorModel: SessionFeature {
     /// The deadline for RUNNING and the first frame (Global Constraints).
     public static let defaultStartDeadline: Duration = .seconds(20)
     /// The scrcpy RESET_VIDEO control message (type 17).
-    static let resetVideo = Data([17])
+    static let resetVideo = ScrcpyControl.resetVideo()
 
     public enum Phase: Equatable {
         case idle, starting
@@ -57,6 +65,23 @@ public final class MirrorModel: SessionFeature {
     public var preset: QualityPreset = .high
     /// The codec asked for; unspecified is sent as H.264.
     public var codec: AMVideoCodec = .h264
+    /// "Play phone audio on this Mac" (Settings, default on). A change applies at the next start.
+    public var audioEnabled = true
+    /// Mute / Unmute in the window: the audio link stays up and is decoded, the output drops it.
+    /// Kept across sessions.
+    public var muted = false {
+        didSet { current?.audioMuted = muted }
+    }
+    /// The current session carries the phone's audio: asked for, and not ended (the phone can't
+    /// capture or failed to, or its link ended). The Mute button is enabled only then.
+    public private(set) var audioActive = false
+    /// The phone's screen is off for the current session (Screen Off / Screen On in the window).
+    public private(set) var screenOff = false
+    /// "Turn the phone's screen off while mirroring" (Settings, default off): applied after each
+    /// session's first frame.
+    public var screenOffByDefault = false
+    /// The current session's control link is attached: Screen Off / Screen On can reach the phone.
+    private var controlLinked = false
 
     /// `mirror.v1` is shared, the phone's availability is enabled and the bulk listener has a port.
     public var canStart: Bool {
@@ -66,19 +91,48 @@ public final class MirrorModel: SessionFeature {
     /// The running (or starting) session; nil otherwise.
     public var session: MirrorSession? { current }
 
+    /// Lets go of held input: owned by `MirrorView.bind`, which sets it to its `InputMapper.releaseAll`
+    /// (one slot; nothing else sets it, tests aside). Called while the session
+    /// is still current, before it ends for any reason (so the UP goes out on its control link before
+    /// the links close), and after a session packet changes the video size (so the UP carries the
+    /// new size, the only one the helper accepts).
+    @ObservationIgnored public internal(set) var releaseInput: (@MainActor () -> Void)?
+    /// Text the view has just set on the phone's clipboard to paste (⌘V, emoji, other scripts):
+    /// the phone's clipboard now holds it, so the helper's echo of it is not news. Never logged.
+    @ObservationIgnored public var onPasteSent: ((String) -> Void)?
+    /// The helper's clipboard while a session runs (ruling R38), with whether it answers the
+    /// user's ⌘C / ⌘X in the mirror (explicit). Never logged.
+    @ObservationIgnored public var onPhoneClipboard: ((String, Bool) -> Void)?
+    /// Files dropped on the mirror while a session runs and the phone shares `files.v1`.
+    @ObservationIgnored public var onDropFiles: (([URL]) -> Void)?
+
     @ObservationIgnored private let bulk: any BulkGrants
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
     @ObservationIgnored private let makeSink: @MainActor () -> any FrameSink
     @ObservationIgnored private let startDeadline: Duration
     /// How long a link end waits for the phone's state before it counts as LINK_FAILED (internal, for tests).
     @ObservationIgnored var linkGrace: Duration = .seconds(1)
+    /// Whether this Mac decodes Opus (internal, so tests can say it doesn't); AAC otherwise.
+    @ObservationIgnored var opusSupported: () -> Bool = { AudioDecoder.supports(.opus) }
     private var sharesMirror = false
+    /// The phone takes files (`files.v1`): a drop on the mirror is sent.
+    private var sharesFiles = false
     /// The phone in session; a forget for any other phone leaves this model alone.
     @ObservationIgnored private var phoneID: String?
     @ObservationIgnored private var current: MirrorSession?
     @ObservationIgnored private var phoneRunning = false
     /// The current session's first picture is decoded (internal, for tests).
     @ObservationIgnored private(set) var firstFrameSeen = false
+    /// `screenOffByDefault` was applied to the current session (or the user chose for it).
+    @ObservationIgnored private var screenOffSettled = false
+    /// SET_DISPLAY_POWER(on) is queued on the current session for its end.
+    @ObservationIgnored private var screenOnQueued = false
+    /// Moves when an end from this side begins (stop, window close, sleep, timeout, link failed),
+    /// before it waits for anything, so a `start()` waiting for the old screen to come back on
+    /// knows it was overtaken, whichever of the two resumes first. Internal, for tests.
+    @ObservationIgnored private(set) var stopGeneration = 0
+    /// The clock each session's throttles and deadlines run on (internal, so tests can hold them).
+    @ObservationIgnored var sessionClock = ResetClock.system
     /// The current session's last reported video size.
     @ObservationIgnored private var videoSize: (width: Int, height: Int)?
     @ObservationIgnored private var deadline: Task<Void, Never>?
@@ -103,6 +157,7 @@ public final class MirrorModel: SessionFeature {
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
         if current != nil { end(.disconnected) }
         sharesMirror = shared.contains("mirror.v1")
+        sharesFiles = shared.contains("files.v1")
         self.phoneID = phoneID
         phoneAvailability = nil
     }
@@ -110,6 +165,7 @@ public final class MirrorModel: SessionFeature {
     public func disconnected() {
         if current != nil { end(.disconnected) }
         sharesMirror = false
+        sharesFiles = false
         phoneID = nil
         phoneAvailability = nil
     }
@@ -149,19 +205,29 @@ public final class MirrorModel: SessionFeature {
         if current != nil { end(.disconnected) }
         self.phoneID = nil
         sharesMirror = false
+        sharesFiles = false
         phoneAvailability = nil
     }
 
     // MARK: API
 
-    /// Starts a new session (replacing the current one), when `canStart`.
+    /// Starts a new session (replacing the current one, whose screen is turned back on first),
+    /// when `canStart`. A stop, window close or sleep (or another start) that comes while the old
+    /// screen is coming back on wins: no session starts.
     public func start() async {
-        guard canStart, let port = bulk.port else { return }
+        guard canStart else { return }
+        let replacing = current
+        let generation = stopGeneration
+        await screenOnBeforeEnd()
+        guard stopGeneration == generation, current == nil || current === replacing,
+              canStart, let port = bulk.port else { return }
         if current != nil { end(nil) }
         sessionID += 1
         let id = sessionID
         let context = Self.context(id)
         let videoCodec: AMVideoCodec = codec == .h265 ? .h265 : .h264
+        let audio = audioEnabled
+        let audioCodec: AMAudioCodec = opusSupported() ? .opus : .aac
         var start = AMMirrorStart()
         start.session = id
         start.port = UInt32(port)
@@ -169,13 +235,22 @@ public final class MirrorModel: SessionFeature {
         start.videoBitRate = preset.bitRate
         start.maxFps = preset.maxFps
         start.videoCodec = videoCodec
-        start.audio = false // Task 7 turns audio on; its token stays empty until then.
+        start.audio = audio
+        start.audioCodec = audioCodec
         start.tokens.video = bulk.issue(role: .mirrorVideo, context: context)
+        if audio { start.tokens.audio = bulk.issue(role: .mirrorAudio, context: context) }
         start.tokens.control = bulk.issue(role: .mirrorControl, context: context)
 
-        current = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id))
+        let session = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id),
+                                    clock: sessionClock)
+        session.audioMuted = muted
+        current = session
+        audioActive = audio
         phoneRunning = false
         firstFrameSeen = false
+        screenOffSettled = false
+        screenOnQueued = false
+        controlLinked = false
         videoSize = nil
         phase = .starting
         deadline = Task { [weak self, startDeadline] in
@@ -183,7 +258,8 @@ public final class MirrorModel: SessionFeature {
             guard !Task.isCancelled, let self, self.sessionID == id, self.phase == .starting else { return }
             await self.stopCurrent(.timeout)
         }
-        Self.log.info("session \(id, privacy: .public) start preset \(self.preset.name, privacy: .public) codec \(videoCodec == .h265 ? "h265" : "h264", privacy: .public)")
+        let audioName = audio ? (audioCodec == .opus ? "opus" : "aac") : "off"
+        Self.log.info("session \(id, privacy: .public) start preset \(self.preset.name, privacy: .public) codec \(videoCodec == .h265 ? "h265" : "h264", privacy: .public) audio \(audioName, privacy: .public)")
         await send(.mirrorStart, start)
     }
 
@@ -200,8 +276,11 @@ public final class MirrorModel: SessionFeature {
     }
 
     /// `macWillSleep()` for the sleep notification: everything local happens now, before returning;
-    /// the stop goes out from a task.
+    /// the stop goes out from a task. A screen that is off is turned on first (queued ahead of the
+    /// release, both written before the control link closes).
     public func macWillSleepNow() {
+        stopGeneration += 1
+        queueScreenOn()
         guard let stop = endLocally(.macSleep, closeFirst: true) else { return }
         Task { await send(.mirrorStop, stop.message) }
     }
@@ -213,6 +292,44 @@ public final class MirrorModel: SessionFeature {
             return
         }
         current.attach(pipe, role: grant.role)
+        if grant.role == .mirrorControl {
+            controlLinked = current.hasControlLink
+            applyScreenOffSetting()
+        }
+    }
+
+    /// Screen Off / Screen On is offered: a session runs and its control link is there.
+    public var canSetScreenOff: Bool { phase.isRunning && controlLinked }
+
+    /// The mirror window is closing (its `stop()` follows): a screen that is off is turned back on
+    /// now, ahead of the release the view sends as the window goes. `stop()` still waits for it to
+    /// be written before `mirror.stop`.
+    public func screenOnBeforeClose() {
+        queueScreenOn()
+    }
+
+    /// Screen Off / Screen On: SET_DISPLAY_POWER on the current session's control link (nothing
+    /// without one).
+    public func setScreenOff(_ off: Bool) {
+        guard let current, current.hasControlLink, off != screenOff else { return }
+        screenOffSettled = true
+        screenOff = off
+        current.sendControl(ScrcpyControl.setDisplayPower(on: !off))
+        Self.log.info("session \(self.sessionID, privacy: .public) screen \(off ? "off" : "on", privacy: .public)")
+    }
+
+    // MARK: files
+
+    /// A drop on the mirror is taken: a session runs and the phone shares `files.v1`.
+    public var canDropFiles: Bool { phase.isRunning && sharesFiles }
+
+    /// Hands `urls` to `onDropFiles` when `canDropFiles`; whether they were taken.
+    @discardableResult
+    public func dropFiles(_ urls: [URL]) -> Bool {
+        guard canDropFiles, !urls.isEmpty else { return false }
+        Self.log.info("session \(self.sessionID, privacy: .public) dropped \(urls.count, privacy: .public) items")
+        onDropFiles?(urls)
+        return true
     }
 
     // MARK: session events
@@ -231,18 +348,29 @@ public final class MirrorModel: SessionFeature {
         switch event {
         case .firstFrame:
             firstFrameSeen = true
+            applyScreenOffSetting()
             becomeRunningIfReady()
         case let .size(width, height):
+            let changed = videoSize.map { $0 != (width, height) } ?? false
             videoSize = (width, height)
             if case .running = phase {
                 phase = .running(width: width, height: height)
                 Self.log.info("session \(id, privacy: .public) size \(width, privacy: .public)x\(height, privacy: .public)")
             }
+            if changed { releaseInput?() }
         case .needsReset:
             current.sendControl(Self.resetVideo)
+        case .audioEnded:
+            audioActive = false
+        case let .clipboard(text, explicit):
+            onPhoneClipboard?(text, explicit)
         case let .linkEnded(role):
-            // Audio may end on its own (Task 7); video or control ending ends the session.
-            guard role != .mirrorAudio, linkEnd == nil else { return }
+            // Audio may end on its own; video or control ending ends the session.
+            if role == .mirrorAudio {
+                audioActive = false
+                return
+            }
+            guard linkEnd == nil else { return }
             linkEnd = Task { [weak self, linkGrace] in
                 try? await Task.sleep(for: linkGrace)
                 guard !Task.isCancelled, let self, self.sessionID == id, self.current != nil else { return }
@@ -264,10 +392,38 @@ public final class MirrorModel: SessionFeature {
         Self.log.info("session \(self.sessionID, privacy: .public) running \(size.width, privacy: .public)x\(size.height, privacy: .public)")
     }
 
+    /// `screenOffByDefault` after the session's first frame, once its control link is there.
+    private func applyScreenOffSetting() {
+        guard screenOffByDefault, !screenOffSettled, firstFrameSeen, let current, current.hasControlLink else { return }
+        setScreenOff(true)
+    }
+
+    /// Queues SET_DISPLAY_POWER(on) when the current session's screen is off.
+    private func queueScreenOn() {
+        guard screenOff, let current else { return }
+        screenOff = false
+        screenOnQueued = true
+        current.sendControl(ScrcpyControl.setDisplayPower(on: true))
+        Self.log.info("session \(self.sessionID, privacy: .public) screen on before end")
+    }
+
+    /// Before an end from this side: the screen back on, written to the control link (at most
+    /// the drain deadline) before anything else goes to the phone.
+    private func screenOnBeforeEnd() async {
+        guard let session = current else { return }
+        queueScreenOn()
+        guard screenOnQueued else { return }
+        await session.flushControl()
+    }
+
     /// Ends the current session from this side and tells the phone (`mirror.stop`, reason USER).
     /// The session ends here first, so the phone's answer finds nothing to act on. The links close
     /// after the stop has gone (so the phone hears the stop first), or before when `closeFirst`.
+    /// A screen that is off goes back on first: SET_DISPLAY_POWER(on) is written before the stop
+    /// (when the links close first it is queued ahead of the release, and drained with it).
     private func stopCurrent(_ reason: MirrorEndReason, closeFirst: Bool = false) async {
+        stopGeneration += 1
+        if closeFirst { queueScreenOn() } else { await screenOnBeforeEnd() }
         guard let stop = endLocally(reason, closeFirst: closeFirst) else { return }
         await send(.mirrorStop, stop.message)
         stop.session?.close()
@@ -288,7 +444,12 @@ public final class MirrorModel: SessionFeature {
     @discardableResult
     private func end(_ reason: MirrorEndReason?, closing: Bool = true) -> MirrorSession? {
         guard let session = current else { return nil }
+        releaseInput?()
         current = nil
+        audioActive = false
+        screenOff = false
+        screenOnQueued = false
+        controlLinked = false
         deadline?.cancel()
         deadline = nil
         linkEnd?.cancel()

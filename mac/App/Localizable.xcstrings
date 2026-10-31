@@ -2696,6 +2696,105 @@
           }
         }
       }
+    },
+    "Back": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back"
+          }
+        }
+      }
+    },
+    "Home": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home"
+          }
+        }
+      }
+    },
+    "Recents": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recents"
+          }
+        }
+      }
+    },
+    "Rotate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rotate"
+          }
+        }
+      }
+    },
+    "Screen Mirroring": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen Mirroring"
+          }
+        }
+      }
+    },
+    "Play phone audio on this Mac": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play phone audio on this Mac"
+          }
+        }
+      }
+    },
+    "Screen Off": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen Off"
+          }
+        }
+      }
+    },
+    "Screen On": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen On"
+          }
+        }
+      }
+    },
+    "Turn the phone's screen off while mirroring": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn the phone's screen off while mirroring"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
