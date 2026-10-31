@@ -9,7 +9,7 @@
 - **Full mode (screen mirroring with control):** after a one-time setup on an Android 11+ phone, "Show Phone Screen" in the Mac menu opens a resizable window with the phone's screen and sound. The Mac's mouse, trackpad and keyboard control the phone, including emoji and non-English input methods. The toolbar has Back, Home, Recents, Rotate, volume, Screen Off, Mute and a Quality menu (Auto, High, Balanced, Low, H.265, and Option-click for Measure Delay). Files dropped on the window go to the phone, and the phone's clipboard reaches the Mac while the window is open. None of this has run on a real phone yet: see the owner checks in the results file.
 - **How it works:** the phone app pairs with the phone's own Wireless debugging and starts a small helper (scrcpy's server, with two patches) that runs only while the Mac shows the screen. The phone copies the helper's bytes to your paired Mac over encrypted links, and the phone opens no listening network port.
 - **Target:** under 80 ms and 60 fps on 5 GHz Wi-Fi (unverified: owner check b), and a lower quality, not lag, on a weaker link.
-- No new permission for Full mode. The phone's licence list gains `spake2-android` (LGPL-3.0, shipped unmodified); see [docs/licenses.md](docs/licenses.md).
+- No new Android permission for Full mode: its ADB library would imply the legacy `WRITE_EXTERNAL_STORAGE`, which the app's manifest removes, and the build fails on any permission that isn't on its allow-list. The phone's licence list gains `spake2-android` (LGPL-3.0, shipped unmodified); see [docs/licenses.md](docs/licenses.md).
 - Known limits: see [0.5 results](docs/milestones/0.5-results.md#known-limitations-in-05).
 
 ### What's in 0.4

@@ -107,6 +107,72 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.con
     dependsOn(copyHelper)
 }
 
+/**
+ * Fails when the merged manifest asks for a permission that is not in [allowed]: a library can add
+ * one silently (libadb's manifest has no targetSdkVersion, so the merger implied
+ * WRITE_EXTERNAL_STORAGE). Adding a permission means adding it here, on purpose.
+ */
+abstract class CheckManifestPermissions : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val manifest: RegularFileProperty
+
+    @get:Input
+    abstract val allowed: SetProperty<String>
+
+    @get:OutputFile
+    abstract val stamp: RegularFileProperty
+
+    @TaskAction
+    fun check() {
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(manifest.get().asFile)
+        val ns = "http://schemas.android.com/apk/res/android"
+        val requested = listOf("uses-permission", "uses-permission-sdk-23").flatMap { tag ->
+            val nodes = doc.getElementsByTagName(tag)
+            (0 until nodes.length).map { (nodes.item(it) as org.w3c.dom.Element).getAttributeNS(ns, "name") }
+        }.toSortedSet()
+        val extra = requested - allowed.get()
+        if (extra.isNotEmpty()) {
+            throw GradleException(
+                "The merged manifest asks for permissions that are not allowed: ${extra.joinToString()}. " +
+                    "Remove them with tools:node=\"remove\" in src/main/AndroidManifest.xml, or allow them in app/build.gradle.kts.",
+            )
+        }
+        stamp.get().asFile.writeText(requested.joinToString("\n", postfix = "\n"))
+    }
+}
+
+/**
+ * Every permission the app may ask for: 0.4's list, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (the
+ * keep-alive patch) and AndroidX core's own DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION.
+ */
+val allowedPermissions = listOf(
+    "INTERNET", "ACCESS_NETWORK_STATE", "CHANGE_WIFI_MULTICAST_STATE",
+    "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_CONNECTED_DEVICE", "POST_NOTIFICATIONS", "RECEIVE_BOOT_COMPLETED",
+    "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    "CAMERA", "VIBRATE", "ACCESS_NOTIFICATION_POLICY", "READ_CONTACTS", "READ_PHONE_STATE", "MODIFY_AUDIO_SETTINGS",
+    "READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "READ_MEDIA_VISUAL_USER_SELECTED", "READ_EXTERNAL_STORAGE",
+    "ACCESS_LOCAL_NETWORK", "BLUETOOTH_ADVERTISE", "BLUETOOTH", "BLUETOOTH_ADMIN",
+    // The oss flavor's own (src/oss/AndroidManifest.xml).
+    "READ_CALL_LOG", "ANSWER_PHONE_CALLS", "MANAGE_EXTERNAL_STORAGE",
+).map { "android.permission.$it" }
+
+androidComponents {
+    onVariants { variant ->
+        val name = variant.name.replaceFirstChar { it.uppercase() }
+        val checkTask = tasks.register<CheckManifestPermissions>("check${name}ManifestPermissions") {
+            description = "Fails when the ${variant.name} merged manifest asks for a permission that is not allowed."
+            manifest.set(variant.artifacts.get(com.android.build.api.artifact.SingleArtifact.MERGED_MANIFEST))
+            allowed.addAll(allowedPermissions)
+            allowed.add(variant.applicationId.map { "$it.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" })
+            stamp.set(layout.buildDirectory.file("intermediates/permission_check/${variant.name}/permissions.txt"))
+        }
+        // `check`, and `test` too, so the usual `./gradlew test` run catches a new permission.
+        tasks.matching { it.name == "check" || it.name == "test" }.configureEach { dependsOn(checkTask) }
+    }
+}
+
 // LicenseAssetsTest: the bundled licence texts and NOTICE (assets/licenses) against the repository NOTICE
 // and the release runtime classpath, so a new dependency can't ship without its NOTICE line.
 tasks.withType<Test>().configureEach {

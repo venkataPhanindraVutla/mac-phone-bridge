@@ -34,6 +34,13 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Runtime permission from API 37; asked for just before scanning. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- libadb's manifest (Full mode) has no targetSdkVersion, so the merger would imply this legacy
+         storage permission. Nothing needs it: received files go through MediaStore. (libadb also implies
+         READ_PHONE_STATE, which calls declare above; a flavour without calls must remove it the same way.)
+         The build's checkManifestPermissions tasks fail on any permission not on their allow-list. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:node="remove" />
 
     <!-- "Let your Mac lock when you walk away": a Bluetooth LE advertisement for the Mac (F-15).
          Nearby devices (API 31+) is asked for only when the switch is turned on; up to API 30 the
