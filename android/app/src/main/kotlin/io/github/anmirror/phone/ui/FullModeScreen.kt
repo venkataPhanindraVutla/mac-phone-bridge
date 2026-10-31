@@ -32,7 +32,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -45,6 +44,7 @@ import io.github.anmirror.feature.mirror.MakerGuidance
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.pairingErrorRes
+import io.github.anmirror.phone.service.PairingNotifications
 import io.github.anmirror.phone.statusRes
 
 /**
@@ -63,12 +63,13 @@ fun FullModeScreen(
     val context = LocalContext.current
     BackHandler(onBack = onBack)
     val needed = fullModePairingPermissions()
-    var notificationsGranted by rememberSaveable { mutableStateOf(needed.all { context.isGranted(it) }) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { notificationsGranted = needed.all { context.isGranted(it) } }
+    // The code is typed into a notification: the permission, the app's notifications and the channel must all allow it.
+    var notificationsShown by rememberSaveable { mutableStateOf(PairingNotifications.canPost(context)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { notificationsShown = PairingNotifications.canPost(context) }
     val start by rememberUpdatedState(onStartPairing)
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        notificationsGranted = granted
-        if (granted) start()
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notificationsShown = PairingNotifications.canPost(context)
+        if (notificationsShown) start()
     }
     // The typed port stays offered from the first failed connect until the setup is ready.
     var portOffered by rememberSaveable { mutableStateOf(false) }
@@ -97,19 +98,23 @@ fun FullModeScreen(
             }
         }
         maker.lineRes()?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyLarge) }
-        val openLabel = stringResource(R.string.full_open_developer_options)
-        OutlinedButton(
-            onClick = { context.openDeveloperOptions() },
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = openLabel },
-        ) { Text(openLabel) }
-        val startLabel = stringResource(R.string.full_start_pairing)
+        // The buttons' own text is their TalkBack label.
+        OutlinedButton(onClick = { context.openDeveloperOptions() }, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.full_open_developer_options))
+        }
         Button(
-            onClick = { if (notificationsGranted) onStartPairing() else ask.launch(needed.first()) },
+            onClick = {
+                when {
+                    notificationsShown -> onStartPairing()
+                    !PairingNotifications.permitted(context) && needed.isNotEmpty() -> ask.launch(needed.first())
+                    else -> context.openAppNotificationSettings() // turned off by the user: only Settings can turn them on
+                }
+            },
             // Also while waiting for the code: the pairing screen may have been closed, or the notification swiped away.
             enabled = state != SetupState.Looking && state != SetupState.Connecting,
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = startLabel },
-        ) { Text(startLabel) }
-        if (!notificationsGranted) {
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(stringResource(R.string.full_start_pairing)) }
+        if (!notificationsShown) {
             Text(stringResource(R.string.full_notifications_needed), style = MaterialTheme.typography.bodyMedium)
         }
         state.statusRes()?.let { status ->
@@ -133,8 +138,6 @@ fun FullModeScreen(
             )
         }
         if (portOffered) {
-            val fieldLabel = stringResource(R.string.full_connection_port_description)
-            val connectLabel = stringResource(R.string.full_connect_description)
             val connect = { typedPort?.let(onConnect) }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -148,12 +151,11 @@ fun FullModeScreen(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { connect() }),
-                    modifier = Modifier.weight(1f).semantics { contentDescription = fieldLabel },
+                    modifier = Modifier.weight(1f),
                 )
                 Button(
                     onClick = { connect() },
                     enabled = typedPort != null && state != SetupState.Connecting,
-                    modifier = Modifier.semantics { contentDescription = connectLabel },
                 ) { Text(stringResource(R.string.full_connect)) }
             }
         }

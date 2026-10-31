@@ -3,11 +3,13 @@ package io.github.anmirror.feature.mirror
 import io.github.anmirror.adb.AdbClient
 import io.github.anmirror.adb.AdbEndpoint
 import io.github.anmirror.adb.AdbIdentity
+import io.github.anmirror.adb.AdbNotPairedException
 import io.github.anmirror.adb.AdbPairingException
 import io.github.anmirror.adb.AdbService
 import io.github.anmirror.adb.AdbServiceFinder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -83,6 +85,9 @@ class FullModeSetup(
     /** What the last [startPairing] found; a bare code in the reply uses its port. */
     @Volatile private var pairingEndpoint: AdbEndpoint? = null
 
+    /** The connect port NSD found while looking for the pairing port: typing it is the commonest mistake. */
+    @Volatile private var discoveredConnectPort: Int? = null
+
     private val searchLock = Any()
     private var search: Job? = null
 
@@ -90,6 +95,7 @@ class FullModeSetup(
     fun startPairing() {
         _state.value = SetupState.Looking
         pairingEndpoint = null
+        discoveredConnectPort = null
         synchronized(searchLock) {
             // The previous search goes first, so only one of them can create the identity.
             search?.cancel()
@@ -110,11 +116,20 @@ class FullModeSetup(
             _state.value = SetupState.Unpaired
             return
         }
-        val found = finder.find(AdbService.PAIRING, PAIRING_SEARCH_MS)
-        pairingEndpoint = found
-        log(if (found != null) "pairing service port=${found.port}" else "pairing service not found")
-        _state.value = SetupState.Pairing(portKnown = found != null)
-        notify(found != null)
+        coroutineScope {
+            // The connect port, alongside: a reply with it is then known to be the wrong port.
+            launch {
+                finder.find(AdbService.CONNECT, PAIRING_SEARCH_MS)?.let {
+                    discoveredConnectPort = it.port
+                    log("connect service port=${it.port}")
+                }
+            }
+            val found = finder.find(AdbService.PAIRING, PAIRING_SEARCH_MS)
+            pairingEndpoint = found
+            log(if (found != null) "pairing service port=${found.port}" else "pairing service not found")
+            _state.value = SetupState.Pairing(portKnown = found != null)
+            notify(found != null)
+        }
     }
 
     /** Parses the reply, pairs, then connects. Null once paired; the error otherwise (the notification is re-posted). */
@@ -133,8 +148,11 @@ class FullModeSetup(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val error = PairingErrors.classify(e, reply.port, store.lastConnectPort)
-            log("pair failed port=${reply.port} error=$error stage=${(e as? AdbPairingException)?.stage} classes=${classes(e)}")
+            val connectPorts = listOfNotNull(store.lastConnectPort, discoveredConnectPort)
+            val knownConnectPort = connectPorts.firstOrNull { it == reply.port } ?: connectPorts.firstOrNull()
+            val error = PairingErrors.classify(e, reply.port, knownConnectPort)
+            val staged = e as? AdbPairingException
+            log("pair failed port=${reply.port} error=$error stage=${staged?.stage} hint=${staged?.hint} classes=${classes(e)}")
             return@withLock fail(error, portKnown)
         }
         store.paired = true
@@ -211,16 +229,29 @@ class FullModeSetup(
                 true
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: AdbNotPairedException) {
+                throw e // no other port will take this key
             } catch (e: Exception) {
                 log("connect failed port=$port via=$via class=${e.javaClass.simpleName}")
                 false
             }
         }
-        val port = store.lastConnectPort?.takeIf { attempt(LOOPBACK, it, "cached") }
-            ?: finder.find(AdbService.CONNECT, CONNECT_SEARCH_MS)?.let { ep ->
-                ep.port.takeIf { attempt(LOOPBACK, ep.port, "nsd") || attempt(ep.host, ep.port, "nsd-host") }
-            }
-            ?: typedPort?.takeIf { attempt(LOOPBACK, it, "typed") }
+        val port = try {
+            store.lastConnectPort?.takeIf { attempt(LOOPBACK, it, "cached") }
+                ?: finder.find(AdbService.CONNECT, CONNECT_SEARCH_MS)?.let { ep ->
+                    ep.port.takeIf { attempt(LOOPBACK, ep.port, "nsd") || attempt(ep.host, ep.port, "nsd-host") }
+                }
+                ?: typedPort?.takeIf { attempt(LOOPBACK, it, "typed") }
+        } catch (e: AdbNotPairedException) {
+            // The pairing was removed in Wireless debugging: set up again (NEEDS_SETUP, "Set up Full
+            // mode"), not the re-enable loop. The identity stays; pairing it again is fine.
+            store.paired = false
+            store.lastConnectPort = null
+            store.lastConnectFailed = false
+            _state.value = SetupState.Unpaired
+            log("connect: pairing revoked")
+            return false
+        }
         if (port == null) {
             store.lastConnectFailed = true
             _state.value = SetupState.ConnectFailed

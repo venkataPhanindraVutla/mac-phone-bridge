@@ -34,7 +34,7 @@ import io.github.anmirror.connection.TlsIdentity
 import io.github.anmirror.adb.AdbClient
 import io.github.anmirror.adb.AdbIdentity
 import io.github.anmirror.adb.LibAdbClient
-import io.github.anmirror.adb.LibAdbServices
+import io.github.anmirror.adb.NsdAdbServices
 import io.github.anmirror.feature.clipboard.AndroidClipboard
 import io.github.anmirror.feature.mirror.FullModeSetup
 import io.github.anmirror.feature.mirror.SetupState
@@ -85,6 +85,7 @@ import io.github.anmirror.phone.ui.photosAccess
 import io.github.anmirror.phone.ui.proximityPermissions
 import io.github.anmirror.phone.service.ConnectionService
 import io.github.anmirror.phone.service.PairingNotifications
+import io.github.anmirror.phone.service.closesPairingNotification
 import io.github.anmirror.phone.service.PhoneNotificationListener
 import io.github.anmirror.phone.service.ProximityAlarmReceiver
 import io.github.anmirror.phone.service.SharedNotifications
@@ -513,7 +514,12 @@ class AppGraph private constructor(context: Context) {
 
     fun refreshWirelessDebugging() {
         val now = readWirelessDebugging()
-        if (_wirelessDebugging.getAndUpdate { now } != now) Log.i(MIRROR_TAG, "setup: wireless debugging=$now")
+        if (_wirelessDebugging.getAndUpdate { now } == now) return
+        Log.i(MIRROR_TAG, "setup: wireless debugging=$now")
+        // Turned back on after a failed connect (by hand, or after a restart lost the re-arm): try
+        // again, so mirroring is ready without another tap.
+        val setup = mirrorSetup.snapshot.value
+        if (now == true && setup.paired && setup.lastConnectFailed) launchQuietly("mirror: reconnect") { fullModeSetup.ensureConnected() }
     }
 
     private fun readWirelessDebugging(): Boolean? = try {
@@ -529,7 +535,7 @@ class AppGraph private constructor(context: Context) {
     /** Full mode's one-time setup: pairing with Wireless debugging and the connection to it. */
     val fullModeSetup: FullModeSetup = FullModeSetup(
         adb = ::adbClient,
-        finder = LibAdbServices(app),
+        finder = NsdAdbServices(app),
         store = mirrorSetup,
         identity = adbIdentities,
         notify = { portKnown ->
@@ -1144,9 +1150,7 @@ class AppGraph private constructor(context: Context) {
         scope.launch { transfers.transfers.collect { releaseFinished() } }
         // Paired (connecting or connected) or given up: the pairing notification has done its job.
         scope.launch {
-            fullModeSetup.state.collect { s ->
-                if (s == SetupState.Connecting || s == SetupState.Ready || s == SetupState.ConnectFailed) PairingNotifications.cancel(app)
-            }
+            fullModeSetup.state.collect { s -> if (closesPairingNotification(s)) PairingNotifications.cancel(app) }
         }
         TransferNotifier(
             app,

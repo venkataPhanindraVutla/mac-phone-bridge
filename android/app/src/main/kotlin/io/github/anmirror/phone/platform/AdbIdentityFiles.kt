@@ -21,13 +21,18 @@ class AdbIdentityFiles(
     private val lock = Any()
     private var cached: AdbIdentity? = null
 
+    /** The pair could not be read: remembered for the process, so it is decrypted and reported once. */
+    private var unreadable = false
+
     override fun load(): AdbIdentity? = synchronized(lock) {
         cached?.let { return it }
+        if (unreadable) return null
         val keyBlob = AtomicBlobFile(key).read() ?: return null
         val certBlob = AtomicBlobFile(cert).read() ?: return null
         return try {
             AdbIdentity.decode(cipher.decrypt(keyBlob), cipher.decrypt(certBlob)).also { cached = it }
         } catch (e: Exception) {
+            unreadable = true
             onUnreadable(e.javaClass.simpleName)
             null
         }
@@ -39,11 +44,13 @@ class AdbIdentityFiles(
         AtomicBlobFile(key).write(cipher.encrypt(made.encodedKey()))
         AtomicBlobFile(cert).write(cipher.encrypt(made.encodedCertificate()))
         cached = made
+        unreadable = false
         made
     }
 
     override fun delete() = synchronized(lock) {
         cached = null
+        unreadable = false
         key.delete()
         cert.delete()
     }

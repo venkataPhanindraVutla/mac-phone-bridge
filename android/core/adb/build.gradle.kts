@@ -17,6 +17,11 @@ android {
         minSdk = libs.versions.androidMinSdk.get().toInt()
     }
 
+    testOptions {
+        // libadb calls android.util.Log; plain JVM tests get defaults instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         val jvmTarget = JavaVersion.toVersion(libs.versions.jvmTarget.get())
         sourceCompatibility = jvmTarget
@@ -36,4 +41,5 @@ dependencies {
 
     testImplementation(libs.kotlin.test.junit)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

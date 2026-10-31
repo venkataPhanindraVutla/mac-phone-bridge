@@ -14,6 +14,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import io.github.anmirror.feature.mirror.PairingError
+import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.MIRROR_TAG
 import io.github.anmirror.phone.R
@@ -33,16 +34,38 @@ object PairingNotifications {
     private const val NOTIFICATION_ID = 4
     internal const val KEY_REPLY = "reply"
 
-    fun post(context: Context, portKnown: Boolean, error: PairingError?) {
+    /** POST_NOTIFICATIONS is granted (API 33+). */
+    fun permitted(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * The pairing notification would show: permitted, the app's notifications on, and this channel
+     * not turned off. Without it the code can't be typed in, so the Full mode screen says so.
+     */
+    fun canPost(context: Context): Boolean {
         val app = context.applicationContext
-        val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (!allowed) return
+        if (!permitted(app)) return false
+        val manager = NotificationManagerCompat.from(app)
+        if (!manager.areNotificationsEnabled()) return false
+        createChannel(app)
+        return manager.getNotificationChannelCompat(CHANNEL_ID)?.importance != NotificationManagerCompat.IMPORTANCE_NONE
+    }
+
+    private fun createChannel(app: Context) {
         val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)
             .setName(app.getString(R.string.channel_full_mode))
             .setShowBadge(false)
             .build()
         NotificationManagerCompat.from(app).createNotificationChannel(channel)
+    }
+
+    fun post(context: Context, portKnown: Boolean, error: PairingError?) {
+        val app = context.applicationContext
+        // Spelled out (not permitted()) so lint sees the check.
+        val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!allowed) return
+        createChannel(app)
         val prompt = app.getString(if (portKnown) R.string.pairing_notification_text_code else R.string.pairing_notification_text_port_and_code)
         val text = error?.let { app.getString(pairingErrorRes(it)) + " " + prompt } ?: prompt
         val input = RemoteInput.Builder(KEY_REPLY)
@@ -76,6 +99,10 @@ object PairingNotifications {
         NotificationManagerCompat.from(context.applicationContext).cancel(TAG_PAIRING, NOTIFICATION_ID)
     }
 }
+
+/** The pairing has done its job once the setup connects (or gives up connecting): the notification goes. */
+fun closesPairingNotification(state: SetupState): Boolean =
+    state == SetupState.Connecting || state == SetupState.Ready || state == SetupState.ConnectFailed
 
 /**
  * The pairing notification's "Enter code": hands the typed reply to the Full mode setup. Pairing

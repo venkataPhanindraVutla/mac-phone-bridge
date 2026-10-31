@@ -259,9 +259,6 @@
     <string name="full_notifications_needed">Android Mirroring needs to show a notification to collect the pairing code. Allow notifications.</string>
     <string name="full_maker_xiaomi">On this phone, also turn on “USB debugging (Security settings)” in Developer options, or taps and typing from your Mac won\'t work.</string>
     <string name="full_maker_bbk">On this phone, also turn on “Disable permission monitoring” in Developer options, or taps and typing from your Mac won\'t work.</string>
-    <!-- TalkBack: the typed fallback field and its button. -->
-    <string name="full_connection_port_description">Connection port, the port shown under Wireless debugging</string>
-    <string name="full_connect_description">Connect to Wireless debugging on this port</string>
     <string name="channel_full_mode">Full mode setup</string>
     <string name="pairing_notification_title">Pair with Wireless debugging</string>
     <string name="pairing_notification_text_code">Enter the six-digit pairing code.</string>

@@ -16,6 +16,11 @@ android {
         minSdk = libs.versions.androidMinSdk.get().toInt()
     }
 
+    testOptions {
+        // The real ADB client (against a loopback socket) calls android.util.Log.
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         val jvmTarget = JavaVersion.toVersion(libs.versions.jvmTarget.get())
         sourceCompatibility = jvmTarget
