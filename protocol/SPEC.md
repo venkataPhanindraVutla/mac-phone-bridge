@@ -659,8 +659,10 @@ Channel `MIRROR`.
     first.
   - When the phone ends a session it sends its `mirror.state` first, then closes the bulk
     connections and stops the helper.
-  - A video or control bulk connection that ends without a `mirror.stop` (or, on the Mac, a final
-    `mirror.state`) ends the session after a 1 s grace, on either side (`LINK_FAILED`).
+  - A bulk connection that ends without a `mirror.stop` (or, on the Mac, a final `mirror.state`)
+    ends the session after a 1 s grace (`LINK_FAILED`): on the phone, any of the three; on the Mac,
+    the video or control connection (the Mac treats an audio connection that ends as audio ending
+    and keeps the session).
   - The Mac's own stop: it turns the phone's screen back on first, if it turned it off, and
     flushes that (at most 200 ms); then it sends `mirror.stop`, drains its last control bytes (a
     touch release; at most 200 ms) and closes the links. The phone, on the Mac's stop, lets the
