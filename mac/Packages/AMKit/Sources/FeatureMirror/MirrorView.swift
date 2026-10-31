@@ -511,7 +511,7 @@ extension MirrorView {
     }
 }
 
-extension MirrorView: @preconcurrency NSUserInterfaceValidations {
+extension MirrorView: NSUserInterfaceValidations {
     public func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         guard let action = item.action, Self.phoneEditActions.contains(action) else { return true }
         return input?.isActive == true

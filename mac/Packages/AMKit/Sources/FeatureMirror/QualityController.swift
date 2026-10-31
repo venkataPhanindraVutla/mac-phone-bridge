@@ -17,7 +17,8 @@ import Foundation
 /// Back-off: a step up followed by a step down within 30 s doubles the wait before the next step
 /// up from that preset (60 → 120 → 240 → 480 → 600 s). Ten minutes above the preset stepped up
 /// from resets its wait; each step up keeps its own ten minutes.
-/// Low never steps lower, High never higher. Choosing a preset by hand turns Auto off.
+/// Low never steps lower, High never higher. Choosing a preset by hand turns Auto off and resets
+/// the back-off.
 public struct QualityController: Sendable {
     public enum Decision: Equatable, Sendable { case keep, switchTo(QualityPreset) }
 
@@ -81,11 +82,13 @@ public struct QualityController: Sendable {
         return .keep
     }
 
-    /// A preset picked by hand: Auto turns off.
+    /// A preset picked by hand: Auto turns off, and the step-up back-off starts afresh (with
+    /// `stepUps` cleared, a doubled wait would otherwise never get its ten-minute reset).
     public mutating func choose(_ preset: QualityPreset) {
         self.preset = preset
         auto = false
         stepUps = [:]
+        waits = [:]
         resetRuns()
     }
 

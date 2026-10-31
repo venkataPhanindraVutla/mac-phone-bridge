@@ -156,6 +156,18 @@ private struct Driver {
         #expect(d.healthy(60) == .switchTo(.balanced))
     }
 
+    /// M9: a preset picked by hand resets the step-up back-off as well (a doubled wait would
+    /// otherwise never get its ten-minute reset).
+    @Test func manualChoiceResetsTheBackoff() {
+        var d = Driver(start: .balanced)
+        #expect(d.healthy(60) == .switchTo(.high))
+        #expect(d.late(5) == .switchTo(.balanced)) // failed: Balanced would wait 120 s
+        d.controller.choose(.balanced)
+        d.controller.auto = true
+        #expect(d.healthy(59) == .keep)
+        #expect(d.healthy(1) == .switchTo(.high))
+    }
+
     @Test func lowestPresetStaysLow() {
         var d = Driver(start: .low)
         #expect(d.late(5) == .keep)
