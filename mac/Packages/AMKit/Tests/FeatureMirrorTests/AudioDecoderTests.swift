@@ -61,20 +61,37 @@ import Testing
         #expect(AudioDecoder.esds(audioSpecificConfig: already) == already)
     }
 
-    /// Muted or stopped, buffers are dropped and the engine never starts (no sound, no device).
-    @Test func mutedOrStoppedOutputNeverStartsTheEngine() throws {
+    /// The config the phone sends is taken as the cookie; a refused one is reported, and the
+    /// format alone still decodes.
+    @Test func cookieStatusIsReported() throws {
+        let good = try AudioDecoder(codec: .aac, config: TestAudioEncoder.aacConfig)
+        #expect(good.cookieStatus == noErr)
+        #expect(try AudioDecoder(codec: .aac, config: Data()).cookieStatus == noErr)
+        #expect(try AudioDecoder(codec: .opus, config: opusHead).cookieStatus == noErr || !AudioDecoder.supports(.opus))
+        let refused = try AudioDecoder(codec: .aac, config: Data([0x03, 0x01, 0x00]))
+        #expect(refused.cookieStatus != noErr)
         let packets = try #require(TestAudioEncoder.encode(.aac, sine: sine1kHz))
+        #expect(packets.contains { refused.decode($0) != nil })
+    }
+
+    /// A healthy stream decodes nearly every packet: the codec's start-up costs a packet or two,
+    /// far below the 50 in a row that end the audio path.
+    @Test func healthyStreamsRarelyDecodeToNothing() throws {
+        var codecs: [ScrcpyCodec] = [.aac]
+        if AudioDecoder.supports(.opus) { codecs.append(.opus) }
+        for codec in codecs {
+            let packets = try #require(TestAudioEncoder.encode(codec, sine: sine1kHz))
+            let decoder = try AudioDecoder(codec: codec, config: codec == .aac ? TestAudioEncoder.aacConfig : opusHead)
+            let empty = packets.filter { decoder.decode($0) == nil }.count
+            #expect(empty <= 2, "\(codec): \(empty) of \(packets.count) decoded to nothing")
+        }
+    }
+
+    /// Packets that are not audio decode to nothing (and are counted by the session).
+    @Test func garbagePacketsDecodeToNothing() throws {
         let decoder = try AudioDecoder(codec: .aac, config: TestAudioEncoder.aacConfig)
-        let buffers = packets.compactMap { decoder.decode($0) }
-        let output = AudioOutput()
-        output.muted = true
-        for buffer in buffers { output.enqueue(buffer) }
-        #expect(!output.started)
-        output.stop()
-        output.muted = false
-        for buffer in buffers { output.enqueue(buffer) }
-        #expect(!output.started)
-        output.stop()
+        let decoded = (0..<60).filter { decoder.decode(Data([0xFF, 0xFF, 0xFF, UInt8($0)])) != nil }.count
+        #expect(decoded == 0)
     }
 
     @Test func videoCodecIsRefused() {

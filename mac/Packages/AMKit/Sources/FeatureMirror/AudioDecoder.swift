@@ -21,10 +21,14 @@ public final class AudioDecoder: @unchecked Sendable {
     public static let channels: AVAudioChannelCount = 2
     /// What `decode` returns: Float32, 48 kHz, 2 channels, non-interleaved.
     public static let outputFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels)!
-    /// The most frames one packet decodes to: Opus allows 120 ms.
-    static let maxFramesPerPacket: AVAudioFrameCount = 5_760
+    /// The status of setting the config packet as the converter's magic cookie: `noErr`, or why
+    /// the converter refused it (then the format alone is used). `noErr` when there was no config.
+    public let cookieStatus: OSStatus
 
     private let converter: AudioConverterRef
+    /// Frames one `decode` returns at most: twice the codec's packet (Opus 20 ms, AAC 1024 frames).
+    /// A longer packet's remainder stays in the converter and comes out with the next one.
+    private let capacity: AVAudioFrameCount
     private let lock = NSLock()
 
     /// Whether this Mac decodes `codec`. Probes `AudioConverterNew` once per codec.
@@ -40,18 +44,19 @@ public final class AudioDecoder: @unchecked Sendable {
     private static let aacSupported = probe(.aac)
 
     private static func probe(_ codec: ScrcpyCodec) -> Bool {
-        guard let converter = try? makeConverter(codec) else { return false }
-        AudioConverterDispose(converter)
+        guard let made = try? makeConverter(codec) else { return false }
+        AudioConverterDispose(made.0)
         return true
     }
 
     /// `config` is the stream's config packet (empty when it sent none). A cookie the converter
-    /// refuses is left out: the format alone decodes 48 kHz stereo.
+    /// refuses is left out (`cookieStatus` says why): the format alone decodes 48 kHz stereo.
     public init(codec: ScrcpyCodec, config: Data) throws {
-        converter = try Self.makeConverter(codec)
+        let (converter, framesPerPacket) = try Self.makeConverter(codec)
+        self.converter = converter
+        capacity = framesPerPacket * 2
         let cookie = codec == .aac ? Self.esds(audioSpecificConfig: config) : config
-        guard !cookie.isEmpty else { return }
-        _ = cookie.withUnsafeBytes { raw in
+        cookieStatus = cookie.isEmpty ? noErr : cookie.withUnsafeBytes { raw in
             AudioConverterSetProperty(converter, kAudioConverterDecompressionMagicCookie, UInt32(raw.count), raw.baseAddress!)
         }
     }
@@ -64,9 +69,9 @@ public final class AudioDecoder: @unchecked Sendable {
     /// start-up delay).
     public func decode(_ packet: Data) -> AVAudioPCMBuffer? {
         guard !packet.isEmpty,
-              let buffer = AVAudioPCMBuffer(pcmFormat: Self.outputFormat, frameCapacity: Self.maxFramesPerPacket) else { return nil }
+              let buffer = AVAudioPCMBuffer(pcmFormat: Self.outputFormat, frameCapacity: capacity) else { return nil }
         buffer.frameLength = buffer.frameCapacity // so the buffer list carries the full capacity
-        var frames = UInt32(Self.maxFramesPerPacket)
+        var frames = UInt32(capacity)
         let status: OSStatus = lock.withLock {
             packet.withUnsafeBytes { raw in
                 var input = PacketInput(bytes: raw.baseAddress!, count: UInt32(raw.count))
@@ -97,7 +102,8 @@ public final class AudioDecoder: @unchecked Sendable {
 
     // MARK: private
 
-    private static func makeConverter(_ codec: ScrcpyCodec) throws -> AudioConverterRef {
+    /// The converter and the codec's frames per packet.
+    private static func makeConverter(_ codec: ScrcpyCodec) throws -> (AudioConverterRef, AVAudioFrameCount) {
         var input = AudioStreamBasicDescription()
         input.mSampleRate = sampleRate
         input.mChannelsPerFrame = channels
@@ -116,7 +122,7 @@ public final class AudioDecoder: @unchecked Sendable {
         var made: AudioConverterRef?
         let status = AudioConverterNew(&input, &output, &made)
         guard status == noErr, let made else { throw AudioDecoderError.converter(status) }
-        return made
+        return (made, input.mFramesPerPacket)
     }
 
     /// The MPEG-4 ES descriptor (ISO 14496-1) around an AudioSpecificConfig: AudioToolbox's AAC

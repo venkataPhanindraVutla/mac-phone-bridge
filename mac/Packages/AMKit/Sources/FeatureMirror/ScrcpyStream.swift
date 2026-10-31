@@ -102,12 +102,9 @@ public struct VideoStreamParser: Sendable {
                     events.append(.session(width: Int(bigEndian(buffer, at + 4, 4)), height: Int(bigEndian(buffer, at + 8, 4))))
                     at += Self.headerBytes
                 } else {
-                    let head = bigEndian(buffer, at, 8)
-                    let size = Int(bigEndian(buffer, at + 8, 4))
-                    guard size <= Self.maxPayloadBytes else { throw ScrcpyStreamError.packetTooLarge(size) }
+                    let h = try mediaHeader(buffer, at)
                     at += Self.headerBytes
-                    stage = .payload(config: head & (1 << 62) != 0, key: head & (1 << 61) != 0,
-                                     pts: head & ((1 << 61) - 1), size: size)
+                    stage = .payload(config: h.config, key: h.key, pts: h.pts, size: h.size)
                 }
             case let .payload(config, key, pts, size):
                 guard available >= size else { return events }
@@ -180,12 +177,9 @@ public struct AudioStreamParser: Sendable {
             case .header:
                 guard available >= VideoStreamParser.headerBytes else { return events }
                 guard buffer[at] & 0x80 == 0 else { throw ScrcpyStreamError.unexpectedSessionPacket }
-                let head = bigEndian(buffer, at, 8)
-                let size = Int(bigEndian(buffer, at + 8, 4))
-                guard size <= VideoStreamParser.maxPayloadBytes else { throw ScrcpyStreamError.packetTooLarge(size) }
+                let h = try mediaHeader(buffer, at)
                 at += VideoStreamParser.headerBytes
-                stage = .payload(config: head & (1 << 62) != 0, key: head & (1 << 61) != 0,
-                                 pts: head & ((1 << 61) - 1), size: size)
+                stage = .payload(config: h.config, key: h.key, pts: h.pts, size: h.size)
             case let .payload(config, key, pts, size):
                 guard available >= size else { return events }
                 events.append(.packet(MediaPacket(config: config, key: key, pts: pts,
@@ -195,6 +189,16 @@ public struct AudioStreamParser: Sendable {
             }
         }
     }
+}
+
+/// A media packet's 12-byte header at `offset` (bit 63 clear): a u64 BE with bit 62 config, bit 61
+/// key frame and the low 61 bits the PTS in µs, then the payload size (u32 BE). Throws
+/// `packetTooLarge` for a payload over `VideoStreamParser.maxPayloadBytes`.
+private func mediaHeader(_ buffer: Data, _ offset: Int) throws -> (config: Bool, key: Bool, pts: UInt64, size: Int) {
+    let head = bigEndian(buffer, offset, 8)
+    let size = Int(bigEndian(buffer, offset + 8, 4))
+    guard size <= VideoStreamParser.maxPayloadBytes else { throw ScrcpyStreamError.packetTooLarge(size) }
+    return (head & (1 << 62) != 0, head & (1 << 61) != 0, head & ((1 << 61) - 1), size)
 }
 
 /// Drops the consumed bytes of a parser's buffer: at once when all are consumed, otherwise only

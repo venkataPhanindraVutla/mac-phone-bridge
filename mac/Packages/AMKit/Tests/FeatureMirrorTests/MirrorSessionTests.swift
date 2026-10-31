@@ -98,6 +98,26 @@ final class StalledPipe: BulkPipe, @unchecked Sendable {
         session.attach(controlMac, role: .mirrorControl)
         #expect(controlMac.isClosed)
     }
+    /// A failing decoder ends the audio path after 50 packets in a row with no sound.
+    @Test func decodeFailuresEndTheAudioPathOnly() async throws {
+        let ended = Recorder<Bool>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .audioEnded = event { ended.append(true) }
+        })
+        let (audioMac, audioPhone) = MemoryPipe.pair()
+        session.attach(audioMac, role: .mirrorAudio)
+        var stream = try #require(streamVector("audio_prelude_aac")).bytes
+        stream += packetBytes(config: true, pts: 0, payload: TestAudioEncoder.aacConfig)
+        for i in 0..<MirrorSession.maxAudioDecodeFailures {
+            stream += packetBytes(pts: UInt64(i), payload: Data([0xFF, 0xFF, 0xFF, UInt8(i)]))
+        }
+        try await audioPhone.send(stream)
+        try await until("audio ended") { ended.count == 1 }
+        #expect(session.audioBuffersDecoded == 0)
+        #expect(!audioMac.isClosed)
+        session.close()
+    }
+
     /// An audio stream the Mac can't play (here a video codec ID) ends the audio path only: the
     /// session says so and keeps the link open, drained, so the phone sees no failure.
     @Test func unsupportedAudioCodecEndsTheAudioPathOnly() async throws {

@@ -529,9 +529,28 @@ private final class Rig {
         #expect(!audio.mac.isClosed)
         #expect(rig.model.audioActive)
         #expect(rig.model.phase == .running(width: 320, height: 640))
-        #expect(session.audioOutputStarted == false) // muted: nothing reached the speakers
+        #expect(session.audioBuffersAccepted == 0) // muted: the output took nothing to play
         rig.model.muted = false
         #expect(!session.audioMuted)
+    }
+
+    /// 50 packets in a row that decode to nothing end the audio path like `audioEnded`: Mute is
+    /// disabled, video goes on, the link stays up.
+    @Test func repeatedDecodeFailuresEndTheAudioPath() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        let audio = rig.link(.mirrorAudio, session: 1)
+        var stream = try #require(streamVector("audio_prelude_aac")).bytes
+        stream += packetBytes(config: true, pts: 0, payload: TestAudioEncoder.aacConfig)
+        for i in 0..<49 { stream += packetBytes(pts: UInt64(i) * 21_333, payload: Data([0xFF, 0xFF, 0xFF, UInt8(i)])) }
+        try await audio.phone.send(stream)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(rig.model.audioActive) // 49 is not yet enough
+        try await audio.phone.send(packetBytes(pts: 49 * 21_333, payload: Data([0xFF, 0xFF, 0xFF, 49])))
+        try await until("audio ended") { !rig.model.audioActive }
+        #expect(!audio.mac.isClosed)
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(!links.video.mac.isClosed)
     }
 
     @Test func muteCarriesToTheNextSession() async throws {

@@ -4,9 +4,10 @@ import Testing
 
 @Suite struct JitterPolicyTests {
     /// 20 ms packets every 20 ms with ±10 ms of network jitter, played in real time: playing starts
-    /// with the 60 ms target queued, and from then on the queue saws between about the target and a
-    /// packet below it (shifted by the jitter of the packets that primed it), with no drops and no
-    /// underruns.
+    /// with the 60 ms target queued, and from then on the queue saws from about the target down by
+    /// one packet (20 ms), shifted by up to the jitter (10 ms) of the packets that primed it. So the
+    /// mean stays between target − packet − jitter and the target, every sample at most target +
+    /// packet + jitter, with no drops and no underruns.
     @Test func steadyStateHoldsAboutTarget() {
         var policy = JitterPolicy()
         var rng = SplitMix(seed: 7)
@@ -41,8 +42,8 @@ import Testing
         let mean = samples.reduce(0, +) / Double(samples.count)
         #expect(drops == 0)
         #expect(underruns == 0)
-        #expect(abs(mean - 60) <= 25, "mean queue \(mean) ms")
-        #expect(samples.min()! > 0 && samples.max()! <= 100, "queue \(samples.min()!)...\(samples.max()!) ms")
+        #expect((30...60).contains(mean), "mean queue \(mean) ms")
+        #expect(samples.min()! > 0 && samples.max()! <= 90, "queue \(samples.min()!)...\(samples.max()!) ms")
     }
 
     /// The phone's clock 1% fast for a minute: the queue grows until it passes 150 ms, then the

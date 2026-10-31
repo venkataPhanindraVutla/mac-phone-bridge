@@ -51,6 +51,9 @@ public final class MirrorSession: @unchecked Sendable {
     static let readChunk = 262_144
     /// Control messages queued for a slow control link at most.
     static let maxQueuedControl = 512
+    /// This many audio packets in a row that decode to nothing end the audio path (a config or
+    /// stream the decoder can't use; a codec's start-up delay is a packet or two).
+    static let maxAudioDecodeFailures = 50
     /// After `close()`, the control link stays open at most this long for what is still queued
     /// (a release's touch UP) to go out.
     static let controlDrainDeadline: Duration = .milliseconds(200)
@@ -172,8 +175,8 @@ public final class MirrorSession: @unchecked Sendable {
     /// Audio packets decoded to sound so far (internal, for tests).
     var audioBuffersDecoded: Int { lock.withLock { audioDecoded } }
 
-    /// The audio engine has started (internal, for tests).
-    var audioOutputStarted: Bool { audioOutput.started }
+    /// Audio buffers the output took to play (internal, for tests: none while muted).
+    var audioBuffersAccepted: Int { audioOutput.stats.accepted }
 
     /// Gets each decoded picture's PTS (internal, for tests).
     var onFrameForTesting: (@Sendable (UInt64) -> Void)? {
@@ -219,14 +222,17 @@ public final class MirrorSession: @unchecked Sendable {
         }
     }
 
-    /// Decodes the audio link into `audioOutput`. When the phone sends no audio, or audio the Mac
-    /// can't decode, the audio path ends (`audioEnded`) but the link is kept and drained until the
-    /// phone closes it, so its end looks like any other.
+    /// Decodes the audio link into `audioOutput`. When the phone sends no audio, audio the Mac
+    /// can't decode, or `maxAudioDecodeFailures` packets in a row that decode to nothing, the audio
+    /// path ends (`audioEnded`) but the link is kept and drained until the phone closes it, so its
+    /// end looks like any other.
     private func readAudio(_ pipe: any BulkPipe) async {
         var parser = AudioStreamParser()
         var codec: ScrcpyCodec?
         var decoder: AudioDecoder?
         var playing = true
+        var decodeErrors = 0
+        var failuresInARow = 0
         do {
             while let data = try await pipe.receive(maximum: Self.readChunk) {
                 guard playing else { continue }
@@ -243,6 +249,8 @@ public final class MirrorSession: @unchecked Sendable {
                         endAudio(playing: &playing, "unavailable")
                         break events
                     case .failed:
+                        // Upstream, the helper exits after code 1, so the session will end through
+                        // the video link and the phone's state; until then video goes on.
                         endAudio(playing: &playing, "failed")
                         break events
                     case let .packet(packet):
@@ -254,11 +262,22 @@ public final class MirrorSession: @unchecked Sendable {
                                 break events
                             }
                             decoder = made
+                            if made.cookieStatus != noErr {
+                                Self.log.error("session \(self.id, privacy: .public) audio cookie refused, status \(made.cookieStatus, privacy: .public)")
+                            }
                             if packet.config { break }
                         }
                         if let pcm = decoder?.decode(packet.payload) {
+                            failuresInARow = 0
                             lock.withLock { audioDecoded += 1 }
                             audioOutput.enqueue(pcm)
+                        } else {
+                            decodeErrors += 1
+                            failuresInARow += 1
+                            if failuresInARow >= Self.maxAudioDecodeFailures {
+                                endAudio(playing: &playing, "decode failing")
+                                break events
+                            }
                         }
                     }
                 }
@@ -269,7 +288,7 @@ public final class MirrorSession: @unchecked Sendable {
         audioOutput.stop() // nothing more will come: release the engine now
         if decoder != nil {
             let stats = audioOutput.stats
-            Self.log.info("session \(self.id, privacy: .public) audio drops \(stats.drops, privacy: .public) (\(Int(stats.droppedMs), privacy: .public) ms) underruns \(stats.underruns, privacy: .public)")
+            Self.log.info("session \(self.id, privacy: .public) audio drops \(stats.drops, privacy: .public) (\(Int(stats.droppedMs), privacy: .public) ms) underruns \(stats.underruns, privacy: .public) decode errors \(decodeErrors, privacy: .public)")
         }
         ended(pipe, role: .mirrorAudio)
     }
