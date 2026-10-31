@@ -5,7 +5,11 @@ import io.github.anmirror.adb.AdbEndpoint
 import io.github.anmirror.adb.AdbIdentity
 import io.github.anmirror.adb.AdbNotPairedException
 import io.github.anmirror.adb.AdbPairingException
+import io.github.anmirror.adb.AdbPeerProof
+import io.github.anmirror.adb.AdbPeerProofException
 import io.github.anmirror.adb.AdbPipe
+import io.github.anmirror.adb.FakeAdbd
+import io.github.anmirror.protocol.v1.MirrorReason
 import io.github.anmirror.adb.AdbService
 import io.github.anmirror.adb.AdbServiceFinder
 import io.github.anmirror.adb.LibAdbClient
@@ -116,9 +120,11 @@ class FullModeSetupTest {
     private val identities = FakeIdentities()
     private val notified = mutableListOf<Boolean>()
 
+    private val logs = mutableListOf<String>()
+
     private fun TestScope.setup() = FullModeSetup(
         adb = { adb }, finder = finder, store = store, identity = identities,
-        notify = { notified += it }, scope = this,
+        notify = { notified += it }, scope = this, log = { logs += it },
     )
 
     @Test
@@ -266,6 +272,103 @@ class FullModeSetupTest {
         assertEquals(testIdentity, identities.current) // pairing the same key again is fine
     }
 
+    /** Ruling R58: a peer that fails the proof is never used, its port is forgotten, and setup is needed. */
+    @Test
+    fun failedPeerProofForgetsTheCachedPortAndNeedsSetup() = runTest {
+        identities.current = testIdentity
+        store.paired = true
+        store.lastConnectPort = 41000
+        finder.found[AdbService.CONNECT] = AdbEndpoint("192.168.0.20", 42000)
+        adb.connectError = { AdbPeerProofException() }
+        val s = setup()
+        assertFalse(s.ensureConnected(typedPort = 43000))
+        // No other port is tried after an impostor: the user re-enables Full mode.
+        assertEquals(listOf("127.0.0.1:41000"), adb.connects)
+        assertTrue(finder.asked.isEmpty())
+        assertNull(store.lastConnectPort)
+        assertTrue(store.lastConnectFailed)
+        assertTrue(store.paired)
+        assertEquals(SetupState.ConnectFailed, s.state.value)
+        assertTrue(s.lastConnectProofFailed)
+        assertEquals(listOf("adb-proof-failed port=41000 via=cached"), logs.filter { it.startsWith("adb-proof") })
+        assertEquals(MirrorReason.MIRROR_REASON_NEEDS_SETUP, connectFailureReason(wirelessDebugging = true, paired = true, proofFailed = s.lastConnectProofFailed))
+
+        // "Re-enable Full mode": no cached port now, so NSD's port, proven this time.
+        adb.connectError = { null }
+        assertTrue(s.ensureConnected())
+        assertEquals(listOf("127.0.0.1:41000", "127.0.0.1:42000"), adb.connects)
+        assertEquals(42000, store.lastConnectPort)
+        assertFalse(s.lastConnectProofFailed)
+        assertEquals(SetupState.Ready, s.state.value)
+    }
+
+    @Test
+    fun connectFailureReasons() {
+        assertEquals(MirrorReason.MIRROR_REASON_NEEDS_SETUP, connectFailureReason(wirelessDebugging = false, paired = true))
+        assertEquals(MirrorReason.MIRROR_REASON_NEEDS_SETUP, connectFailureReason(wirelessDebugging = true, paired = false))
+        assertEquals(MirrorReason.MIRROR_REASON_ADB_FAILED, connectFailureReason(wirelessDebugging = true, paired = true))
+        assertEquals(MirrorReason.MIRROR_REASON_ADB_FAILED, connectFailureReason(wirelessDebugging = null, paired = true))
+        assertEquals(MirrorReason.MIRROR_REASON_NEEDS_SETUP, connectFailureReason(wirelessDebugging = true, paired = true, proofFailed = true))
+    }
+
+    /** The real client against an app holding the cached port: it answers exec: but can't send the broadcast. */
+    @Test
+    fun impostorOnTheCachedPortIsRejectedEndToEnd() = runBlocking {
+        val proof = AdbPeerProof(component = "io.github.anmirror.phone/.full.AdbProofReceiver", action = "io.github.anmirror.phone.ADB_PROOF", timeoutMs = 500)
+        val impostor = FakeAdbd()
+        try {
+            identities.current = testIdentity
+            store.paired = true
+            store.lastConnectPort = impostor.port
+            val client = LibAdbClient(testIdentity, sdk = 30, proof = proof, timeoutMs = 2_000)
+            useJvmTls()
+            val s = FullModeSetup(
+                adb = { client }, finder = object : AdbServiceFinder {
+                    override suspend fun find(service: AdbService, timeoutMs: Long): AdbEndpoint? = null
+                },
+                store = store, identity = identities, notify = { notified += it }, scope = this, log = { logs += it },
+            )
+            assertFalse(withTimeout(10_000) { s.ensureConnected() })
+            assertFalse(client.isConnected)
+            assertNull(store.lastConnectPort)
+            assertTrue(store.lastConnectFailed)
+            assertEquals(SetupState.ConnectFailed, s.state.value)
+            // All it ever saw was the proof's broadcast: no helper push, no launch, no socket.
+            assertEquals(1, impostor.opened.size)
+            assertTrue(impostor.opened.single().startsWith("exec:am broadcast "), impostor.opened.single())
+            assertTrue(impostor.awaitEnded())
+            assertTrue(logs.any { it.startsWith("adb-proof-failed port=${impostor.port}") }, logs.toString())
+        } finally {
+            impostor.close()
+        }
+    }
+
+    @Test
+    fun realShapedAdbdIsAcceptedEndToEnd() = runBlocking {
+        val proof = AdbPeerProof(component = "io.github.anmirror.phone/.full.AdbProofReceiver", action = "io.github.anmirror.phone.ADB_PROOF", timeoutMs = 500)
+        val adbd = FakeAdbd { service -> FakeAdbd.nonceOf(service)?.let { proof.deliver(it) } }
+        try {
+            identities.current = testIdentity
+            store.paired = true
+            store.lastConnectPort = adbd.port
+            val client = LibAdbClient(testIdentity, sdk = 30, proof = proof, timeoutMs = 2_000)
+            useJvmTls()
+            val s = FullModeSetup(
+                adb = { client }, finder = object : AdbServiceFinder {
+                    override suspend fun find(service: AdbService, timeoutMs: Long): AdbEndpoint? = null
+                },
+                store = store, identity = identities, notify = { notified += it }, scope = this,
+            )
+            assertTrue(withTimeout(10_000) { s.ensureConnected() })
+            assertTrue(client.isConnected)
+            assertEquals(adbd.port, store.lastConnectPort)
+            assertEquals(SetupState.Ready, s.state.value)
+            client.close()
+        } finally {
+            adbd.close()
+        }
+    }
+
     @Test
     fun silentPairingServerReleasesTheMutexWithinTheLimit() = runBlocking {
         val server = ServerSocket(0)
@@ -278,7 +381,7 @@ class FullModeSetupTest {
         }
         try {
             identities.current = testIdentity
-            val client = LibAdbClient(testIdentity, sdk = 30, timeoutMs = 500)
+            val client = LibAdbClient(testIdentity, sdk = 30, proof = AdbPeerProof("c/.R", "a"), timeoutMs = 500)
             useJvmTls()
             val s = FullModeSetup(
                 adb = { client }, finder = object : AdbServiceFinder {

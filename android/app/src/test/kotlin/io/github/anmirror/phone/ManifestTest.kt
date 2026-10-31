@@ -27,6 +27,16 @@ class ManifestTest {
     }
 
     @Test
+    fun adbProofReceiverIsForTheShellOnly() {
+        // Ruling R58: `am broadcast` over a new ADB connection reaches it only when the peer really
+        // runs commands as the shell; no other app holds DUMP, so an impostor adbd can't send it.
+        val receiver = component("receiver", ".full.AdbProofReceiver")
+        assertEquals("true", receiver.getAttributeNS(android, "exported"))
+        assertEquals("android.permission.DUMP", receiver.getAttributeNS(android, "permission"))
+        assertEquals(0, receiver.getElementsByTagName("intent-filter").length, "reached by its explicit name only")
+    }
+
+    @Test
     fun mirrorStopReceiverIsPrivate() {
         assertEquals("false", component("receiver", ".service.MirrorStopReceiver").getAttributeNS(android, "exported"))
     }

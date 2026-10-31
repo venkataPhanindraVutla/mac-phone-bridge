@@ -50,8 +50,10 @@ interface AdbClient {
     suspend fun pair(host: String, port: Int, code: String)
 
     /**
-     * Connects to the TLS port (replacing any connection). Throws [IOException]; 10 s timeout;
-     * [AdbNotPairedException] when the daemon no longer trusts this app.
+     * Connects to the TLS port (replacing any connection, but only once the new one is proven).
+     * Throws [IOException]; 10 s timeout; [AdbNotPairedException] when the daemon no longer trusts
+     * this app; [AdbPeerProofException] when the peer did not prove it is this phone's adbd
+     * (ruling R58), and then nothing changed.
      */
     suspend fun connect(host: String, port: Int)
 
@@ -135,13 +137,15 @@ internal class CloseOnce(private val close: () -> Unit) {
 }
 
 /**
- * [AdbClient] over libadb-android. [sdk] is the phone's API level (TLS from 30); [deviceName] is
- * what Wireless debugging lists under "Paired devices"; [timeoutMs] bounds pairing and connecting.
- * [log] gets content-free events (codes and class names).
+ * [AdbClient] over libadb-android. [sdk] is the phone's API level (TLS from 30); [proof] proves
+ * each new connection's peer is this phone's adbd before it is kept (ruling R58: libadb checks no
+ * server certificate); [deviceName] is what Wireless debugging lists under "Paired devices";
+ * [timeoutMs] bounds pairing and connecting. [log] gets content-free events (codes and class names).
  */
 class LibAdbClient(
     private val identity: AdbIdentity,
     private val sdk: Int,
+    private val proof: AdbPeerProof,
     private val deviceName: String = "Android Mirroring",
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     private val log: (String) -> Unit = {},
@@ -256,6 +260,18 @@ class LibAdbClient(
             closeOnce()
             throw SocketTimeoutException("adb connect timed out")
         }
+        // Ruling R58: before anything uses it (or it replaces the connection in use), the peer
+        // proves it can run a command as the phone's shell. Its exec stream is the only one opened.
+        val proven = try {
+            proof.prove { service -> openOn(conn, service) }
+        } catch (e: Throwable) {
+            closeOnce()
+            throw e
+        }
+        if (!proven) {
+            closeOnce()
+            throw AdbPeerProofException()
+        }
         val old = synchronized(lock) { connection.also { connection = conn } }
         old?.let { runCatching { it.close() } }
     }
@@ -275,8 +291,10 @@ class LibAdbClient(
      * has gone silent: the connection is dropped (which also ends the waiting call) and the caller
      * gets [SocketTimeoutException]. A cancelled open is left to finish on its own.
      */
-    override suspend fun open(service: String): AdbPipe {
-        val conn = connection ?: throw IOException("adb not connected")
+    override suspend fun open(service: String): AdbPipe = openOn(connection ?: throw IOException("adb not connected"), service)
+
+    /** [open] on [conn], which may not be the kept connection yet (the proof's exec stream). */
+    private suspend fun openOn(conn: AdbConnection, service: String): AdbPipe {
         val stream = try {
             abandonable("adb-open", openTimeoutMs, abandonOnCancel = false, abandon = {
                 log("adb-open-timeout")

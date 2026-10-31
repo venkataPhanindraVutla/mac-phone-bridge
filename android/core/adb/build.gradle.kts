@@ -43,3 +43,10 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+androidComponents {
+    // FakeAdbd, an ADB peer on loopback, shared with :feature:mirror's tests.
+    onVariants { variant ->
+        variant.hostTests.values.forEach { it.sources.kotlin?.addStaticSourceDirectory("src/testShared/kotlin") }
+    }
+}

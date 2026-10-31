@@ -33,6 +33,7 @@ import io.github.anmirror.connection.TlsConnector
 import io.github.anmirror.connection.TlsIdentity
 import io.github.anmirror.adb.AdbClient
 import io.github.anmirror.adb.AdbIdentity
+import io.github.anmirror.adb.AdbPeerProof
 import io.github.anmirror.adb.LibAdbClient
 import io.github.anmirror.adb.NsdAdbServices
 import io.github.anmirror.feature.clipboard.AndroidClipboard
@@ -506,13 +507,23 @@ class AppGraph private constructor(context: Context) {
     private var adb: Pair<AdbIdentity, LibAdbClient>? = null
 
     /**
+     * Ruling R58: every ADB connect proves its peer is this phone's adbd, with a broadcast that only
+     * the shell can deliver to [io.github.anmirror.phone.full.AdbProofReceiver] (which hands the nonce
+     * to [AdbPeerProof.deliver]).
+     */
+    val adbProof = AdbPeerProof(
+        component = ComponentName(app, io.github.anmirror.phone.full.AdbProofReceiver::class.java).flattenToShortString(),
+        action = io.github.anmirror.phone.full.AdbProofReceiver.action(app),
+    )
+
+    /**
      * The phone's own ADB client, for the current Full mode identity (a new identity gets a new
      * client; the old one is closed). Throws IOException when there is no identity.
      */
     fun adbClient(): AdbClient = synchronized(adbLock) {
         val id = adbIdentities.load() ?: throw IOException("no ADB identity")
         adb?.takeIf { it.first === id }?.second
-            ?: LibAdbClient(id, Build.VERSION.SDK_INT, log = { keepAliveLog.record(KeepAliveEvent.FULL_MODE, it) }).also { fresh ->
+            ?: LibAdbClient(id, Build.VERSION.SDK_INT, adbProof, log = { keepAliveLog.record(KeepAliveEvent.FULL_MODE, it) }).also { fresh ->
                 adb?.second?.close()
                 adb = id to fresh
             }
@@ -641,7 +652,11 @@ class AppGraph private constructor(context: Context) {
             scope = scope,
             clock = SystemClock::elapsedRealtime,
             connect = {
-                if (fullModeSetup.ensureConnected()) null else connectFailureReason(_wirelessDebugging.value, mirrorSetup.paired)
+                if (fullModeSetup.ensureConnected()) {
+                    null
+                } else {
+                    connectFailureReason(_wirelessDebugging.value, mirrorSetup.paired, fullModeSetup.lastConnectProofFailed)
+                }
             },
             // The ADB link dropped mid-session: Full mode needs re-enabling (availability NEEDS_SETUP).
             onAdbLost = { mirrorSetup.lastConnectFailed = true },

@@ -39,3 +39,10 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+androidComponents {
+    // :core:adb's FakeAdbd (an ADB peer on loopback), for the ADB peer proof through FullModeSetup.
+    onVariants { variant ->
+        variant.hostTests.values.forEach { it.sources.kotlin?.addStaticSourceDirectory("../../core/adb/src/testShared/kotlin") }
+    }
+}

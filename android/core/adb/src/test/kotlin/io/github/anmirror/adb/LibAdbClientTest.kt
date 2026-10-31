@@ -32,12 +32,22 @@ class LibAdbClientTest {
 
     @AfterTest
     fun tearDown() {
+        fakes.forEach { it.close() }
         accepted.forEach { runCatching { it.close() } }
         servers.forEach { runCatching { it.close() } }
     }
 
+    private val proof = AdbPeerProof(
+        component = "io.github.anmirror.phone/.full.AdbProofReceiver",
+        action = "io.github.anmirror.phone.ADB_PROOF",
+        timeoutMs = 500,
+    )
+    private val fakes = mutableListOf<FakeAdbd>()
+
+    private fun fakeAdbd(onOpen: (String) -> Unit = {}) = FakeAdbd(onOpen).also { fakes += it }
+
     private fun client(timeoutMs: Long = 2_000): LibAdbClient {
-        val c = LibAdbClient(identity, sdk = 30, timeoutMs = timeoutMs)
+        val c = LibAdbClient(identity, sdk = 30, proof = proof, timeoutMs = timeoutMs)
         LibAdbTls.useContext(jvmTls())
         val real = c.pairingSessions
         c.pairingSessions = PairingSessionFactory { host, port, code ->
@@ -153,7 +163,7 @@ class LibAdbClientTest {
             c.getInputStream().read(ByteArray(64)) // returns once we close
             ended.countDown()
         }
-        val c = LibAdbClient(identity, sdk = 30, timeoutMs = 2_000, openTimeoutMs = 300)
+        val c = LibAdbClient(identity, sdk = 30, proof = proof, timeoutMs = 2_000, openTimeoutMs = 300)
         LibAdbTls.useContext(jvmTls())
         c.useConnection(c.buildConnection("127.0.0.1", port))
         val gate = CountDownLatch(1)
@@ -169,6 +179,84 @@ class LibAdbClientTest {
         assertTrue(ended.await(3, TimeUnit.SECONDS), "the silent connection was not closed")
         assertFailsWith<IOException> { c.open("shell:true") }
         gate.countDown()
+    }
+
+    // Ruling R58: libadb takes any peer on the port it dials (no AUTH, no TLS here); only the
+    // broadcast that just the shell can send makes a connection usable.
+
+    @Test
+    fun impostorThatAnswersExecWithoutRunningItIsRejected() = runBlocking {
+        val impostor = fakeAdbd()
+        val c = client()
+        val started = System.currentTimeMillis()
+        withTimeout(5_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", impostor.port) } }
+        val took = System.currentTimeMillis() - started
+        assertTrue(took in 400..3_000, "took $took ms") // the proof's 500 ms here, 3 s in the app
+        assertFalse(c.isConnected)
+        // It was asked to broadcast the nonce, answered as `am` would, and was dropped.
+        val service = impostor.opened.single()
+        assertTrue(FakeAdbd.nonceOf(service) != null, service)
+        assertTrue(service.startsWith("exec:am broadcast -a io.github.anmirror.phone.ADB_PROOF -n io.github.anmirror.phone/.full.AdbProofReceiver --es n "))
+        assertTrue(impostor.awaitEnded(), "the impostor's connection was not closed")
+        // Nothing can use it afterwards.
+        assertFailsWith<IOException> { c.open("localabstract:scrcpy_0a1b2c3d") }
+        Unit
+    }
+
+    @Test
+    fun peerWhoseBroadcastArrivesIsAccepted() = runBlocking {
+        // What the real adbd does: the shell runs `am broadcast`, and the receiver gets the nonce.
+        val adbd = fakeAdbd { service -> FakeAdbd.nonceOf(service)?.let { proof.deliver(it) } }
+        val c = client()
+        withTimeout(5_000) { c.connect("127.0.0.1", adbd.port) }
+        assertTrue(c.isConnected)
+        assertEquals(1, adbd.opened.size)
+        // Then it is used as usual.
+        c.open("localabstract:scrcpy_0a1b2c3d").close()
+        assertEquals("localabstract:scrcpy_0a1b2c3d", adbd.opened.last())
+        c.close()
+    }
+
+    @Test
+    fun broadcastWithAnotherNonceIsRejected() = runBlocking {
+        val peer = fakeAdbd { proof.deliver(proof.newNonce()) }
+        val c = client()
+        withTimeout(5_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", peer.port) } }
+        assertFalse(c.isConnected)
+        assertTrue(peer.awaitEnded())
+    }
+
+    @Test
+    fun broadcastAfterTheTimeoutIsRejected() = runBlocking {
+        val late = mutableListOf<Boolean>()
+        val peer = fakeAdbd { service ->
+            val nonce = FakeAdbd.nonceOf(service) ?: return@fakeAdbd
+            thread(isDaemon = true) {
+                Thread.sleep(800) // past the 500 ms proof
+                synchronized(late) { late += proof.deliver(nonce) }
+            }
+        }
+        val c = client()
+        withTimeout(5_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", peer.port) } }
+        assertFalse(c.isConnected)
+        Thread.sleep(600)
+        assertEquals(listOf(false), synchronized(late) { late.toList() }, "the late broadcast completed nothing")
+    }
+
+    @Test
+    fun rejectedPeerDoesNotReplaceTheConnectionInUse() = runBlocking {
+        val adbd = fakeAdbd { service -> FakeAdbd.nonceOf(service)?.let { proof.deliver(it) } }
+        val impostor = fakeAdbd()
+        val c = client()
+        withTimeout(5_000) { c.connect("127.0.0.1", adbd.port) }
+        withTimeout(5_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", impostor.port) } }
+        // Only a proven connection is kept: the impostor's is closed, the good one stays.
+        assertTrue(impostor.awaitEnded())
+        assertTrue(c.isConnected)
+        c.open("shell:true").close()
+        assertEquals("shell:true", adbd.opened.last())
+        assertTrue(impostor.opened.none { !it.startsWith("exec:am broadcast ") })
+        c.close()
     }
 
     @Test

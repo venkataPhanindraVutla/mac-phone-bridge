@@ -27,8 +27,9 @@ interface MirrorRun {
 }
 
 /**
- * Why a Full mode connect failed, for `mirror.state FAILED`: Wireless debugging is off, or the
- * pairing is gone (NEEDS_SETUP); otherwise it could not be reached (ADB_FAILED).
+ * Why a Full mode connect failed, for `mirror.state FAILED`: Wireless debugging is off, the
+ * pairing is gone, or the peer failed the ADB proof (NEEDS_SETUP, ruling R58: Full mode needs
+ * re-enabling); otherwise it could not be reached (ADB_FAILED).
  */
-fun connectFailureReason(wirelessDebugging: Boolean?, paired: Boolean): MirrorReason =
-    if (wirelessDebugging == false || !paired) MirrorReason.MIRROR_REASON_NEEDS_SETUP else MirrorReason.MIRROR_REASON_ADB_FAILED
+fun connectFailureReason(wirelessDebugging: Boolean?, paired: Boolean, proofFailed: Boolean = false): MirrorReason =
+    if (wirelessDebugging == false || !paired || proofFailed) MirrorReason.MIRROR_REASON_NEEDS_SETUP else MirrorReason.MIRROR_REASON_ADB_FAILED

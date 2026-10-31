@@ -5,6 +5,7 @@ import io.github.anmirror.adb.AdbEndpoint
 import io.github.anmirror.adb.AdbIdentity
 import io.github.anmirror.adb.AdbNotPairedException
 import io.github.anmirror.adb.AdbPairingException
+import io.github.anmirror.adb.AdbPeerProofException
 import io.github.anmirror.adb.AdbService
 import io.github.anmirror.adb.AdbServiceFinder
 import kotlinx.coroutines.CancellationException
@@ -94,6 +95,13 @@ class FullModeSetup(
     private val searchLock = Any()
     private var search: Job? = null
 
+    /**
+     * The last connect stopped at a peer that failed the ADB proof (ruling R58): mirroring answers
+     * NEEDS_SETUP. False again once a connect succeeds.
+     */
+    @Volatile var lastConnectProofFailed: Boolean = false
+        private set
+
     /** Creates the identity on first use, looks for the pairing port (6 s), then posts the notification. */
     fun startPairing() {
         _state.value = SetupState.Looking
@@ -173,6 +181,8 @@ class FullModeSetup(
     /**
      * Connects unless connected: the cached port, then the port NSD finds (5 s), then [typedPort].
      * A failure sets [SetupStore.lastConnectFailed], so mirroring needs setup until one succeeds.
+     * Every connect is proven by the client (ruling R58); a peer that fails the proof stops the
+     * attempt: its port is forgotten, nothing else is tried, and setup is needed.
      */
     suspend fun ensureConnected(typedPort: Int? = null): Boolean = mutex.withLock { connectLocked(typedPort) }
 
@@ -230,6 +240,7 @@ class FullModeSetup(
             return true
         }
         _state.value = SetupState.Connecting
+        lastConnectProofFailed = false
         val tried = mutableSetOf<Pair<String, Int>>()
         suspend fun attempt(host: String, port: Int, via: String): Boolean {
             if (port !in 1..MAX_PORT || !tried.add(host to port)) return false
@@ -240,6 +251,9 @@ class FullModeSetup(
                 throw e
             } catch (e: AdbNotPairedException) {
                 throw e // no other port will take this key
+            } catch (e: AdbPeerProofException) {
+                log("adb-proof-failed port=$port via=$via")
+                throw e
             } catch (e: Exception) {
                 log("connect failed port=$port via=$via class=${e.javaClass.simpleName}")
                 false
@@ -260,6 +274,15 @@ class FullModeSetup(
             _state.value = SetupState.Unpaired
             log("connect: pairing revoked")
             return false
+        } catch (e: AdbPeerProofException) {
+            // Ruling R58: something other than this phone's adbd answered (an app holding the port
+            // adbd left, or a spoofed NSD record). Its connection is already closed; forget the
+            // port and stop here, so nothing reaches it again. "Re-enable Full mode" tries afresh.
+            store.lastConnectPort = null
+            store.lastConnectFailed = true
+            lastConnectProofFailed = true
+            _state.value = SetupState.ConnectFailed
+            return false
         }
         if (port == null) {
             store.lastConnectFailed = true
@@ -275,6 +298,7 @@ class FullModeSetup(
     private fun succeeded(port: Int?) {
         if (port != null) store.lastConnectPort = port
         store.lastConnectFailed = false
+        lastConnectProofFailed = false
         _state.value = SetupState.Ready
     }
 

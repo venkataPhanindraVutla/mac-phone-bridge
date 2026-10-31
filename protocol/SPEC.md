@@ -642,6 +642,11 @@ Channel `MIRROR`.
   messages back. They are summarised in `vectors/scrcpy.json`.
 - `max_size`, `video_bit_rate`, `max_fps`, `video_codec`, `audio` and `audio_codec` are passed to
   the helper as its options of the same names.
+- Security (phone side, ARCHITECTURE §7, ruling R58): the phone proves that every connection to
+  Wireless debugging reaches the phone's own adbd before using it, with an `am broadcast` carrying
+  a fresh 128-bit nonce to a receiver only the shell may send to, which must arrive within 3 s. A
+  connection that fails the proof is closed and its port forgotten, and a start then gets
+  `FAILED` `NEEDS_SETUP`.
 - Either side may send `mirror.stop`. The phone then sends `mirror.state STOPPED` with the stop's
   reason. States and stops for another `session` are ignored.
 - `mirror.test_pattern` asks the phone to show the delay test screen (`DELAY`), the frame-rate
