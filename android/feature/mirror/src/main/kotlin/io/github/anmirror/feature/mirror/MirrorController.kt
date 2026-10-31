@@ -17,23 +17,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** What [MirrorController] drives: a [MirrorSession] on the phone, a fake in tests. */
-interface MirrorRun {
-    /** Reports STARTING, RUNNING and the end through the report it was made with; returns once all is closed. */
-    suspend fun run()
-
-    /**
-     * Ends the session (idempotent): STOPPED with [reason], nothing when null (a disconnect). With
-     * [drainControl] (the Mac's own stop) the Mac's last control bytes reach the helper first.
-     */
-    fun stop(reason: MirrorReason?, drainControl: Boolean = false)
-}
-
 /**
  * The phone's side of `mirror.*` (SPEC 24): one session at a time. A start while [open] is not
  * enabled is answered with FAILED only; a new start replaces the session in progress (STOPPED
- * REPLACED), and begins once that one has closed. States, stops and test patterns for any other
- * session are ignored. [newSession] makes a session that reports through the given function.
+ * REPLACED): it says STARTING at once but touches the helper only once that one has closed.
+ * States, stops and test patterns for any other session are ignored. [newSession] makes a session
+ * that reports through the given function. [onActive] hears [active] change at once, in order
+ * (the ADB idle close must not slip in between a start and its session).
  */
 class MirrorController(
     private val open: () -> FeatureAvailability,
@@ -43,6 +33,7 @@ class MirrorController(
     private val shell: suspend (String) -> Unit,
     private val scope: CoroutineScope,
     private val log: (String) -> Unit = {},
+    private val onActive: (Boolean) -> Unit = {},
 ) {
     private class Entry(val start: MirrorStart) {
         lateinit var run: MirrorRun
@@ -87,11 +78,11 @@ class MirrorController(
             }
             val previous = last
             current = entry
-            _active.value = true
+            setActive(true)
             last = scope.launch {
-                previous?.join() // its pkill must not meet this session's helper
                 try {
-                    entry.run.run()
+                    // The old session's pkill must not meet this session's helper.
+                    entry.run.run(awaitPrevious = { previous?.join() })
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -165,8 +156,15 @@ class MirrorController(
         ended(entry)
         if (current === entry) {
             current = null
-            _active.value = false
+            setActive(false)
         }
+    }
+
+    /** Under [lock]. */
+    private fun setActive(on: Boolean) {
+        if (_active.value == on) return
+        _active.value = on
+        onActive(on)
     }
 
     private fun answerFailed(session: Int, reason: MirrorReason) {

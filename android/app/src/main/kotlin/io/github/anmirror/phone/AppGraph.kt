@@ -615,6 +615,11 @@ class AppGraph private constructor(context: Context) {
         shell = { adbClient().shell(it) },
         scope = scope,
         log = { Log.i(MIRROR_TAG, it) },
+        // Told at once, inside the controller: the idle close can't slip in between a start and its session.
+        onActive = { active ->
+            adbIdle.busy(active)
+            keepAliveLog.record(KeepAliveEvent.FULL_MODE, "mirror-active=$active")
+        },
     )
 
     /** The delay or frame-rate test screen the running session asked for; `mirror.DelayTestActivity` finishes on OFF. */
@@ -1249,13 +1254,7 @@ class AppGraph private constructor(context: Context) {
         // Wireless debugging may have been turned back on while no process ran (the re-arm flag
         // lived in the old one): the flip is never seen, so check once now.
         reconnectFullModeIfNeeded("start")
-        // The ADB link is held while a session runs, and timed out after it, or after a setup connect.
-        scope.launch {
-            mirrorController.active.collect { active ->
-                adbIdle.busy(active)
-                keepAliveLog.record(KeepAliveEvent.FULL_MODE, "mirror-active=$active")
-            }
-        }
+        // The ADB link is held while a session runs (onActive), and timed out after it, or after a setup connect.
         scope.launch { fullModeSetup.state.collect { if (it == SetupState.Ready) adbIdle.connected() } }
         // Paired (connecting or connected) or given up: the pairing notification has done its job.
         scope.launch {

@@ -161,6 +161,9 @@ public nonisolated enum AMMirrorReason: SwiftProtobuf.Enum, Swift.CaseIterable {
   case helperFailed // = 6
   case linkFailed // = 7
   case unavailable // = 8
+
+  /// the phone ended it: the Mac link fell too far behind the helper
+  case linkSlow // = 9
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -178,6 +181,7 @@ public nonisolated enum AMMirrorReason: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 6: self = .helperFailed
     case 7: self = .linkFailed
     case 8: self = .unavailable
+    case 9: self = .linkSlow
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -193,6 +197,7 @@ public nonisolated enum AMMirrorReason: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .helperFailed: return 6
     case .linkFailed: return 7
     case .unavailable: return 8
+    case .linkSlow: return 9
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -208,6 +213,7 @@ public nonisolated enum AMMirrorReason: SwiftProtobuf.Enum, Swift.CaseIterable {
     .helperFailed,
     .linkFailed,
     .unavailable,
+    .linkSlow,
   ]
 
 }
@@ -367,7 +373,7 @@ nonisolated extension AMMirrorPhase: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension AMMirrorReason: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0MIRROR_REASON_UNSPECIFIED\0\u{1}MIRROR_REASON_USER\0\u{1}MIRROR_REASON_REPLACED\0\u{1}MIRROR_REASON_TURNED_OFF\0\u{1}MIRROR_REASON_NEEDS_SETUP\0\u{1}MIRROR_REASON_ADB_FAILED\0\u{1}MIRROR_REASON_HELPER_FAILED\0\u{1}MIRROR_REASON_LINK_FAILED\0\u{1}MIRROR_REASON_UNAVAILABLE\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0MIRROR_REASON_UNSPECIFIED\0\u{1}MIRROR_REASON_USER\0\u{1}MIRROR_REASON_REPLACED\0\u{1}MIRROR_REASON_TURNED_OFF\0\u{1}MIRROR_REASON_NEEDS_SETUP\0\u{1}MIRROR_REASON_ADB_FAILED\0\u{1}MIRROR_REASON_HELPER_FAILED\0\u{1}MIRROR_REASON_LINK_FAILED\0\u{1}MIRROR_REASON_UNAVAILABLE\0\u{1}MIRROR_REASON_LINK_SLOW\0")
 }
 
 nonisolated extension AMTestPatternMode: SwiftProtobuf._ProtoNameProviding {

@@ -625,6 +625,13 @@ Channel `MIRROR`.
 - The phone answers a start with `mirror.state STARTING`, then `RUNNING` once the video stream
   flows, or `FAILED` with a reason. A start while the feature is not enabled gets only `FAILED`,
   with the reason that matches the availability (`TURNED_OFF`, `NEEDS_SETUP` or `UNAVAILABLE`).
+- The phone's other end reasons: `USER` (a `mirror.stop` from either side), `REPLACED`,
+  `NEEDS_SETUP` (Wireless debugging turned off), `ADB_FAILED` (its connection to Wireless
+  debugging failed or dropped), `HELPER_FAILED` (the helper did not start within 20 s, or ended),
+  `LINK_FAILED` (a bulk connection failed or ended without the Mac's `mirror.stop`) and
+  `LINK_SLOW`: the Mac fell too far behind, with more than 4 MiB of video or 512 KiB of audio
+  waiting on the phone, or one write to the Mac blocked for more than 2 s. A Mac shows its
+  generic failure line for a reason it does not know.
 - The phone dials one bulk connection per token in `MirrorStart.tokens` (section 13): `video` with
   role `MIRROR_VIDEO`, `audio` with role `MIRROR_AUDIO` (only when `audio`; the token is empty
   otherwise) and `control` with role `MIRROR_CONTROL`, to `MirrorStart.port`. It copies the

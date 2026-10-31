@@ -21,6 +21,8 @@ class HelperInstaller(
 ) {
     /** Throws [IOException] when the push fails or the jar on the phone never matches. */
     suspend fun install() {
+        // Fail closed: an empty expected hash must not match an empty sha256sum.
+        if (!SHA256_HEX.matches(sha256)) throw IOException("expected helper hash is not a SHA-256")
         val pipe = adb.open("exec:cat > ${ServerCommand.JAR_PATH}")
         try {
             withContext(io) {
@@ -43,5 +45,6 @@ class HelperInstaller(
         const val VERIFY_TRIES = 20
         const val VERIFY_GAP_MS = 200L
         private const val BUFFER_BYTES = 64 * 1024
+        private val SHA256_HEX = Regex("[0-9a-fA-F]{64}")
     }
 }

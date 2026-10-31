@@ -46,6 +46,22 @@ class ServerCommandTest {
     }
 
     @Test
+    fun killStaleMatchesOnlyOurHelper() {
+        val kill = ServerCommand.killStale("5.0.1-am1")
+        assertEquals("pkill -f 'com.genymobile.scrcpy.[S]erver 5.0.1-am1'", kill)
+        // pkill -f matches an extended regex against each process's whole command line.
+        val pattern = Regex(kill.removePrefix("pkill -f '").removeSuffix("'"))
+        val o = HelperOptions(0x0a1b2c3d, 1920, 8_000_000, 60, VideoCodec.VIDEO_CODEC_H264, true, AudioCodec.AUDIO_CODEC_OPUS, true)
+        val helper = ServerCommand.build(o, "5.0.1-am1").substringAfter(' ') // what app_process's argv shows
+        assertTrue(pattern.containsMatchIn(helper))
+        // Not the helper's clean-up process (it turns the screen back on), not the shell running
+        // this very pkill, and not a scrcpy a computer started.
+        assertTrue(!pattern.containsMatchIn("app_process / com.genymobile.scrcpy.CleanUp 0 -1 false false -1 -1"))
+        assertTrue(!pattern.containsMatchIn("sh -c $kill"))
+        assertTrue(!pattern.containsMatchIn("app_process / com.genymobile.scrcpy.Server 3.3.1 scid=1234abcd"))
+    }
+
+    @Test
     fun socketNameIsEightHexDigits() {
         assertEquals("scrcpy_0a1b2c3d", ServerCommand.socketName(0x0a1b2c3d))
         assertEquals("scrcpy_00000000", ServerCommand.socketName(0))

@@ -15,11 +15,30 @@ object RelayPump {
     /** The write side failed; the read side is fine (so the far end of [run]'s `to` went away). */
     class WriteFailed(cause: IOException) : IOException(cause)
 
+    /** How long the write in progress has been blocked, by [clock] (ms); 0 between writes. */
+    class WriteMeter(private val clock: () -> Long) {
+        @Volatile private var since = IDLE
+
+        fun blockedMs(): Long = since.let { if (it == IDLE) 0L else (clock() - it).coerceAtLeast(0L) }
+
+        internal fun begin() {
+            since = clock()
+        }
+
+        internal fun end() {
+            since = IDLE
+        }
+
+        private companion object {
+            const val IDLE = Long.MIN_VALUE
+        }
+    }
+
     /**
      * Runs until [from] ends or either side fails, then calls [onEnd] once: null at EOF, the read
-     * failure, or [WriteFailed]. Returns the bytes copied.
+     * failure, or [WriteFailed]. [meter] times each write and flush. Returns the bytes copied.
      */
-    fun run(from: InputStream, to: OutputStream, onEnd: (Throwable?) -> Unit): Long {
+    fun run(from: InputStream, to: OutputStream, meter: WriteMeter? = null, onEnd: (Throwable?) -> Unit): Long {
         val buffer = ByteArray(BUFFER_BYTES)
         var copied = 0L
         var end: Throwable? = null
@@ -29,11 +48,14 @@ object RelayPump {
                 if (n < 0) break
                 if (n == 0) continue
                 try {
+                    meter?.begin()
                     to.write(buffer, 0, n)
                     to.flush()
                 } catch (e: IOException) {
                     end = WriteFailed(e)
                     break
+                } finally {
+                    meter?.end()
                 }
                 copied += n
             }

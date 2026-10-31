@@ -13,6 +13,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -28,18 +29,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.coroutines.CoroutineContext
 
-/** Dials one of the session's bulk links to the connected Mac (SPEC 13), writing its `bulk.hello`. */
-fun interface LinkDialer {
-    suspend fun dial(role: BulkRole, token: ByteString): BulkStream
-}
-
-/**
- * Why a Full mode connect failed, for `mirror.state FAILED`: Wireless debugging is off, or the
- * pairing is gone (NEEDS_SETUP); otherwise it could not be reached (ADB_FAILED).
- */
-fun connectFailureReason(wirelessDebugging: Boolean?, paired: Boolean): MirrorReason =
-    if (wirelessDebugging == false || !paired) MirrorReason.MIRROR_REASON_NEEDS_SETUP else MirrorReason.MIRROR_REASON_ADB_FAILED
-
 /**
  * One mirror session on the phone (SPEC 24): connects to the phone's own ADB ([connect]: null, or
  * the FAILED reason), dials the Mac's bulk links, pushes and launches the helper, opens its
@@ -48,8 +37,11 @@ fun connectFailureReason(wirelessDebugging: Boolean?, paired: Boolean): MirrorRe
  * Ends: [stop] (from the Mac, the phone, a newer start or a disconnect), a Mac link ending
  * (LINK_FAILED, unless the Mac's stop arrives within [LINK_END_GRACE_MS]), a helper pipe or the
  * shell ending (HELPER_FAILED; ADB_FAILED and [onAdbLost] when the ADB connection went with it),
- * or no RUNNING within [START_DEADLINE_MS]. Then the Mac links, the ADB pipes and the shell close,
- * once each, and `pkill` runs while ADB is up. [io] runs blocking reads; [log] gets IDs, phases,
+ * no RUNNING within [START_DEADLINE_MS], or the Mac falling behind (LINK_SLOW, ruling R54: libadb
+ * takes in the helper's output however slowly the Mac reads, so a watchdog ends the session when
+ * more than [MAX_VIDEO_QUEUED_BYTES] of video or [MAX_AUDIO_QUEUED_BYTES] of audio wait on the
+ * phone, or one write to the Mac is blocked longer than [MAX_WRITE_BLOCKED_MS]). Then the Mac
+ * links, the ADB pipes and the shell close, once each, and `pkill` runs while ADB is up. [io] runs blocking reads; [log] gets IDs, phases,
  * reasons, role names and byte counts only.
  */
 class MirrorSession(
@@ -91,9 +83,14 @@ class MirrorSession(
     /** The Mac → helper control pump, which a Mac's stop lets finish. */
     @Volatile private var controlDown: Thread? = null
 
+    /** A helper → Mac stream the watchdog keeps an eye on. */
+    private class Watched(val name: String, val pipe: AdbPipe, val meter: RelayPump.WriteMeter, val maxQueued: Long)
+
+    private val watched = java.util.concurrent.CopyOnWriteArrayList<Watched>()
+
     private val id = start.session
 
-    override suspend fun run() {
+    override suspend fun run(awaitPrevious: suspend () -> Unit) {
         val began = clock()
         try {
             // Replaced (or the Mac gone) before it began: only the end is told.
@@ -101,7 +98,11 @@ class MirrorSession(
             report(state(MirrorPhase.MIRROR_PHASE_STARTING))
             log("session $id start audio=${start.audio} codec=${start.videoCodec.name} max_size=${start.maxSize} fps=${start.maxFps}")
             val end = coroutineScope {
-                val startUp = async { startUp() }
+                // The wait for the session this one replaces counts against the deadline (the Mac's started at its start).
+                val startUp = async {
+                    awaitPrevious()
+                    startUp()
+                }
                 val deadline = launch {
                     delay(START_DEADLINE_MS)
                     end(End.Failed(MirrorReason.MIRROR_REASON_HELPER_FAILED, "deadline"))
@@ -111,15 +112,17 @@ class MirrorSession(
                     startUp.onAwait { it }
                 }
                 deadline.cancel()
+                var watchdog: Job? = null
                 if (ready) {
                     log("session $id running after ${clock() - began} ms")
                     report(state(MirrorPhase.MIRROR_PHASE_RUNNING))
+                    watchdog = launch { watch() }
                 } else {
                     // A start stuck in a blocking read gets out once its pipe is closed.
                     closeAll()
                     startUp.cancel()
                 }
-                ended.await()
+                ended.await().also { watchdog?.cancel() }
             }
             finish(end, began)
         } finally {
@@ -156,13 +159,17 @@ class MirrorSession(
                     return fail(MirrorReason.MIRROR_REASON_LINK_FAILED, "dial ${tag(role)} ${e.javaClass.simpleName}")
                 }
                 if (!macLinks.add(link)) return false
-                runCatching { link.setSendBufferBytes(SEND_BUFFER_BYTES) }
+                try {
+                    link.setSendBufferBytes(SEND_BUFFER_BYTES)
+                } catch (e: Exception) {
+                    log("session $id ${tag(role)} send buffer not set ${e.javaClass.simpleName}")
+                }
                 links[role] = link
             }
 
             helperTouched = true
             try {
-                adb.shell(ServerCommand.KILL_STALE)
+                adb.shell(ServerCommand.killStale(version))
                 installer.install()
             } catch (e: CancellationException) {
                 throw e
@@ -205,9 +212,9 @@ class MirrorSession(
             val control = openSocket(socket, firstByte = false)?.first
                 ?: return fail(MirrorReason.MIRROR_REASON_HELPER_FAILED, "control socket")
 
-            relay(BulkRole.BULK_ROLE_MIRROR_VIDEO, macVideo, video)
-            if (audio != null) relay(BulkRole.BULK_ROLE_MIRROR_AUDIO, links.getValue(BulkRole.BULK_ROLE_MIRROR_AUDIO), audio)
-            relay(BulkRole.BULK_ROLE_MIRROR_CONTROL, links.getValue(BulkRole.BULK_ROLE_MIRROR_CONTROL), control)
+            relay(BulkRole.BULK_ROLE_MIRROR_VIDEO, macVideo, video, MAX_VIDEO_QUEUED_BYTES)
+            if (audio != null) relay(BulkRole.BULK_ROLE_MIRROR_AUDIO, links.getValue(BulkRole.BULK_ROLE_MIRROR_AUDIO), audio, MAX_AUDIO_QUEUED_BYTES)
+            relay(BulkRole.BULK_ROLE_MIRROR_CONTROL, links.getValue(BulkRole.BULK_ROLE_MIRROR_CONTROL), control, maxQueued = null)
             return !ended.isCompleted
         } catch (e: CancellationException) {
             throw e
@@ -254,11 +261,16 @@ class MirrorSession(
         return null
     }
 
-    /** Two pumps per socket: helper → Mac, and Mac → helper. */
-    private fun relay(role: BulkRole, link: BulkStream, pipe: AdbPipe) {
+    /**
+     * Two pumps per socket: helper → Mac, and Mac → helper. With [maxQueued], the watchdog watches
+     * the helper → Mac side (the control socket's few device messages are not watched).
+     */
+    private fun relay(role: BulkRole, link: BulkStream, pipe: AdbPipe, maxQueued: Long?) {
         val name = tag(role)
-        pump("$name-up", from = Side.HELPER, to = Side.MAC) { RelayPump.run(pipe.input, link.output, it) }
-        val down = pump("$name-down", from = Side.MAC, to = Side.HELPER) { RelayPump.run(link.input, pipe.output, it) }
+        val meter = RelayPump.WriteMeter(clock)
+        if (maxQueued != null) watched += Watched(name, pipe, meter, maxQueued)
+        pump("$name-up", from = Side.HELPER, to = Side.MAC) { RelayPump.run(pipe.input, link.output, meter, it) }
+        val down = pump("$name-down", from = Side.MAC, to = Side.HELPER) { RelayPump.run(link.input, pipe.output, onEnd = it) }
         if (role == BulkRole.BULK_ROLE_MIRROR_CONTROL) controlDown = down
     }
 
@@ -271,6 +283,25 @@ class MirrorSession(
             }
             log("session $id relay $name bytes=$bytes")
         }
+
+    /**
+     * Every [WATCH_MS] while RUNNING: LINK_SLOW once a watched stream has more queued on the phone
+     * than its limit, or its write to the Mac has been blocked longer than [MAX_WRITE_BLOCKED_MS].
+     * A stream whose queue can't be measured is watched by the write time alone.
+     */
+    private suspend fun watch() {
+        while (true) {
+            delay(WATCH_MS)
+            for (w in watched) {
+                val queued = runCatching { w.pipe.queuedBytes() }.getOrNull() ?: 0L
+                val blocked = w.meter.blockedMs()
+                if (queued > w.maxQueued || blocked > MAX_WRITE_BLOCKED_MS) {
+                    end(End.Failed(MirrorReason.MIRROR_REASON_LINK_SLOW, "${w.name} queued=$queued blocked=${blocked}ms"))
+                    return
+                }
+            }
+        }
+    }
 
     /** A Mac link ended: LINK_FAILED, unless the Mac's own stop (sent first, on the control channel) arrives meanwhile. */
     private fun onMacLinkEnded(name: String) {
@@ -308,7 +339,7 @@ class MirrorSession(
 
     /** `pkill` while ADB is up; false when that showed ADB is gone. */
     private suspend fun killStale(): Boolean = try {
-        withTimeout(KILL_TIMEOUT_MS) { adb.shell(ServerCommand.KILL_STALE) }
+        withTimeout(KILL_TIMEOUT_MS) { adb.shell(ServerCommand.killStale(version)) }
         true
     } catch (e: TimeoutCancellationException) {
         adb.isConnected
@@ -382,6 +413,10 @@ class MirrorSession(
         const val LINK_END_GRACE_MS = 1_000L
         const val CONTROL_DRAIN_MS = 500L
         const val KILL_TIMEOUT_MS = 5_000L
+        const val WATCH_MS = 100L
+        const val MAX_VIDEO_QUEUED_BYTES = 4L * 1024 * 1024
+        const val MAX_AUDIO_QUEUED_BYTES = 512L * 1024
+        const val MAX_WRITE_BLOCKED_MS = 2_000L
         private const val DISCARD_BYTES = 4_096
     }
 }

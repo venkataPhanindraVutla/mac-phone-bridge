@@ -38,11 +38,20 @@ data class HelperOptions(
  */
 object ServerCommand {
     const val JAR_PATH = "/data/local/tmp/anmirror-helper.jar"
-    const val KILL_STALE = "pkill -f anmirror-helper.jar"
+    private const val SERVER_CLASS = "com.genymobile.scrcpy.Server"
+
+    /**
+     * Kills our helper of this [version] (ruling R53): its own command line is
+     * `app_process / com.genymobile.scrcpy.Server <version> …` (the jar is only in CLASSPATH, an
+     * environment variable). `[S]` keeps the pattern from matching the shell that runs it; the
+     * helper's clean-up process (`…scrcpy.CleanUp`, which turns the screen back on) and a scrcpy a
+     * computer started (another version) don't match either.
+     */
+    fun killStale(version: String): String = "pkill -f '" + SERVER_CLASS.replace(".Server", ".[S]erver") + " " + version + "'"
 
     fun build(o: HelperOptions, version: String): String = buildString {
         append("CLASSPATH=").append(JAR_PATH)
-        append(" app_process / com.genymobile.scrcpy.Server ").append(version)
+        append(" app_process / ").append(SERVER_CLASS).append(' ').append(version)
         append(" scid=").append(hex(o.scid))
         append(" log_level=warn tunnel_forward=true video=true")
         append(" audio=").append(o.audio)

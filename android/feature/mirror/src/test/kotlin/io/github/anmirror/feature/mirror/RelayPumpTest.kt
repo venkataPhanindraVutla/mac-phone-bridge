@@ -73,6 +73,32 @@ class RelayPumpTest {
     }
 
     @Test
+    fun meterShowsTimeBlockedInTheCurrentWrite() {
+        var now = 1_000L
+        val meter = RelayPump.WriteMeter { now }
+        assertEquals(0L, meter.blockedMs())
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val out = object : OutputStream() {
+            override fun write(b: Int) = Unit
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                entered.countDown()
+                release.await()
+            }
+        }
+        val source = BytePipe()
+        val pump = thread { RelayPump.run(source.input, out, meter) {} }
+        source.output.write(ByteArray(10))
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        now = 3_500L
+        assertEquals(2_500L, meter.blockedMs())
+        release.countDown()
+        waitFor { meter.blockedMs() == 0L }
+        source.close()
+        pump.join(5_000)
+    }
+
+    @Test
     fun blockedOutputStopsReadingAfterOneChunk() {
         val read = AtomicLong()
         val endless = object : InputStream() {

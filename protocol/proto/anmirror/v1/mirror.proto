@@ -56,6 +56,7 @@ enum MirrorReason {
   MIRROR_REASON_HELPER_FAILED = 6;
   MIRROR_REASON_LINK_FAILED = 7;
   MIRROR_REASON_UNAVAILABLE = 8;
+  MIRROR_REASON_LINK_SLOW = 9;      // the phone ended it: the Mac link fell too far behind the helper
 }
 
 message MirrorState {

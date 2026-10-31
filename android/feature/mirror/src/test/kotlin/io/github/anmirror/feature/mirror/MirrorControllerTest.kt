@@ -14,7 +14,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
@@ -22,15 +24,30 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** A session that reports STARTING, then RUNNING (unless [reachesRunning] is false), then STOPPED with the stop's reason. */
-private class FakeRun(val start: MirrorStart, val report: suspend (MirrorState) -> Unit, val reachesRunning: Boolean) : MirrorRun {
+/**
+ * A session that reports STARTING, waits for the previous one, then RUNNING (unless
+ * [reachesRunning] is false), then STOPPED with the stop's reason; closing takes [closeTakesMs].
+ */
+private class FakeRun(
+    val start: MirrorStart,
+    val report: suspend (MirrorState) -> Unit,
+    val reachesRunning: Boolean,
+    val clock: () -> Long,
+    val closeTakesMs: Long,
+) : MirrorRun {
     val stops = CopyOnWriteArrayList<Pair<MirrorReason?, Boolean>>()
     private val ended = CompletableDeferred<MirrorReason?>()
+    @Volatile var helperAt: Long? = null
+    @Volatile var returnedAt: Long? = null
 
-    override suspend fun run() {
+    override suspend fun run(awaitPrevious: suspend () -> Unit) {
         report(state(MirrorPhase.MIRROR_PHASE_STARTING))
+        awaitPrevious()
+        helperAt = clock()
         if (reachesRunning) report(state(MirrorPhase.MIRROR_PHASE_RUNNING))
         ended.await()?.let { report(state(MirrorPhase.MIRROR_PHASE_STOPPED, it)) }
+        delay(closeTakesMs)
+        returnedAt = clock()
     }
 
     override fun stop(reason: MirrorReason?, drainControl: Boolean) {
@@ -49,10 +66,15 @@ class MirrorControllerTest {
     private val shells = CopyOnWriteArrayList<String>()
     private val runs = CopyOnWriteArrayList<FakeRun>()
     private var reachesRunning = true
+    private var closeTakesMs = 0L
+    private val actives = CopyOnWriteArrayList<Boolean>()
 
     private fun TestScope.controller() = MirrorController(
         open = { availability },
-        newSession = { start, report -> FakeRun(start, report, reachesRunning).also { runs += it } },
+        newSession = { start, report ->
+            FakeRun(start, report, reachesRunning, { testScheduler.currentTime }, closeTakesMs).also { runs += it }
+        },
+        onActive = { actives += it },
         sendState = { sent += "state ${it.session} ${it.phase.name.removePrefix("MIRROR_PHASE_")} ${it.reason.name.removePrefix("MIRROR_REASON_")}" },
         sendStop = { sent += "stop ${it.session} ${it.reason.name.removePrefix("MIRROR_REASON_")}" },
         shell = { shells += it },
@@ -79,6 +101,36 @@ class MirrorControllerTest {
         )
         assertEquals(2, c.running.value?.session)
         assertTrue(c.active.value)
+    }
+
+    @Test
+    fun replacingStartSaysStartingAtOnceAndWaitsForTheOldClose() = runTest {
+        closeTakesMs = 1_000 // the old session's close and pkill
+        val c = controller()
+        c.onStart(start(1))
+        advanceUntilIdle()
+        c.onStart(start(2))
+        runCurrent()
+        assertTrue("state 2 STARTING UNSPECIFIED" in sent, "STARTING is not held back by the old close")
+        assertNull(runs[1].helperAt)
+        advanceUntilIdle()
+        assertEquals(1_000L, runs[0].returnedAt)
+        assertTrue(runs[1].helperAt!! >= runs[0].returnedAt!!, "the new helper waits for the old session's pkill")
+        assertEquals(2, c.running.value?.session)
+    }
+
+    @Test
+    fun activeIsToldAtOnce() = runTest {
+        val c = controller()
+        c.onStart(start(1))
+        assertEquals(listOf(true), actives, "before any dispatch: an idle close can't slip in")
+        assertTrue(c.active.value)
+        c.onStart(start(2))
+        advanceUntilIdle()
+        assertEquals(listOf(true), actives, "a replacement keeps it active")
+        c.stopAll(null)
+        advanceUntilIdle()
+        assertEquals(listOf(true, false), actives)
     }
 
     @Test

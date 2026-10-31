@@ -3,6 +3,7 @@ package io.github.anmirror.adb
 import io.github.muntashirakon.adb.AdbAuthenticationFailedException
 import io.github.muntashirakon.adb.AdbConnection
 import io.github.muntashirakon.adb.AdbPairingRequiredException
+import io.github.muntashirakon.adb.AdbStream
 import io.github.muntashirakon.adb.PairingConnectionCtx
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -144,6 +145,7 @@ class LibAdbClient(
     private val deviceName: String = "Android Mirroring",
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     private val log: (String) -> Unit = {},
+    private val openTimeoutMs: Long = OPEN_TIMEOUT_MS,
 ) : AdbClient {
     private val lock = Any()
     @Volatile private var connection: AdbConnection? = null
@@ -159,6 +161,14 @@ class LibAdbClient(
             .setCertificate(identity.certificate)
             .setDeviceName(deviceName)
             .build()
+    }
+
+    /** Opens a stream on the connection (libadb waits for adbd's answer without a timeout); tests make it silent. */
+    internal var openStream: (AdbConnection, String) -> AdbStream = { conn, service -> conn.open(service) }
+
+    /** For tests: uses [conn] as the established connection. */
+    internal fun useConnection(conn: AdbConnection) {
+        synchronized(lock) { connection = conn }
     }
 
     init {
@@ -259,17 +269,39 @@ class LibAdbClient(
         }
     }
 
+    /**
+     * adbd answers an open at once (OKAY, or CLSE for a socket nobody listens on), but libadb waits
+     * for that answer without a timeout. An open that takes longer than [openTimeoutMs] means adbd
+     * has gone silent: the connection is dropped (which also ends the waiting call) and the caller
+     * gets [SocketTimeoutException]. A cancelled open is left to finish on its own.
+     */
     override suspend fun open(service: String): AdbPipe {
         val conn = connection ?: throw IOException("adb not connected")
-        // adbd answers an open at once (OKAY, or CLSE for a socket nobody listens on).
         val stream = try {
-            withContext(Dispatchers.IO) { conn.open(service) }
+            abandonable("adb-open", openTimeoutMs, abandonOnCancel = false, abandon = {
+                log("adb-open-timeout")
+                drop(conn)
+            }) { openStream(conn, service) }
         } catch (e: InterruptedException) {
             throw InterruptedIOException("adb open interrupted")
         } catch (e: AdbPairingRequiredException) {
             throw AdbNotPairedException(e)
+        } catch (e: IllegalStateException) {
+            throw IOException("adb open failed", e)
         }
-        return AdbPipe(stream.openInputStream(), stream.openOutputStream()) { runCatching { stream.close() } }
+        val queued: () -> Long? = LibAdbQueue.meter(stream) ?: noMeter()
+        return AdbPipe(stream.openInputStream(), stream.openOutputStream(), queued) { runCatching { stream.close() } }
+    }
+
+    private fun noMeter(): () -> Long? {
+        log("adb-queue-meter-missing")
+        return { null }
+    }
+
+    /** Closes [conn], and forgets it if it is still the connection. */
+    private fun drop(conn: AdbConnection) {
+        synchronized(lock) { if (connection === conn) connection = null }
+        runCatching { conn.close() }
     }
 
     override fun close() {
@@ -283,7 +315,13 @@ class LibAdbClient(
      * call blocks on), the caller gets [SocketTimeoutException] (or the cancellation) at once, and
      * nothing waits for the thread.
      */
-    private suspend fun <T> abandonable(name: String, timeoutMs: Long, abandon: () -> Unit, block: () -> T): T {
+    private suspend fun <T> abandonable(
+        name: String,
+        timeoutMs: Long,
+        abandonOnCancel: Boolean = true,
+        abandon: () -> Unit,
+        block: () -> T,
+    ): T {
         val done = CompletableDeferred<Unit>()
         val outcome = AtomicReference<Result<T>?>(null)
         val thread = Thread({
@@ -303,7 +341,7 @@ class LibAdbClient(
             runCatching(abandon)
             throw SocketTimeoutException("adb: $name timed out")
         } catch (e: CancellationException) {
-            runCatching(abandon)
+            if (abandonOnCancel) runCatching(abandon)
             throw e
         }
         return checkNotNull(outcome.get()).getOrThrow()
@@ -339,8 +377,37 @@ class LibAdbClient(
     companion object {
         /** The brief's limit for pairing and connecting. */
         const val DEFAULT_TIMEOUT_MS = 10_000L
+
+        /** How long adbd may take to answer a stream open. */
+        const val OPEN_TIMEOUT_MS = 5_000L
         private const val GUARD_SLACK_MS = 2_000L
     }
+}
+
+/**
+ * What a libadb stream holds that its reader has not taken: libadb acknowledges every WRTE as it
+ * arrives and queues the payload (`AdbStream.mReadQueue`, unbounded), plus the rest of the payload
+ * being read (`mReadBuffer`). `available()` shows only the head payload, so the fields are read by
+ * reflection (kept by the app's -keep rule for io.github.muntashirakon.adb.**).
+ */
+internal object LibAdbQueue {
+    private val queueField = runCatching { AdbStream::class.java.getDeclaredField("mReadQueue").apply { isAccessible = true } }.getOrNull()
+    private val bufferField = runCatching { AdbStream::class.java.getDeclaredField("mReadBuffer").apply { isAccessible = true } }.getOrNull()
+
+    /** Null when this libadb has no such fields. */
+    fun meter(stream: AdbStream): (() -> Long?)? {
+        val queue = queueField?.get(stream) as? java.util.Queue<*> ?: return null
+        val buffer = bufferField?.get(stream) as? java.nio.ByteBuffer
+        return { queuedBytes(queue, buffer) }
+    }
+
+    /** The bytes in [queue]'s payloads plus [buffer]'s remainder, read under the queue's lock (libadb's own). */
+    fun queuedBytes(queue: java.util.Queue<*>, buffer: java.nio.ByteBuffer?): Long = synchronized(queue) {
+        queue.sumOf { (it as? ByteArray)?.size?.toLong() ?: 0L } + (buffer?.remaining()?.toLong() ?: 0L)
+    }
+
+    /** For tests: the fields this reads exist in the bundled libadb. */
+    val fieldsFound: Boolean get() = queueField != null && bufferField != null
 }
 
 /** libadb's process-wide TLS context cache (`SslUtils.sslContext`), reached by reflection; kept by the app's -keep rule. */

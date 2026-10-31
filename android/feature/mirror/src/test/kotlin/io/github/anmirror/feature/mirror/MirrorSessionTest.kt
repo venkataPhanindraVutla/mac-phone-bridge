@@ -10,8 +10,11 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
@@ -21,6 +24,9 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MirrorSessionTest {
+    /** Pinned (R53): the helper's own command line, never the jar path or its clean-up process. */
+    private val KILL = "pkill -f 'com.genymobile.scrcpy.[S]erver 5.0.1-am1'"
+
     private val video = FakeSocket(dummy = 0)
     private val audio = FakeSocket()
     private val control = FakeSocket()
@@ -66,7 +72,7 @@ class MirrorSessionTest {
     fun startReportsStartingThenRunning() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(running, next())
         // Links in order, each with the big send buffer.
@@ -74,7 +80,7 @@ class MirrorSessionTest {
         assertTrue(dialer.links.all { it.sendBuffer == 262_144 })
         assertEquals(mirrorStart().tokens.video, dialer.link(BulkRole.BULK_ROLE_MIRROR_VIDEO).token)
         // Kill, push, verify, launch, then the sockets.
-        assertEquals(ServerCommand.KILL_STALE, adb.shells.first())
+        assertEquals(KILL, adb.shells.first())
         val launch = adb.opens.single { it.startsWith("shell:") }
         assertEquals("shell:" + ServerCommand.build(HelperOptions.from(mirrorStart(), 0x0a1b2c3d, true), "5.0.1-am1"), launch)
         assertEquals(3, adb.opens.count { it == "localabstract:scrcpy_0a1b2c3d" })
@@ -88,7 +94,7 @@ class MirrorSessionTest {
         adb.plan += listOf(SocketPlan.Refuse, SocketPlan.Refuse, SocketPlan.Eof)
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(running, next())
         assertEquals(6, adb.opens.count { it.startsWith("localabstract:") })
@@ -100,7 +106,7 @@ class MirrorSessionTest {
     @Test
     fun socketThatNeverOpensFailsTheHelper() = runTest {
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
         assertTrue(currentTime in 4_900..5_100, "gave up at $currentTime")
@@ -112,7 +118,7 @@ class MirrorSessionTest {
     fun dummyByteIsForwarded() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_VIDEO)
@@ -130,7 +136,7 @@ class MirrorSessionTest {
     fun audioOffDialsTwoLinks() = runTest {
         planAll(audioOn = false)
         val s = session(start = mirrorStart(audio = false))
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         assertEquals(listOf(BulkRole.BULK_ROLE_MIRROR_VIDEO, BulkRole.BULK_ROLE_MIRROR_CONTROL), dialer.links.map { it.role })
@@ -144,22 +150,22 @@ class MirrorSessionTest {
     fun macLinkEofStopsHelper() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         dialer.link(BulkRole.BULK_ROLE_MIRROR_VIDEO).macCloses()
         assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_FAILED), next())
         job.join()
         assertEquals(listOf(1, 1, 1, 1), listOf(video, audio, control, adb.shellStream).map { it.closes.get() })
-        assertEquals(listOf(ServerCommand.KILL_STALE, ServerCommand.KILL_STALE), adb.shells.filter { it == ServerCommand.KILL_STALE })
-        assertEquals(ServerCommand.KILL_STALE, adb.shells.last())
+        assertEquals(listOf(KILL, KILL), adb.shells.filter { it == KILL })
+        assertEquals(KILL, adb.shells.last())
     }
 
     @Test
     fun macLinkEofAfterTheMacsStopIsStoppedUser() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         // The link ends a moment before the Mac's mirror.stop is handled.
@@ -174,7 +180,7 @@ class MirrorSessionTest {
     fun stopDrainsTheMacControlLink() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_CONTROL)
@@ -191,11 +197,89 @@ class MirrorSessionTest {
         assertContentEquals(byteArrayOf(10, 1), control.toHelper.readExactly(2))
     }
 
+    private suspend fun TestScope.runningSession(): Pair<MirrorSession, kotlinx.coroutines.Job> {
+        planAll()
+        val s = session()
+        val job = launch { s.run {} }
+        assertEquals(starting, next())
+        assertEquals(running, next())
+        return s to job
+    }
+
+    @Test
+    fun stalledVideoWriteTripsLinkSlowAfterTwoSeconds() = runTest {
+        val (_, job) = runningSession()
+        val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_VIDEO)
+        mac.stall()
+        video.fromHelper.output.write(ByteArray(1_000))
+        assertTrue(mac.writeEntered.await(5, TimeUnit.SECONDS))
+        val since = currentTime
+        advanceTimeBy(MirrorSession.MAX_WRITE_BLOCKED_MS - (currentTime - since))
+        runCurrent()
+        assertTrue(states.tryReceive().isFailure, "not at 2 s")
+        advanceTimeBy(MirrorSession.WATCH_MS)
+        assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
+        job.join()
+        assertEquals(1, video.closes.get())
+    }
+
+    @Test
+    fun stalledAudioWriteTripsLinkSlowToo() = runTest {
+        val (_, job) = runningSession()
+        val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_AUDIO)
+        mac.stall()
+        audio.fromHelper.output.write(ByteArray(100))
+        assertTrue(mac.writeEntered.await(5, TimeUnit.SECONDS))
+        advanceTimeBy(MirrorSession.MAX_WRITE_BLOCKED_MS)
+        runCurrent()
+        assertTrue(states.tryReceive().isFailure)
+        advanceTimeBy(MirrorSession.WATCH_MS)
+        assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
+        job.join()
+    }
+
+    @Test
+    fun videoBacklogTripsAboveFourMiB() = runTest {
+        val (_, job) = runningSession()
+        video.queued = MirrorSession.MAX_VIDEO_QUEUED_BYTES
+        audio.queued = MirrorSession.MAX_AUDIO_QUEUED_BYTES
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue(states.tryReceive().isFailure, "at the limits")
+        video.queued = MirrorSession.MAX_VIDEO_QUEUED_BYTES + 1
+        advanceTimeBy(MirrorSession.WATCH_MS)
+        runCurrent()
+        assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
+        job.join()
+    }
+
+    @Test
+    fun audioBacklogTripsAboveHalfMiB() = runTest {
+        val (_, job) = runningSession()
+        audio.queued = MirrorSession.MAX_AUDIO_QUEUED_BYTES + 1
+        advanceTimeBy(MirrorSession.WATCH_MS)
+        runCurrent()
+        assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
+        job.join()
+    }
+
+    @Test
+    fun unmeasurableBacklogNeverTrips() = runTest {
+        val (s, job) = runningSession()
+        video.queued = null
+        audio.queued = null
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertTrue(states.tryReceive().isFailure)
+        s.stop(null)
+        job.join()
+    }
+
     @Test
     fun helperExitReportsHelperFailed() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         adb.shellStream.helperCloses()
@@ -209,7 +293,7 @@ class MirrorSessionTest {
     fun adbDropReportsAdbFailedAndNeedsSetup() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         adb.isConnected = false
@@ -217,14 +301,14 @@ class MirrorSessionTest {
         assertEquals(failed(MirrorReason.MIRROR_REASON_ADB_FAILED), next())
         job.join()
         assertEquals(1, adbLost)
-        assertEquals(1, adb.shells.count { it == ServerCommand.KILL_STALE }) // only the one before launching
+        assertEquals(1, adb.shells.count { it == KILL }) // only the one before launching
         assertTrue(dialer.links.all { it.closes.get() == 1 })
     }
 
     @Test
     fun connectFailureReportsItsReason() = runTest {
         val s = session(connect = { MirrorReason.MIRROR_REASON_NEEDS_SETUP })
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_NEEDS_SETUP), next())
         job.join()
@@ -236,7 +320,7 @@ class MirrorSessionTest {
     fun dialFailureIsLinkFailed() = runTest {
         val failing = FakeDialer(failOn = BulkRole.BULK_ROLE_MIRROR_CONTROL)
         val s = session(dialer = failing)
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_FAILED), next())
         job.join()
@@ -248,7 +332,7 @@ class MirrorSessionTest {
     fun installFailureIsHelperFailed() = runTest {
         adb.shaLine = { "bad  x\n" }
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
         job.join()
@@ -258,7 +342,7 @@ class MirrorSessionTest {
     @Test
     fun notRunningIn20sFails() = runTest {
         val s = session(connect = { awaitCancellation() })
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
         assertEquals(20_000L, currentTime)
@@ -269,7 +353,7 @@ class MirrorSessionTest {
     fun stopClosesEverythingOnce() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         s.stop(MirrorReason.MIRROR_REASON_USER)
@@ -280,13 +364,13 @@ class MirrorSessionTest {
         assertTrue(states.tryReceive().isFailure, "one end state only")
         assertTrue(dialer.links.all { it.closes.get() == 1 })
         assertEquals(listOf(1, 1, 1, 1), listOf(video, audio, control, adb.shellStream).map { it.closes.get() })
-        assertEquals(2, adb.shells.count { it == ServerCommand.KILL_STALE })
+        assertEquals(2, adb.shells.count { it == KILL })
     }
 
     @Test
     fun stopWhileStartingEndsAtOnce() = runTest {
         val s = session(connect = { awaitCancellation() })
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         assertEquals(starting, next())
         s.stop(MirrorReason.MIRROR_REASON_REPLACED)
         assertEquals(stopped(MirrorReason.MIRROR_REASON_REPLACED), next())
@@ -298,7 +382,7 @@ class MirrorSessionTest {
     fun stopBeforeRunReportsOnlyTheEnd() = runTest {
         val s = session()
         s.stop(MirrorReason.MIRROR_REASON_REPLACED)
-        s.run()
+        s.run {}
         assertEquals(stopped(MirrorReason.MIRROR_REASON_REPLACED), next())
         assertTrue(states.tryReceive().isFailure)
         assertTrue(dialer.links.isEmpty())
@@ -309,7 +393,7 @@ class MirrorSessionTest {
     fun disconnectStopReportsNothing() = runTest {
         planAll()
         val s = session()
-        val job = launch { s.run() }
+        val job = launch { s.run {} }
         next()
         assertEquals(running, next())
         s.stop(null)

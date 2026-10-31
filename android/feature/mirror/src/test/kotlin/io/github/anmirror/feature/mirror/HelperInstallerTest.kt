@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HelperInstallerTest {
@@ -23,6 +24,16 @@ class HelperInstallerTest {
         assertContentEquals(jar, adb.pushed.toByteArray())
         assertEquals(List(3) { "sha256sum /data/local/tmp/anmirror-helper.jar" }, adb.shells)
         assertEquals(400, currentTime)
+    }
+
+    @Test
+    fun malformedExpectedHashFailsClosed() = runTest {
+        val adb = MirrorAdb()
+        adb.shaLine = { "\n" } // sha256sum printed nothing
+        for (bad in listOf("", "abc", "z".repeat(64))) {
+            assertFailsWith<IOException> { HelperInstaller(adb, { jar.inputStream() }, bad).install() }
+        }
+        assertTrue(adb.opens.isEmpty(), "nothing pushed")
     }
 
     @Test

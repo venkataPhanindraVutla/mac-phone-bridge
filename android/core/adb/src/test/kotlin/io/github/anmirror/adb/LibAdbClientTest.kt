@@ -147,6 +147,44 @@ class LibAdbClientTest {
     }
 
     @Test
+    fun silentOpenTimesOutAndDropsTheConnection() = runBlocking {
+        val ended = CountDownLatch(1)
+        val port = server { c ->
+            c.getInputStream().read(ByteArray(64)) // returns once we close
+            ended.countDown()
+        }
+        val c = LibAdbClient(identity, sdk = 30, timeoutMs = 2_000, openTimeoutMs = 300)
+        LibAdbTls.useContext(jvmTls())
+        c.useConnection(c.buildConnection("127.0.0.1", port))
+        val gate = CountDownLatch(1)
+        c.openStream = { _, _ ->
+            gate.await() // adbd never answers the OPEN
+            error("unreachable")
+        }
+        val started = System.currentTimeMillis()
+        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { c.open("localabstract:scrcpy_0a1b2c3d") } }
+        val took = System.currentTimeMillis() - started
+        assertTrue(took < 2_000, "took $took ms")
+        // The connection was closed and forgotten: later opens fail at once instead of waiting.
+        assertTrue(ended.await(3, TimeUnit.SECONDS), "the silent connection was not closed")
+        assertFailsWith<IOException> { c.open("shell:true") }
+        gate.countDown()
+    }
+
+    @Test
+    fun queueMeterCountsQueuedPayloadsAndTheBufferRest() {
+        assertTrue(LibAdbQueue.fieldsFound, "libadb's AdbStream fields moved: the relay's backlog can't be measured")
+        val queue = ConcurrentLinkedQueue<ByteArray>(listOf(ByteArray(4_096), ByteArray(1_000)))
+        val buffer = java.nio.ByteBuffer.allocate(8_192).apply {
+            put(ByteArray(300))
+            flip()
+            position(100)
+        }
+        assertEquals(4_096L + 1_000L + 200L, LibAdbQueue.queuedBytes(queue, buffer))
+        assertEquals(0L, LibAdbQueue.queuedBytes(ConcurrentLinkedQueue<ByteArray>(), null))
+    }
+
+    @Test
     fun missingTlsCacheFieldIsReported() {
         assertNull(LibAdbTls.forgetCachedContext())
         assertEquals("ClassNotFoundException", LibAdbTls.forgetCachedContext("io.github.muntashirakon.adb.Gone"))

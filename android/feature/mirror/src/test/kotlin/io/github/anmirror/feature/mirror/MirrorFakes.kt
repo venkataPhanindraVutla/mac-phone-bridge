@@ -14,6 +14,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -85,11 +86,14 @@ class FakeSocket(dummy: Int? = null) {
     val toHelper = BytePipe()
     val closes = AtomicInteger()
 
+    /** What libadb holds for this socket that the relay hasn't read; null: not measurable. */
+    @Volatile var queued: Long? = null
+
     init {
         if (dummy != null) fromHelper.output.write(dummy)
     }
 
-    fun pipe() = AdbPipe(fromHelper.input, toHelper.output) {
+    fun pipe() = AdbPipe(fromHelper.input, toHelper.output, { queued }) {
         closes.incrementAndGet()
         fromHelper.close()
         toHelper.close()
@@ -137,7 +141,7 @@ class MirrorAdb(private val sha: String = SHA) : AdbClient {
         if (!isConnected) throw IOException("adb not connected")
         opens += service
         return when {
-            service.startsWith("exec:cat > ") -> AdbPipe(InputStream.nullInputStream(), pushed) {}
+            service.startsWith("exec:cat > ") -> AdbPipe(InputStream.nullInputStream(), pushed, closer = {})
             service.startsWith("shell:") -> shellStream.pipe()
             service.startsWith("localabstract:") -> when (val next = synchronized(plan) { plan.removeFirstOrNull() } ?: SocketPlan.Refuse) {
                 SocketPlan.Refuse -> throw IOException("refused")
@@ -153,7 +157,7 @@ class MirrorAdb(private val sha: String = SHA) : AdbClient {
     }
 
     companion object {
-        const val SHA = "c7143a40aa"
+        const val SHA = "c7143a40aa0123456789abcdef0123456789abcdef0123456789abcdef012345"
     }
 }
 
@@ -164,8 +168,28 @@ class FakeLink(val role: BulkRole, val token: ByteString) : BulkStream {
     val closes = AtomicInteger()
     @Volatile var sendBuffer: Int? = null
 
+    /** Set by [stall]: writes block on it until [close]. */
+    @Volatile private var stalled: CountDownLatch? = null
+    val writeEntered = CountDownLatch(1)
+
     override val input: InputStream = fromMac.input
-    override val output: OutputStream = toMac.output
+    override val output: OutputStream = object : OutputStream() {
+        override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            stalled?.let { gate ->
+                writeEntered.countDown()
+                gate.await()
+                throw IOException("link closed")
+            }
+            toMac.output.write(b, off, len)
+        }
+    }
+
+    /** The Mac stops reading: every later write blocks until the link is closed. */
+    fun stall() {
+        stalled = CountDownLatch(1)
+    }
 
     override fun setSendBufferBytes(n: Int) {
         sendBuffer = n
@@ -173,6 +197,7 @@ class FakeLink(val role: BulkRole, val token: ByteString) : BulkStream {
 
     override fun close() {
         closes.incrementAndGet()
+        stalled?.countDown()
         fromMac.close()
         toMac.close()
     }
