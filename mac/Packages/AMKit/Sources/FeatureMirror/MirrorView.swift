@@ -51,6 +51,9 @@ public enum MirrorCopy {
 /// Input: the mouse, scroll, keys (through `interpretKeyEvents`, so input methods work) and ⌘
 /// shortcuts go to `input`. Held input is let go when the view resigns first responder, leaves
 /// its window, or its window resigns key or closes. Typed text is never logged.
+///
+/// Files dragged from the Finder are taken while the model's `canDropFiles` (a session runs and
+/// the phone takes files) and handed to `MirrorModel.dropFiles`. File names are never logged.
 @MainActor
 public final class MirrorView: NSView {
     public let displayLayer = AVSampleBufferDisplayLayer()
@@ -69,6 +72,8 @@ public final class MirrorView: NSView {
     /// The composition is being dropped: whatever the input method hands back now is not sent.
     private var discarding = false
     private var windowObservers: [NSObjectProtocol] = []
+    /// Where dropped files go; set by `bind(_:closeWindow:)`.
+    private weak var dropModel: MirrorModel?
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -114,6 +119,7 @@ public final class MirrorView: NSView {
             marked.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
             marked.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
         ])
+        registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel(MirrorCopy.phoneScreen)
@@ -138,6 +144,7 @@ public final class MirrorView: NSView {
         )
         input = mapper
         model.releaseInput = { [weak mapper] in mapper?.releaseAll() }
+        dropModel = model
     }
 
     /// A sink that draws on this view's layer, for a new session.
@@ -388,6 +395,55 @@ extension MirrorView: @preconcurrency NSTextInputClient {
     }
 
     public func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+}
+
+// MARK: file drop
+
+extension MirrorView {
+    /// A file drag would be taken now (internal, for tests).
+    var acceptsFileDrop: Bool { dropModel?.canDropFiles == true }
+
+    public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dragOperation(sender)
+    }
+
+    public override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dragOperation(sender)
+    }
+
+    public override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        showDropTarget(false)
+    }
+
+    public override func draggingEnded(_ sender: any NSDraggingInfo) {
+        showDropTarget(false)
+    }
+
+    public override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        acceptsFileDrop && !Self.fileURLs(sender).isEmpty
+    }
+
+    public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        showDropTarget(false)
+        return dropModel?.dropFiles(Self.fileURLs(sender)) ?? false
+    }
+
+    /// Copy while a drop would be taken, with the system's focus ring colour around the picture;
+    /// otherwise no drop, as AppKit shows it.
+    private func dragOperation(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        let take = acceptsFileDrop && !Self.fileURLs(sender).isEmpty
+        showDropTarget(take)
+        return take ? .copy : []
+    }
+
+    private func showDropTarget(_ on: Bool) {
+        layer?.borderWidth = on ? 3 : 0
+        layer?.borderColor = on ? NSColor.keyboardFocusIndicatorColor.cgColor : nil
+    }
+
+    private static func fileURLs(_ sender: any NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
 }
 
 extension MirrorView: @preconcurrency NSUserInterfaceValidations {

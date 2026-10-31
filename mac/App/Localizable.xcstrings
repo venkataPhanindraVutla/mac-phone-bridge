@@ -2762,6 +2762,39 @@
           }
         }
       }
+    },
+    "Screen Off": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen Off"
+          }
+        }
+      }
+    },
+    "Screen On": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen On"
+          }
+        }
+      }
+    },
+    "Turn the phone's screen off while mirroring": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn the phone's screen off while mirroring"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

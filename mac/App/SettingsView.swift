@@ -68,6 +68,11 @@ struct SettingsView: View {
                         set: { model.setPlayMirrorAudio($0) }
                     ))
                     .accessibilityLabel(Text("Play phone audio on this Mac"))
+                    Toggle("Turn the phone's screen off while mirroring", isOn: Binding(
+                        get: { model.mirrorScreenOff },
+                        set: { model.setMirrorScreenOff($0) }
+                    ))
+                    .accessibilityLabel(Text("Turn the phone's screen off while mirroring"))
                 }
                 Section("Screenshots") {
                     Picker("Save phone screenshots to", selection: Binding(

@@ -202,6 +202,7 @@ import Testing
         case let .linkEnded(role): "linkEnded \(role)"
         case .needsReset: "needsReset"
         case .audioEnded: "audioEnded"
+        case .clipboard: "clipboard"
         }
     }
 }

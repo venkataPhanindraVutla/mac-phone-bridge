@@ -354,3 +354,146 @@ private func connectOn(_ model: ClipboardModel, phoneID: String = "P1", phoneNam
     await model.poll()
     #expect(sent.messages.map(\.text) == ["after", "made while off"])
 }
+
+// MARK: Full mode: the helper's clipboard while mirroring (Task 8, ruling R38)
+
+@MainActor @Test func helperClipboardReachesPasteboard() async {
+    let (model, board, sent) = rig()
+    await connectOn(model)
+    model.acceptFromHelper("copied on the phone", explicit: false)
+    #expect(board.writes == ["copied on the phone"])
+    #expect(board.types == ["public.utf8-plain-text"])
+    // Not sent back: the phone has it.
+    await model.poll()
+    #expect(sent.messages.isEmpty)
+    // Emoji and other scripts as they are.
+    model.acceptFromHelper("été 📋✨", explicit: false)
+    #expect(board.writes == ["copied on the phone", "été 📋✨"])
+}
+
+/// A Mac copy goes to the phone (clipboard.text); the helper reports the phone's clipboard
+/// changing to it: the pasteboard is not written again.
+@MainActor @Test func helperEchoOfMacCopyIsIgnored() async {
+    let (model, board, sent) = rig()
+    await connectOn(model)
+    board.copy("copied on the Mac")
+    await model.poll()
+    #expect(sent.messages.map(\.text) == ["copied on the Mac"])
+    let count = board.changeCount
+    model.acceptFromHelper("copied on the Mac", explicit: false)
+    #expect(board.writes.isEmpty)
+    #expect(board.changeCount == count)
+    // Something else from the phone still comes.
+    model.acceptFromHelper("new on the phone", explicit: false)
+    #expect(board.writes == ["new on the phone"])
+}
+
+/// Typed emoji (and ⌘V) reach the phone through SET_CLIPBOARD + paste, reported with
+/// `noteSentToPhone`; the helper's echo of it must not replace what the user has on the Mac.
+@MainActor @Test func typedEmojiPasteIsNotCopiedBack() async {
+    let (model, board, _) = rig()
+    await connectOn(model)
+    board.copy("the user's own clipboard")
+    await model.poll()
+    model.noteSentToPhone("👍🏽")
+    model.acceptFromHelper("👍🏽", explicit: false)
+    #expect(board.writes.isEmpty)
+    #expect(board.string == "the user's own clipboard")
+    // Non-Latin text the same way.
+    model.noteSentToPhone("привет")
+    model.acceptFromHelper("привет", explicit: false)
+    #expect(board.writes.isEmpty)
+}
+
+@MainActor @Test func helperClipboardIgnoredWhenPhoneSwitchOff() async {
+    let (model, board, _) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    // Before any availability: off.
+    model.acceptFromHelper("too early", explicit: false)
+    await model.message(availability(false, .offByUser))
+    model.acceptFromHelper("switch off", explicit: false)
+    #expect(board.writes.isEmpty)
+    await model.message(availability(true))
+    model.acceptFromHelper("switch on", explicit: false)
+    #expect(board.writes == ["switch on"])
+}
+
+/// ⌘C / ⌘X in the mirror is the user asking for it: it comes whatever the phone's switch says.
+@MainActor @Test func explicitCopyIgnoresSwitch() async {
+    let (model, board, _) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared)
+    await model.message(availability(false, .offByUser))
+    model.acceptFromHelper("asked for", explicit: true)
+    #expect(board.writes == ["asked for"])
+    // The echo rule still holds for it.
+    model.acceptFromHelper("asked for", explicit: true)
+    #expect(board.writes == ["asked for"])
+}
+
+@MainActor @Test func helperClipboardIgnoredWithoutClipboardCapability() async {
+    let (model, board, _) = rig()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: ["status.v1", "mirror.v1"])
+    await model.message(availability(true))
+    model.acceptFromHelper("not shared", explicit: true)
+    model.acceptFromHelper("not shared", explicit: false)
+    #expect(board.writes.isEmpty)
+    // Disconnected: nothing either.
+    await connectOn(model)
+    model.disconnected()
+    model.acceptFromHelper("apart", explicit: true)
+    #expect(board.writes.isEmpty)
+}
+
+@MainActor @Test func helperClipboardOverTheCapIsIgnored() async {
+    let (model, board, _) = rig()
+    await connectOn(model)
+    model.acceptFromHelper(String(repeating: "é", count: ClipboardModel.maxBytes / 2) + "x", explicit: true)
+    #expect(board.writes.isEmpty)
+    let atCap = String(repeating: "a", count: ClipboardModel.maxBytes)
+    model.acceptFromHelper(atCap, explicit: false)
+    #expect(board.writes == [atCap])
+}
+
+/// Each non-Latin keystroke is its own paste: the helper's echo of one can arrive after the next
+/// has gone, when `phoneHas` is already the newer text. Every echo is still ignored.
+@MainActor @Test func echoesOfQuickPastesAreAllIgnored() async {
+    let (model, board, _) = rig()
+    await connectOn(model)
+    for c in ["п", "р", "и", "😀"] { model.noteSentToPhone(c) }
+    for c in ["п", "р", "и", "😀"] { model.acceptFromHelper(c, explicit: false) }
+    #expect(board.writes.isEmpty)
+    // A Mac copy sent, then a paste before its echo comes back.
+    board.copy("mac copy")
+    await model.poll()
+    model.noteSentToPhone("é")
+    model.acceptFromHelper("mac copy", explicit: false)
+    model.acceptFromHelper("é", explicit: false)
+    #expect(board.writes.isEmpty)
+    // Each is ignored once: copying "п" on the phone again later does come.
+    model.acceptFromHelper("п", explicit: false)
+    #expect(board.writes == ["п"])
+}
+
+/// An echo that never came is forgotten after `echoWindow`: the text copied on the phone later comes.
+@MainActor @Test func expectedEchoExpires() async {
+    let (model, board, _) = rig()
+    await connectOn(model)
+    var now = ContinuousClock.now
+    model.now = { now }
+    model.noteSentToPhone("one")
+    model.noteSentToPhone("two")
+    now += ClipboardModel.echoWindow + .milliseconds(1)
+    model.acceptFromHelper("one", explicit: false)
+    #expect(board.writes == ["one"])
+}
+
+@MainActor @Test func expectedEchoesClearedOnDisconnect() async {
+    let (model, board, _) = rig()
+    await connectOn(model)
+    model.noteSentToPhone("one")
+    model.noteSentToPhone("two")
+    model.disconnected()
+    await connectOn(model)
+    model.acceptFromHelper("one", explicit: false)
+    #expect(board.writes == ["one"])
+}

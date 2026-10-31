@@ -20,10 +20,14 @@ public enum MirrorSessionEvent: Sendable {
     /// At most once per second: a request inside the window is deferred to its end, and further
     /// requests before then join it, so the phone is always asked again for a key frame.
     case needsReset
+    /// The helper's CLIPBOARD: the phone's clipboard changed (ruling R38: only while mirroring).
+    /// `explicit` when it came within `MirrorSession.explicitClipboardWindow` of a GET_CLIPBOARD
+    /// (⌘C or ⌘X in the mirror). The text is content: never logged, nor its size.
+    case clipboard(String, explicit: Bool)
 }
 
-/// The clock the RESET_VIDEO throttle reads and schedules on, and the control drain deadline
-/// runs on (a fake one in tests).
+/// The clock the RESET_VIDEO throttle reads and schedules on, the control drain deadline runs on,
+/// and the explicit clipboard window is measured with (a fake one in tests).
 struct ResetClock: Sendable {
     var now: @Sendable () -> ContinuousClock.Instant
     var after: @Sendable (Duration, @escaping @Sendable () -> Void) -> Void
@@ -57,6 +61,8 @@ public final class MirrorSession: @unchecked Sendable {
     /// After `close()`, the control link stays open at most this long for what is still queued
     /// (a release's touch UP) to go out.
     static let controlDrainDeadline: Duration = .milliseconds(200)
+    /// The helper's clipboard this soon after a GET_CLIPBOARD is the user's ⌘C / ⌘X.
+    public static let explicitClipboardWindow: Duration = .seconds(2)
 
     public let id: UInt32
     /// Internal so tests can hold it.
@@ -76,7 +82,9 @@ public final class MirrorSession: @unchecked Sendable {
     /// A deferred RESET_VIDEO is scheduled for the end of the current window.
     private var resetDeferred = false
     private var parsed = 0
-    private var control: AsyncStream<Data>.Continuation?
+    private var control: AsyncStream<ControlItem>.Continuation?
+    /// When the last GET_CLIPBOARD was queued.
+    private var lastGetClipboard: ContinuousClock.Instant?
     private var frameHook: (@Sendable (UInt64) -> Void)?
     private var audioDecoded = 0
 
@@ -102,7 +110,7 @@ public final class MirrorSession: @unchecked Sendable {
         // Bounded: a stalled link keeps the newest messages (it is ending anyway; the writer drops after an error).
         // Made before the lock and kept with the pipe in one step, so close() always finds both.
         let queue = role == .mirrorControl
-            ? AsyncStream.makeStream(of: Data.self, bufferingPolicy: .bufferingNewest(Self.maxQueuedControl)) : nil
+            ? AsyncStream.makeStream(of: ControlItem.self, bufferingPolicy: .bufferingNewest(Self.maxQueuedControl)) : nil
         let accepted: Bool = lock.withLock {
             guard !closed, pipes[role] == nil, [.mirrorVideo, .mirrorAudio, .mirrorControl].contains(role) else { return false }
             pipes[role] = pipe
@@ -120,22 +128,55 @@ public final class MirrorSession: @unchecked Sendable {
             guard let stream = queue?.stream else { return }
             let writer = ControlWriter(pipe: pipe)
             Task.detached {
-                for await bytes in stream { await writer.send(bytes) }
+                for await item in stream {
+                    switch item {
+                    case let .bytes(bytes): await writer.send(bytes)
+                    case let .written(done): done()
+                    }
+                }
                 // The stream ends only at close(): everything queued has been written (or the
                 // link failed), so the link can close now, before the drain deadline.
                 pipe.close()
             }
-            // Device messages (Task 8 reads them); drained so the phone's side never backs up.
-            Task.detached { [self] in await drain(pipe, role: role) }
+            Task.detached { [self] in await readDeviceMessages(pipe) }
         default:
             Task.detached { [self] in await readAudio(pipe) }
         }
     }
 
     /// Queues scrcpy control bytes for the control link, in call order; dropped while there is none.
+    /// A GET_CLIPBOARD (⌘C, ⌘X) opens the explicit clipboard window.
     public func sendControl(_ bytes: Data) {
-        lock.withLock { _ = control?.yield(bytes) }
+        let getClipboard = bytes.first == ScrcpyControl.Kind.getClipboard.rawValue
+        let at = getClipboard ? clock.now() : nil
+        lock.withLock {
+            guard let control else { return }
+            _ = control.yield(.bytes(bytes))
+            if let at { lastGetClipboard = at }
+        }
     }
+
+    /// Returns once everything queued on the control link so far has been written (or the link
+    /// failed), or after `controlDrainDeadline`, whichever comes first; at once when there is no
+    /// control link or the session is closed.
+    public func flushControl() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            let queued: Bool = lock.withLock {
+                guard let control else { return false }
+                if case .terminated = control.yield(.written({ once.resume() })) { return false }
+                return true
+            }
+            guard queued else {
+                once.resume()
+                return
+            }
+            clock.after(Self.controlDrainDeadline) { once.resume() }
+        }
+    }
+
+    /// A control link is attached and the session is not closed.
+    public var hasControlLink: Bool { lock.withLock { control != nil } }
 
     /// The last session packet's size.
     public var videoSize: (width: Int, height: Int)? { lock.withLock { size } }
@@ -151,7 +192,7 @@ public final class MirrorSession: @unchecked Sendable {
     /// `controlDrainDeadline`, whichever comes first; nothing here waits for it. Nothing is
     /// reported after this, and later `sendControl` calls are dropped.
     public func close() {
-        let (now, draining, writer): ([any BulkPipe], (any BulkPipe)?, AsyncStream<Data>.Continuation?) = lock.withLock {
+        let (now, draining, writer): ([any BulkPipe], (any BulkPipe)?, AsyncStream<ControlItem>.Continuation?) = lock.withLock {
             closed = true
             defer {
                 pipes = [:]
@@ -300,11 +341,36 @@ public final class MirrorSession: @unchecked Sendable {
         emit(.audioEnded)
     }
 
-    private func drain(_ pipe: any BulkPipe, role: AMBulkRole) async {
+    /// Reads the helper's device messages from the control link. Bytes it can't read end the
+    /// device messages, not the session: the rest is drained, so the phone's side never backs up.
+    private func readDeviceMessages(_ pipe: any BulkPipe) async {
+        var parser = DeviceMessageParser()
+        var readable = true
         do {
-            while try await pipe.receive(maximum: Self.readChunk) != nil {}
-        } catch {}
-        ended(pipe, role: role)
+            while let data = try await pipe.receive(maximum: Self.readChunk) {
+                guard readable else { continue }
+                do {
+                    for message in try parser.push(data) { deviceMessage(message) }
+                } catch {
+                    readable = false
+                    Self.log.error("session \(self.id, privacy: .public) device messages unreadable, ignored from now on")
+                }
+            }
+        } catch {
+            // EOF or a closed link: the link has ended.
+        }
+        ended(pipe, role: .mirrorControl)
+    }
+
+    private func deviceMessage(_ message: DeviceMessage) {
+        switch message {
+        case let .clipboard(text):
+            let now = clock.now()
+            let explicit = lock.withLock { lastGetClipboard.map { now - $0 <= Self.explicitClipboardWindow } ?? false }
+            emit(.clipboard(text, explicit: explicit))
+        case .ackClipboard:
+            break // SET_CLIPBOARD went through; nothing waits for it
+        }
     }
 
     private func ended(_ pipe: any BulkPipe, role: AMBulkRole) {
@@ -359,6 +425,29 @@ public final class MirrorSession: @unchecked Sendable {
     private func emit(_ event: MirrorSessionEvent) {
         guard !lock.withLock({ closed }) else { return }
         events(event)
+    }
+}
+
+/// What the control link's writer takes, in order: bytes to write, or a call once everything
+/// before it has been written (`flushControl`).
+enum ControlItem: Sendable {
+    case bytes(Data)
+    case written(@Sendable () -> Void)
+}
+
+/// Resumes a continuation once, whichever of its callers comes first.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
+
+    func resume() {
+        let c: CheckedContinuation<Void, Never>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        c?.resume()
     }
 }
 

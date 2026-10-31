@@ -39,6 +39,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     private static let qualityItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.quality")
     private static let muteItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.mute")
+    private static let screenItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.screen")
     /// The phone keys, in toolbar order.
     private static let keys: [(id: NSToolbarItem.Identifier, key: ToolbarKey, symbol: String)] = [
         (NSToolbarItem.Identifier("io.github.anmirror.mirror.back"), .back, "chevron.backward"),
@@ -103,6 +104,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
             _ = model.preset
             _ = model.muted
             _ = model.audioActive
+            _ = model.screenOff
         } onChange: { [weak self] in
             Self.later { self?.render(); self?.observe() }
         }
@@ -120,6 +122,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         updateQualityMenu()
         updateKeyItems()
         updateMuteItem()
+        updateScreenItem()
         if case let .running(width, height) = model.phase, width > 0, height > 0,
            fitted.map({ $0 != (width, height) }) ?? true {
             fit(width: width, height: height)
@@ -184,17 +187,28 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.keys.prefix(3).map(\.id) + [.flexibleSpace] + Self.keys.dropFirst(3).map(\.id) + [Self.muteItem, Self.qualityItem]
+        Self.keys.prefix(3).map(\.id) + [.flexibleSpace] + Self.keys.dropFirst(3).map(\.id)
+            + [Self.screenItem, Self.muteItem, Self.qualityItem]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.keys.map(\.id) + [.flexibleSpace, .space, Self.muteItem, Self.qualityItem]
+        Self.keys.map(\.id) + [.flexibleSpace, .space, Self.screenItem, Self.muteItem, Self.qualityItem]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if let key = Self.keys.first(where: { $0.id == id }) {
             return keyItem(id: id, key: key.key, symbol: key.symbol)
+        }
+        if id == Self.screenItem {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.paletteLabel = String(localized: "Screen Off")
+            item.isBordered = true
+            item.target = self
+            item.action = #selector(toggleScreen(_:))
+            item.autovalidates = false
+            configureScreen(item)
+            return item
         }
         if id == Self.muteItem {
             let item = NSToolbarItem(itemIdentifier: id)
@@ -284,6 +298,25 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     @objc private func toggleMute(_ sender: NSToolbarItem) {
         model.muted.toggle()
+    }
+
+    /// "Screen Off" / "Screen On": the title says what a click does. Enabled while running.
+    private func configureScreen(_ item: NSToolbarItem) {
+        let title = model.screenOff ? String(localized: "Screen On") : String(localized: "Screen Off")
+        item.label = title
+        item.toolTip = title
+        item.image = NSImage(systemSymbolName: model.screenOff ? "iphone" : "iphone.slash", accessibilityDescription: title)
+        item.isEnabled = isRunning
+    }
+
+    private func updateScreenItem() {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == Self.screenItem {
+            configureScreen(item)
+        }
+    }
+
+    @objc private func toggleScreen(_ sender: NSToolbarItem) {
+        model.setScreenOff(!model.screenOff)
     }
 
     @objc private func pressKey(_ sender: NSToolbarItem) {
