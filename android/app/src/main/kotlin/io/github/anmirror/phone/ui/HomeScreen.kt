@@ -86,6 +86,7 @@ fun HomeScreen(
     onProximityPermissionResult: () -> Unit,
     mirrorOn: Boolean,
     mirrorLine: MirrorRowLine?,
+    mirrorShownOn: String?,
     onMirrorToggle: (Boolean) -> Unit,
     onSetUpFullMode: () -> Unit,
     onReEnableFullMode: () -> Unit,
@@ -167,7 +168,7 @@ fun HomeScreen(
             onToggle = onProximityToggle, onPermissionResult = onProximityPermissionResult,
         )
         MirrorRow(
-            on = mirrorOn, line = mirrorLine, onToggle = onMirrorToggle,
+            on = mirrorOn, line = mirrorLine, shownOn = mirrorShownOn, onToggle = onMirrorToggle,
             onSetUp = onSetUpFullMode, onReEnable = onReEnableFullMode,
         )
         if (trackpadShown) TrackpadRow(open = trackpadOpen, line = trackpadLine, onOpen = onOpenTrackpad)
@@ -460,12 +461,13 @@ private fun ProximityRow(
  * "Allow your Mac to show this screen" (Full mode, F-17): off by default, disabled before Android
  * 11. While it is on, the line says what the one-time setup still needs: pairing ("Set up Full
  * mode" opens the Full mode screen), or Wireless debugging turned back on ("Re-enable Full mode"
- * opens Developer options at it).
+ * opens Developer options at it). While a Mac shows the screen ([shownOn], its name), it says so.
  */
 @Composable
 private fun MirrorRow(
     on: Boolean,
     line: MirrorRowLine?,
+    shownOn: String?,
     onToggle: (Boolean) -> Unit,
     onSetUp: () -> Unit,
     onReEnable: () -> Unit,
@@ -489,6 +491,10 @@ private fun MirrorRow(
                 enabled = supported,
                 modifier = Modifier.semantics { contentDescription = title },
             )
+        }
+        if (shownOn != null) {
+            Text(stringResource(R.string.home_mirror_shown_on, shownOn), style = MaterialTheme.typography.bodyMedium)
+            return@Column
         }
         line?.let { Text(stringResource(it.messageRes()), style = MaterialTheme.typography.bodyMedium) }
         when (line) {

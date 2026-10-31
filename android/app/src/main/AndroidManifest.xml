@@ -170,6 +170,19 @@
             android:name=".service.PairingReplyReceiver"
             android:exported="false" />
 
+        <!-- The mirroring notification's Stop; only this app's PendingIntent reaches it. -->
+        <receiver
+            android:name=".service.MirrorStopReceiver"
+            android:exported="false" />
+
+        <!-- Full mode's delay and frame-rate test screens, started by `am start` while the Mac measures. -->
+        <activity
+            android:name=".mirror.DelayTestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
         <!-- "Tap to reconnect" was dismissed: not posted again until the phone connects (deleteIntent). -->
         <receiver
             android:name=".service.ReconnectNoticeDismissReceiver"

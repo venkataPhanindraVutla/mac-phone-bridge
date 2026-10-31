@@ -36,7 +36,14 @@ import io.github.anmirror.adb.AdbIdentity
 import io.github.anmirror.adb.LibAdbClient
 import io.github.anmirror.adb.NsdAdbServices
 import io.github.anmirror.feature.clipboard.AndroidClipboard
+import io.github.anmirror.feature.mirror.AdbIdleClose
 import io.github.anmirror.feature.mirror.FullModeSetup
+import io.github.anmirror.feature.mirror.HelperInstaller
+import io.github.anmirror.feature.mirror.LinkDialer
+import io.github.anmirror.feature.mirror.MirrorController
+import io.github.anmirror.feature.mirror.MirrorRun
+import io.github.anmirror.feature.mirror.MirrorSession
+import io.github.anmirror.feature.mirror.connectFailureReason
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.feature.mirror.SetupStore
 import io.github.anmirror.feature.clipboard.ClipboardBridge
@@ -97,6 +104,10 @@ import io.github.anmirror.protocol.v1.BulkEndpoint
 import io.github.anmirror.protocol.v1.BulkHello
 import io.github.anmirror.protocol.v1.Envelope
 import io.github.anmirror.protocol.v1.FeatureAvailability
+import io.github.anmirror.protocol.v1.BulkRole
+import io.github.anmirror.protocol.v1.MirrorStart
+import io.github.anmirror.protocol.v1.MirrorState
+import io.github.anmirror.protocol.v1.TestPatternMode
 import io.github.anmirror.protocol.v1.RootKind
 import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.protocol.v1.TransferKind
@@ -581,6 +592,81 @@ class AppGraph private constructor(context: Context) {
      */
     suspend fun sendMirror(type: String, payload: MessageLite): Boolean =
         mirrorShared() && manager.send(ProtoChannel.CHANNEL_MIRROR, type, payload)
+
+    /** The phone's ADB link closes 10 min after the last mirror session (or a setup connect), and at disconnect. */
+    private val adbIdle = AdbIdleClose(scope, close = ::closeAdb)
+
+    /** Closes the current ADB client's connection, if there is one; never makes a client. */
+    private fun closeAdb() {
+        val client = synchronized(adbLock) { adb?.second } ?: return
+        if (client.isConnected) Log.i(MIRROR_TAG, "adb: closing the idle link")
+        client.close()
+    }
+
+    /** The Mac connection the mirror session in progress came from: its end ends the session. */
+    @Volatile private var mirrorConnection: PhoneConnectionState.Connected? = null
+
+    /** The phone's mirror sessions (SPEC 24); [io.github.anmirror.phone.service.ConnectionService] feeds it. */
+    val mirrorController: MirrorController = MirrorController(
+        open = ::mirrorAvailabilityNow,
+        newSession = ::newMirrorSession,
+        sendState = { sendMirror(MessageType.MIRROR_STATE, it) },
+        sendStop = { sendMirror(MessageType.MIRROR_STOP, it) },
+        shell = { adbClient().shell(it) },
+        scope = scope,
+        log = { Log.i(MIRROR_TAG, it) },
+    )
+
+    /** The delay or frame-rate test screen the running session asked for; `mirror.DelayTestActivity` finishes on OFF. */
+    val mirrorTestPattern: StateFlow<TestPatternMode> get() = mirrorController.testPattern
+
+    /** One session for [start]: the helper through this app's own ADB link, relayed to the Mac this start came from. */
+    private fun newMirrorSession(start: MirrorStart, report: suspend (MirrorState) -> Unit): MirrorRun {
+        val connection = manager.state.value as? PhoneConnectionState.Connected
+        mirrorConnection = connection
+        val adb = adbClient() // throws without an identity: the controller answers NEEDS_SETUP
+        return MirrorSession(
+            start = start,
+            adb = adb,
+            installer = HelperInstaller(adb, { app.assets.open(HELPER_ASSET) }, BuildConfig.HELPER_SHA256),
+            dialer = mirrorDialer(connection, start.port),
+            clipboardAutosync = clipboardOpen(),
+            version = BuildConfig.HELPER_VERSION,
+            report = report,
+            scope = scope,
+            clock = SystemClock::elapsedRealtime,
+            connect = {
+                if (fullModeSetup.ensureConnected()) null else connectFailureReason(_wirelessDebugging.value, mirrorSetup.paired)
+            },
+            // The ADB link dropped mid-session: Full mode needs re-enabling (availability NEEDS_SETUP).
+            onAdbLost = { mirrorSetup.lastConnectFailed = true },
+            log = { Log.i(MIRROR_TAG, it) },
+        )
+    }
+
+    /**
+     * Dials the mirror's bulk links: only to the paired Mac of [connection], while it is still the
+     * connection, pinned by its fingerprint, on the port its start named. A dial that outlasts
+     * [BULK_DIAL_MS] fails, and a stream that arrives after that is closed.
+     */
+    private fun mirrorDialer(connection: PhoneConnectionState.Connected?, port: Int) = LinkDialer { role: BulkRole, token ->
+        if (connection == null || manager.state.value !== connection) throw IOException("not connected")
+        if (port !in 1..65_535) throw IOException("bad port")
+        val host = connection.mac.lastHost ?: throw IOException("no host")
+        val hello = BulkHello.newBuilder().setToken(token).setRole(role).build()
+        val dialed = AtomicReference<BulkStream?>(null)
+        try {
+            withTimeoutOrNull(BULK_DIAL_MS) {
+                bulkConnector.open(host, port, connection.mac.fingerprintHex, hello).also { dialed.set(it) }
+            } ?: run {
+                dialed.getAndSet(null)?.let { runCatching { it.close() } }
+                throw IOException("bulk dial timed out")
+            }
+        } catch (e: CancellationException) {
+            dialed.getAndSet(null)?.let { runCatching { it.close() } }
+            throw e
+        }
+    }
 
     /** Reads the address book live and sends it to the Mac; serializes its own sends. */
     val contactsSync = ContactsSync(
@@ -1082,6 +1168,12 @@ class AppGraph private constructor(context: Context) {
      * session already announced stays).
      */
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
+        // The Mac is gone: its mirror session ends without a message, and the ADB link closes.
+        if (mirrorConnection === ended) {
+            mirrorConnection = null
+            mirrorController.stopAll(null)
+        }
+        if (manager.state.value !is PhoneConnectionState.Connected) adbIdle.disconnected()
         bulkEndpoint.update { if (it?.session === ended) null else it }
         _macInputAvailability.update { if (it?.session === ended) null else it }
         photos.stop()
@@ -1157,6 +1249,14 @@ class AppGraph private constructor(context: Context) {
         // Wireless debugging may have been turned back on while no process ran (the re-arm flag
         // lived in the old one): the flip is never seen, so check once now.
         reconnectFullModeIfNeeded("start")
+        // The ADB link is held while a session runs, and timed out after it, or after a setup connect.
+        scope.launch {
+            mirrorController.active.collect { active ->
+                adbIdle.busy(active)
+                keepAliveLog.record(KeepAliveEvent.FULL_MODE, "mirror-active=$active")
+            }
+        }
+        scope.launch { fullModeSetup.state.collect { if (it == SetupState.Ready) adbIdle.connected() } }
         // Paired (connecting or connected) or given up: the pairing notification has done its job.
         scope.launch {
             fullModeSetup.state.collect { s -> if (closesPairingNotification(s)) PairingNotifications.cancel(app) }
@@ -1204,6 +1304,9 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
         private const val KEY_MAKER_STEP_DONE = "maker_step_done"
         private const val KEY_MIRROR_ON = "allow_mirror"
+
+        /** The helper jar in the APK's assets (Task 2), pushed before every mirror session. */
+        private const val HELPER_ASSET = "anmirror-helper.jar"
 
         /** `Settings.Global.ADB_WIFI_ENABLED`, hidden from the SDK. */
         const val ADB_WIFI_ENABLED = "adb_wifi_enabled"

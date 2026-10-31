@@ -234,6 +234,10 @@
     <string name="home_mirror_re_enable">Re-enable Full mode</string>
     <string name="home_mirror_needs_android_11">Needs Android 11 or later.</string>
     <string name="home_mirror_ready">Ready. Start it from your Mac\'s menu.</string>
+    <string name="home_mirror_shown_on">Your screen is shown on %1$s.</string>
+    <string name="channel_mirroring">Screen mirroring</string>
+    <string name="mirror_notification_title">Your screen is shown on %1$s</string>
+    <string name="mirror_notification_stop">Stop</string>
     <string name="full_title">Full mode</string>
     <string name="full_intro_1">Full mode lets your Mac show and control this phone\'s screen. It uses Wireless debugging, a developer setting, to start a small helper with the same rights as a computer connected by USB.</string>
     <string name="full_intro_2">The helper runs only while your Mac shows your screen, and talks only to your paired Mac.</string>

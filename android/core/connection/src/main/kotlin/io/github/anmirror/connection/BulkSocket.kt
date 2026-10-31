@@ -14,6 +14,9 @@ const val BULK_BUFFER_BYTES = 256 * 1024
 interface BulkStream : Closeable {
     val input: InputStream
     val output: OutputStream
+
+    /** Sets the socket's send buffer (the mirror relay asks for 256 KiB); a stream without a socket ignores it. */
+    fun setSendBufferBytes(n: Int) {}
 }
 
 /**
@@ -24,6 +27,10 @@ interface BulkStream : Closeable {
 class BulkSocket internal constructor(private val socket: SSLSocket) : BulkStream {
     override val input: InputStream = BufferedInputStream(socket.inputStream, BULK_BUFFER_BYTES)
     override val output: OutputStream = BufferedOutputStream(socket.outputStream, BULK_BUFFER_BYTES)
+
+    override fun setSendBufferBytes(n: Int) {
+        socket.sendBufferSize = n
+    }
 
     /**
      * Aborts: closes the socket at once and **discards any bytes still buffered in [output]**.

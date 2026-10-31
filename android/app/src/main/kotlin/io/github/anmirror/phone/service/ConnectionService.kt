@@ -86,6 +86,10 @@ import io.github.anmirror.protocol.v1.FeatureAvailability
 import io.github.anmirror.protocol.v1.IconRequest
 import io.github.anmirror.protocol.v1.InvokeAction
 import io.github.anmirror.protocol.v1.MediaCommand
+import io.github.anmirror.protocol.v1.MirrorReason
+import io.github.anmirror.protocol.v1.MirrorStart
+import io.github.anmirror.protocol.v1.MirrorStop
+import io.github.anmirror.protocol.v1.MirrorTestPattern
 import io.github.anmirror.protocol.v1.NotificationFilter
 import io.github.anmirror.protocol.v1.PhotoFetch
 import io.github.anmirror.protocol.v1.PhotosListRequest
@@ -220,6 +224,7 @@ class ConnectionService : LifecycleService() {
         }
         stopProximityReceiver()
         wirelessDebuggingObserver?.let { contentResolver.unregisterContentObserver(it) }
+        MirrorNotifications.cancel(this) // the session ends with the connection
         wirelessDebuggingObserver = null
         graph.proximityBeacon.stop() // its sets and its alarm
         graph.callNotifications.onDialerCallPosted = null
@@ -858,8 +863,37 @@ class ConnectionService : LifecycleService() {
      * mirror.v1, on connect and on every change of the switch, the Full mode setup or Wireless
      * debugging (`Settings.Global.adb_wifi_enabled`, watched here; a read that throws is unknown,
      * which never blocks).
+     *
+     * The session: `mirror.start`, `mirror.stop` and `mirror.test_pattern` go to the controller
+     * while the Mac shares mirror.v1. Turning the switch off stops it (TURNED_OFF), so does
+     * Wireless debugging going off (NEEDS_SETUP); a disconnect ends it quietly
+     * ([AppGraph.onSessionEnded]). While it runs, the "Your screen is shown on" notification shows.
      */
     private fun setUpMirror() {
+        graph.manager.on(MessageType.MIRROR_START) { env ->
+            if (graph.mirrorShared()) graph.mirrorController.onStart(MirrorStart.parseFrom(env.payload))
+        }
+        graph.manager.on(MessageType.MIRROR_STOP) { env ->
+            if (graph.mirrorShared()) graph.mirrorController.onStop(MirrorStop.parseFrom(env.payload))
+        }
+        graph.manager.on(MessageType.MIRROR_TEST_PATTERN) { env ->
+            if (graph.mirrorShared()) graph.mirrorController.onTestPattern(MirrorTestPattern.parseFrom(env.payload))
+        }
+        lifecycleScope.launch {
+            graph.mirrorOn.collect { on -> if (!on) graph.mirrorController.stopAll(MirrorReason.MIRROR_REASON_TURNED_OFF) }
+        }
+        lifecycleScope.launch {
+            graph.wirelessDebugging.collect { on -> if (on == false) graph.mirrorController.stopAll(MirrorReason.MIRROR_REASON_NEEDS_SETUP) }
+        }
+        lifecycleScope.launch {
+            graph.mirrorController.running.collect { start ->
+                if (start != null) {
+                    MirrorNotifications.post(this@ConnectionService, graph.connectedMacName() ?: getString(R.string.clipboard_mac_unnamed))
+                } else {
+                    MirrorNotifications.cancel(this@ConnectionService)
+                }
+            }
+        }
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) = graph.refreshWirelessDebugging()
         }

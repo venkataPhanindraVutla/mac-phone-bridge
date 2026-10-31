@@ -30,6 +30,8 @@ android {
 
 dependencies {
     api(project(":core:adb"))
+    // The mirror's bulk links to the Mac (BulkStream, BulkRole).
+    api(project(":core:connection"))
     api(project(":core:protocol"))
     api(libs.kotlinx.coroutines.core)
 

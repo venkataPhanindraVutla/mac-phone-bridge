@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.anmirror.feature.mirror.MakerGuidance as FullModeMaker
+import io.github.anmirror.connection.PhoneConnectionState
 import io.github.anmirror.phone.remote.TrackpadActivity
 import io.github.anmirror.phone.diag.KeepAliveEvent
 import io.github.anmirror.phone.service.BootDecision
@@ -138,6 +139,7 @@ private fun AppRoot(graph: AppGraph) {
     val backgroundExempt by graph.backgroundExempt.collectAsStateWithLifecycle()
     val makerStepDone by graph.makerStepDone.collectAsStateWithLifecycle()
     val mirrorOn by graph.mirrorOn.collectAsStateWithLifecycle()
+    val mirrorRunning by graph.mirrorController.running.collectAsStateWithLifecycle()
     val mirrorSetup by graph.mirrorSetup.snapshot.collectAsStateWithLifecycle()
     val wirelessDebugging by graph.wirelessDebugging.collectAsStateWithLifecycle()
     val fullMode by graph.fullModeSetup.state.collectAsStateWithLifecycle()
@@ -205,6 +207,8 @@ private fun AppRoot(graph: AppGraph) {
                         mirrorLine = mirrorRowLine(
                             Build.VERSION.SDK_INT, mirrorOn, mirrorSetup.paired, wirelessDebugging, mirrorSetup.lastConnectFailed,
                         ),
+                        // The connected Mac is the one showing it (the session ends with the connection).
+                        mirrorShownOn = mirrorRunning?.let { (connection as? PhoneConnectionState.Connected)?.mac?.name ?: mac.name },
                         onMirrorToggle = graph::setMirrorOn,
                         onSetUpFullMode = { screen = Screen.FullMode },
                         onReEnableFullMode = {

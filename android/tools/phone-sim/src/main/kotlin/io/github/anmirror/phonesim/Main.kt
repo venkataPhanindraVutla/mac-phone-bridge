@@ -16,6 +16,9 @@
 //   EVENT notify-invoke key=<key> action=<n> reply=<text>   (with --notify; the process then exits 0)
 //   EVENT media-command kind=TOGGLE playing=<bool>          (with --media; exits 0 after the second one)
 //   EVENT media-ignored kind=<kind> key=<key>                (with --media; any other media.command)
+//   EVENT mirror-control type=2 action=<a>                  (with --mirror-relay; one per touch from the Mac)
+//   EVENT mirror-token-reuse refused                       (with --mirror-relay; a used token was refused)
+//   EVENT mirror-stop                                      (with --mirror-relay; the process then exits 0)
 //   EVENT unpaired <mac-id>
 //   EVENT disconnected <reason>
 //   EVENT failed <reason>
@@ -56,15 +59,19 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.channels.Channel as KChannel
 
 private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> --state-dir <dir> [--auto-confirm]
-                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [--send-bytes <n>] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [--send-bytes <n>]
+                      [--mirror-relay <file>] [common options]
        phone-sim connect --state-dir <dir> --identity <p12>
-                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [common options]
+                      [--status <battery>,<charging>,<signal>,<network>] [--notify] [--media] [--mirror-relay <file>]
+                      [common options]
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>] [--liveness]
                 [--ping-interval-ms <n>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
   --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
   --media: advertise media.v1, send media.availability and a paused session "sim"; a TOGGLE for it flips it; exit 0 after the second TOGGLE
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
+  --mirror-relay <file>: advertise mirror.v1 and play <file> (a scrcpy video stream after its dummy byte) to the Mac
+    on mirror.start, paced by its timestamps; exit 0 after the Mac's mirror.stop
   --liveness: advertise liveness.v1 (the Mac pings; the phone answers and pings only after 45 s of quiet)
   --ping-interval-ms <n>: sim speed for the phone's keep-alive: 0.1 pings every n ms, the liveness.v1
     fallback ping after 3n/2 ms of quiet, and n ms to wait for an answer (default 30 s, 45 s, 10 s)
@@ -102,6 +109,7 @@ private class Options(
     val sendBytes: Long?,
     val liveness: Boolean,
     val pingIntervalMs: Long?,
+    val mirrorRelay: String?,
     val name: String,
     val model: String,
 )
@@ -146,6 +154,7 @@ private fun parse(args: Array<String>): Options {
     var sendBytes: Long? = null
     var liveness = false
     var pingIntervalMs: Long? = null
+    var mirrorRelay: String? = null
     var name = "phone-sim"
     var model = "phone-sim"
     var i = 1
@@ -164,6 +173,7 @@ private fun parse(args: Array<String>): Options {
             "--liveness" -> liveness = true
             "--ping-interval-ms" -> pingIntervalMs = value(arg).toLongOrNull()?.takeIf { it > 0 }
                 ?: usageError("--ping-interval-ms must be a positive integer")
+            "--mirror-relay" -> mirrorRelay = value(arg).also { if (!File(it).isFile) usageError("--mirror-relay: no such file $it") }
             "--name" -> name = value(arg)
             "--model" -> model = value(arg)
             "-h", "--help" -> {
@@ -180,7 +190,7 @@ private fun parse(args: Array<String>): Options {
         identity ?: usageError("--identity is required"),
         password,
         stateDir ?: usageError("--state-dir is required"),
-        autoConfirm, status, notify, media, sendBytes, liveness, pingIntervalMs, name, model,
+        autoConfirm, status, notify, media, sendBytes, liveness, pingIntervalMs, mirrorRelay, name, model,
     )
 }
 
@@ -217,6 +227,7 @@ fun main(args: Array<String>) {
                 "media.v1".takeIf { options.media },
                 "files.v1".takeIf { options.sendBytes != null },
                 LIVENESS_CAPABILITY.takeIf { options.liveness },
+                "mirror.v1".takeIf { options.mirrorRelay != null },
             )).sorted(),
         )
         .setSetupLevel(SetupLevel.SETUP_LEVEL_BASIC)
@@ -332,12 +343,17 @@ private suspend fun session(
     }
     val media = if (options.media && "media.v1" in shared) SimMedia(channel, ::emit) { exitProcess(0) } else null
     media?.start()
+    val mirror = options.mirrorRelay?.takeIf { "mirror.v1" in shared }?.let { file ->
+        SimMirror(channel, connector, mac.fingerprintHex, File(file).readBytes(), ::emit) { exitProcess(0) }
+    }
+    mirror?.start()
     val session = options.pingIntervalMs?.let { n ->
         PhoneSession(channel, shared, pingIntervalMs = n, pongTimeoutMs = n, fallbackIdleMs = n * 3 / 2)
     } ?: PhoneSession(channel, shared)
     val end = session.run(onMacPing = { emit("EVENT mac-ping") }) { env ->
         if (transfers?.onMessage(env) == true) return@run
         if (media?.onMessage(env) == true) return@run
+        if (mirror?.onMessage(env) == true) return@run
         when (env.type) {
             MessageType.NOTIFY_INVOKE -> {
                 val i = InvokeAction.parseFrom(env.payload)
