@@ -2,7 +2,15 @@
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
-> **Status: milestone 0.4 is code-complete and waiting for checks on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone), 0.2 (notifications, one-time codes, contacts, calls) and 0.3 (clipboard, files, screenshots, photos, browsing your phone's files), it adds control and context: a music controller, Do Not Disturb and Focus sync, auto-lock when you walk away, and the phone as a trackpad and presentation remote. Everything that depends on a real phone or Mac is **unverified** until the owner checks in the results file are done. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md), [0.4 results](docs/milestones/0.4-results.md).
+> **Status: milestone 0.5 is code-complete and waiting for checks on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone), 0.2 (notifications, one-time codes, contacts, calls) and 0.3 (clipboard, files, screenshots, photos, browsing your phone's files), 0.4 added control and context (a music controller, Do Not Disturb and Focus sync, auto-lock when you walk away, the phone as a trackpad and presentation remote), and 0.5 adds Full mode: the phone's screen in a Mac window, controlled with the Mac's mouse and keyboard. Everything that depends on a real phone or Mac is **unverified** until the owner checks in the results file are done. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md), [0.4 results](docs/milestones/0.4-results.md), [0.5 results](docs/milestones/0.5-results.md).
+
+### What's in 0.5
+
+- **Full mode (screen mirroring with control):** after a one-time setup on an Android 11+ phone, "Show Phone Screen" in the Mac menu opens a resizable window with the phone's screen and sound. The Mac's mouse, trackpad and keyboard control the phone, including emoji and non-English input methods. The toolbar has Back, Home, Recents, Rotate, volume, Screen Off, Mute and a Quality menu (Auto, High, Balanced, Low, H.265, and Option-click for Measure Delay). Files dropped on the window go to the phone, and the phone's clipboard reaches the Mac while the window is open. None of this has run on a real phone yet: see the owner checks in the results file.
+- **How it works:** the phone app pairs with the phone's own Wireless debugging and starts a small helper (scrcpy's server, with two patches) that runs only while the Mac shows the screen. The phone copies the helper's bytes to your paired Mac over encrypted links, and the phone opens no listening network port.
+- **Target:** under 80 ms and 60 fps on 5 GHz Wi-Fi (unverified: owner check b), and a lower quality, not lag, on a weaker link.
+- No new permission for Full mode. The phone's licence list gains `spake2-android` (LGPL-3.0, shipped unmodified); see [docs/licenses.md](docs/licenses.md).
+- Known limits: see [0.5 results](docs/milestones/0.5-results.md#known-limitations-in-05).
 
 ### What's in 0.4
 
@@ -39,7 +47,7 @@
 - 📋 **Shared clipboard** for text (in 0.3)
 - 📞 **Calls:** see, answer and decline from your Mac (in 0.2)
 - 🎵 **Music controller,** including your Mac's media keys (in 0.4)
-- 🖥️ **Screen mirroring with full control:** use WhatsApp and any app with your Mac's keyboard and mouse
+- 🖥️ **Screen mirroring with full control:** use WhatsApp and any app with your Mac's keyboard and mouse (in 0.5)
 - Also:
   - phone status in the menu bar
   - find my phone
@@ -141,6 +149,16 @@ The Full build uses the same app, plus the extensions and the code under `#if FU
 ### Trying it with a phone
 
 Install the debug APK on an Android 10+ phone. In the Mac app, open the menu-bar icon and choose "Pair a phone…". A QR code appears. Either scan it from the phone app's in-app scanner, or scan it with the phone's camera app, which opens an `anmirror://pair` link in the app. Confirm that the same code shows on both devices.
+
+### Full mode
+
+Full mode needs Android 11 or later and a one-time setup on the phone; the phone's own **Full mode** screen walks you through it. In short:
+
+1. On the phone's home screen, tap "Set up Full mode" under "Allow your Mac to show this screen".
+2. Turn on Developer options and Wireless debugging, tap "Pair device with pairing code", and type the code into the notification from Android Mirroring when it asks.
+3. When the screen says "Full mode is ready.", choose "Show Phone Screen" in the Mac menu.
+
+After a reboot or a change of Wi-Fi network, tap "Re-enable Full mode" on the phone. To turn Full mode off, turn off Wireless debugging or Developer options. On some phones (vivo, OPPO, OnePlus, Xiaomi and others) the screen shows one more switch to turn on, or taps and typing from the Mac won't work. Whether it works on your phone is unverified until the owner checks in [the 0.5 results](docs/milestones/0.5-results.md) are done.
 
 ### Focus sync
 
