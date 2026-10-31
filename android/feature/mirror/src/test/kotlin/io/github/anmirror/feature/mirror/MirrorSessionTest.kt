@@ -412,6 +412,30 @@ class MirrorSessionTest {
         assertEquals(2, adb.shells.count { it == KILL })
     }
 
+    /** M1 (R59): a start that fails tells the Mac before the links it already dialed close. */
+    @Test
+    fun failedStartIsReportedBeforeTheLinksClose() = runTest {
+        val seen = mutableListOf<String>()
+        val s = MirrorSession(
+            start = mirrorStart(), adb = adb,
+            installer = HelperInstaller(adb, { ByteArray(64).inputStream() }, MirrorAdb.SHA, io = EmptyCoroutineContext),
+            dialer = dialer, clipboardAutosync = true, version = "5.0.1-am1",
+            report = { state ->
+                if (state.phase == MirrorPhase.MIRROR_PHASE_FAILED) seen += "links closed=${dialer.links.count { it.closes.get() > 0 }}"
+                states.send(state)
+            },
+            scope = backgroundScope, clock = { currentTime }, connect = { null }, onAdbLost = { adbLost++ },
+            io = EmptyCoroutineContext, newScid = { 0x0a1b2c3d },
+        )
+        val job = launch { s.run {} }
+        assertEquals(starting, next())
+        // No helper socket ever opens: HELPER_FAILED after 5 s of retries, with three links dialed.
+        assertEquals(failed(MirrorReason.MIRROR_REASON_HELPER_FAILED), next())
+        job.join()
+        assertEquals(listOf("links closed=0"), seen)
+        assertTrue(dialer.links.size == 3 && dialer.links.all { it.closes.get() == 1 })
+    }
+
     /** M1: an ADB drop that only pkill reveals still marks Full mode for re-enabling. */
     @Test
     fun adbLossFoundByTheEndsPkillStillNeedsSetup() = runTest {

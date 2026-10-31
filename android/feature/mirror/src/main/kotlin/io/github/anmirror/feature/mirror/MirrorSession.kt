@@ -120,7 +120,9 @@ class MirrorSession(
                     report(state(MirrorPhase.MIRROR_PHASE_RUNNING))
                     watchdog = launch { watch() }
                 } else {
-                    // A start stuck in a blocking read gets out once its pipe is closed.
+                    // The end goes to the Mac first (R59); then a start stuck in a blocking read
+                    // gets out once its pipe is closed.
+                    tellEnd(ended.await(), began)
                     closeAll()
                     startUp.cancel()
                 }
@@ -317,14 +319,32 @@ class MirrorSession(
     }
 
     /**
-     * The end, in this order (ruling R59): the reason to the Mac first, while its links are still
-     * open (a link end becomes LINK_FAILED on the Mac after its 1 s grace) and before `pkill`
-     * (up to [KILL_TIMEOUT_MS]); then the Mac's last control bytes (after its own stop), the
-     * links and pipes, and `pkill`. Whether ADB was lost is judged before `pkill`; when only
-     * `pkill` shows it gone after a helper failure, [onAdbLost] still runs (the reason sent stays
-     * HELPER_FAILED).
+     * The end, in this order (ruling R59): the reason to the Mac first ([tellEnd]), while its links
+     * are still open (a link end becomes LINK_FAILED on the Mac after its 1 s grace) and before
+     * `pkill` (up to [KILL_TIMEOUT_MS]); then the Mac's last control bytes (after its own stop), the
+     * links and pipes, and `pkill`. When only `pkill` shows ADB gone after a helper failure,
+     * [onAdbLost] still runs (the reason sent stays HELPER_FAILED).
      */
     private suspend fun finish(end: End, began: Long) {
+        tellEnd(end, began)
+        // The Mac sends its last control bytes (the screen back on, a touch UP) right after its
+        // stop and then closes the link: let them through to the helper first.
+        if (end is End.Stopped && end.drain) controlDown?.let { t -> withContext(io) { t.join(CONTROL_DRAIN_MS) } }
+        closeAll()
+        var adbUp = adb.isConnected
+        if (adbUp && helperTouched) adbUp = killStale()
+        val reason = endState?.reason
+        val helperEnd = reason == MirrorReason.MIRROR_REASON_HELPER_FAILED || reason == MirrorReason.MIRROR_REASON_ADB_FAILED
+        if (helperEnd && adbWasUp && !adbUp) onAdbLost()
+    }
+
+    /** The state [tellEnd] sent; null when it sent nothing (a disconnect) or has not run. */
+    @Volatile private var endState: MirrorState? = null
+    private val endTold = AtomicBoolean(false)
+
+    /** Works out the end's state and sends it, once. Whether ADB was lost is judged now, before `pkill`. */
+    private suspend fun tellEnd(end: End, began: Long) {
+        if (!endTold.compareAndSet(false, true)) return
         val adbLost = adbWasUp && !adb.isConnected
         val state = when (end) {
             is End.Stopped -> end.reason?.let { state(MirrorPhase.MIRROR_PHASE_STOPPED, it) }
@@ -337,16 +357,9 @@ class MirrorSession(
                 if (adbLost) MirrorReason.MIRROR_REASON_ADB_FAILED else MirrorReason.MIRROR_REASON_HELPER_FAILED,
             )
         }
+        endState = state
         log("session $id ended ${state?.phase?.name ?: "quietly"} ${state?.reason?.name ?: ""} after ${clock() - began} ms")
         state?.let { tell(it) }
-        // The Mac sends its last control bytes (the screen back on, a touch UP) right after its
-        // stop and then closes the link: let them through to the helper first.
-        if (end is End.Stopped && end.drain) controlDown?.let { t -> withContext(io) { t.join(CONTROL_DRAIN_MS) } }
-        closeAll()
-        var adbUp = adb.isConnected
-        if (adbUp && helperTouched) adbUp = killStale()
-        val helperEnd = state?.reason == MirrorReason.MIRROR_REASON_HELPER_FAILED || state?.reason == MirrorReason.MIRROR_REASON_ADB_FAILED
-        if (helperEnd && adbWasUp && !adbUp) onAdbLost()
     }
 
     /** Reports [state], waiting at most [REPORT_WAIT_MS]: a stuck control connection must not keep the links open. */
