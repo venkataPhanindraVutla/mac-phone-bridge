@@ -39,8 +39,8 @@ import kotlin.coroutines.CoroutineContext
  * shell ending (HELPER_FAILED; ADB_FAILED and [onAdbLost] when the ADB connection went with it),
  * no RUNNING within [START_DEADLINE_MS], or the Mac falling behind (LINK_SLOW, ruling R54: libadb
  * takes in the helper's output however slowly the Mac reads, so a watchdog ends the session when
- * more than [MAX_VIDEO_QUEUED_BYTES] of video or [MAX_AUDIO_QUEUED_BYTES] of audio wait on the
- * phone, or one write to the Mac is blocked longer than [MAX_WRITE_BLOCKED_MS]). Then the Mac
+ * more than about 3 s of video ([maxVideoQueuedBytes], ruling R57) or [MAX_AUDIO_QUEUED_BYTES] of
+ * audio wait on the phone, or one write to the Mac is blocked longer than [MAX_WRITE_BLOCKED_MS]). Then the Mac
  * links, the ADB pipes and the shell close, once each, and `pkill` runs while ADB is up. [io] runs blocking reads; [log] gets IDs, phases,
  * reasons, role names and byte counts only.
  */
@@ -212,7 +212,7 @@ class MirrorSession(
             val control = openSocket(socket, firstByte = false)?.first
                 ?: return fail(MirrorReason.MIRROR_REASON_HELPER_FAILED, "control socket")
 
-            relay(BulkRole.BULK_ROLE_MIRROR_VIDEO, macVideo, video, MAX_VIDEO_QUEUED_BYTES)
+            relay(BulkRole.BULK_ROLE_MIRROR_VIDEO, macVideo, video, maxVideoQueuedBytes(start.videoBitRate))
             if (audio != null) relay(BulkRole.BULK_ROLE_MIRROR_AUDIO, links.getValue(BulkRole.BULK_ROLE_MIRROR_AUDIO), audio, MAX_AUDIO_QUEUED_BYTES)
             relay(BulkRole.BULK_ROLE_MIRROR_CONTROL, links.getValue(BulkRole.BULK_ROLE_MIRROR_CONTROL), control, maxQueued = null)
             return !ended.isCompleted
@@ -414,9 +414,20 @@ class MirrorSession(
         const val CONTROL_DRAIN_MS = 500L
         const val KILL_TIMEOUT_MS = 5_000L
         const val WATCH_MS = 100L
+        const val MIN_VIDEO_QUEUED_BYTES = 512L * 1024
         const val MAX_VIDEO_QUEUED_BYTES = 4L * 1024 * 1024
         const val MAX_AUDIO_QUEUED_BYTES = 512L * 1024
         const val MAX_WRITE_BLOCKED_MS = 2_000L
         private const val DISCARD_BYTES = 4_096
+        private const val VIDEO_BACKLOG_SECONDS = 3L
+
+        /**
+         * Ruling R57: the video backlog that ends a session is about 3 s of video at the session's
+         * bit rate (a uint32), within [MIN_VIDEO_QUEUED_BYTES]…[MAX_VIDEO_QUEUED_BYTES]. So the
+         * picture can't trail far behind at Low, and Auto (which steps down with far less queued)
+         * still acts first at every preset.
+         */
+        fun maxVideoQueuedBytes(videoBitRate: Int): Long =
+            (Integer.toUnsignedLong(videoBitRate) / 8 * VIDEO_BACKLOG_SECONDS).coerceIn(MIN_VIDEO_QUEUED_BYTES, MAX_VIDEO_QUEUED_BYTES)
     }
 }

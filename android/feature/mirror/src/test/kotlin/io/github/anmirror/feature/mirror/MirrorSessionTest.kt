@@ -197,9 +197,9 @@ class MirrorSessionTest {
         assertContentEquals(byteArrayOf(10, 1), control.toHelper.readExactly(2))
     }
 
-    private suspend fun TestScope.runningSession(): Pair<MirrorSession, kotlinx.coroutines.Job> {
+    private suspend fun TestScope.runningSession(start: MirrorStart = mirrorStart()): Pair<MirrorSession, kotlinx.coroutines.Job> {
         planAll()
-        val s = session()
+        val s = session(start = start)
         val job = launch { s.run {} }
         assertEquals(starting, next())
         assertEquals(running, next())
@@ -238,15 +238,41 @@ class MirrorSessionTest {
         job.join()
     }
 
+    /** Ruling R57: about 3 s of video at the session's bit rate, clamped to 512 KiB…4 MiB. */
     @Test
-    fun videoBacklogTripsAboveFourMiB() = runTest {
+    fun videoBacklogLimitIsThreeSecondsOfTheBitRate() {
+        assertEquals(750_000L, MirrorSession.maxVideoQueuedBytes(2_000_000)) // Low
+        assertEquals(1_500_000L, MirrorSession.maxVideoQueuedBytes(4_000_000)) // Balanced
+        assertEquals(3_000_000L, MirrorSession.maxVideoQueuedBytes(8_000_000)) // High
+        assertEquals(512L * 1024, MirrorSession.maxVideoQueuedBytes(1_000_000)) // a slow manual value clamps up
+        assertEquals(512L * 1024, MirrorSession.maxVideoQueuedBytes(0))
+        assertEquals(4L * 1024 * 1024, MirrorSession.maxVideoQueuedBytes(40_000_000)) // and a fast one down
+        assertEquals(4L * 1024 * 1024, MirrorSession.maxVideoQueuedBytes(-1)) // uint32 max
+    }
+
+    @Test
+    fun videoBacklogTripsAboveThreeSecondsAtHigh() = runTest {
         val (_, job) = runningSession()
-        video.queued = MirrorSession.MAX_VIDEO_QUEUED_BYTES
+        video.queued = 3_000_000
         audio.queued = MirrorSession.MAX_AUDIO_QUEUED_BYTES
         advanceTimeBy(10_000)
         runCurrent()
         assertTrue(states.tryReceive().isFailure, "at the limits")
-        video.queued = MirrorSession.MAX_VIDEO_QUEUED_BYTES + 1
+        video.queued = 3_000_001
+        advanceTimeBy(MirrorSession.WATCH_MS)
+        runCurrent()
+        assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
+        job.join()
+    }
+
+    @Test
+    fun videoBacklogAtLowTripsAboveSevenHundredFiftyKilobytes() = runTest {
+        val (_, job) = runningSession(mirrorStart().toBuilder().setMaxSize(960).setVideoBitRate(2_000_000).setMaxFps(30).build())
+        video.queued = 750_000
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue(states.tryReceive().isFailure, "at the limit")
+        video.queued = 750_001
         advanceTimeBy(MirrorSession.WATCH_MS)
         runCurrent()
         assertEquals(failed(MirrorReason.MIRROR_REASON_LINK_SLOW), next())
