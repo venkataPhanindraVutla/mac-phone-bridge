@@ -501,7 +501,7 @@ class AppGraph private constructor(context: Context) {
     fun adbClient(): AdbClient = synchronized(adbLock) {
         val id = adbIdentities.load() ?: throw IOException("no ADB identity")
         adb?.takeIf { it.first === id }?.second
-            ?: LibAdbClient(id, Build.VERSION.SDK_INT).also { fresh ->
+            ?: LibAdbClient(id, Build.VERSION.SDK_INT, log = { keepAliveLog.record(KeepAliveEvent.FULL_MODE, it) }).also { fresh ->
                 adb?.second?.close()
                 adb = id to fresh
             }
@@ -516,10 +516,16 @@ class AppGraph private constructor(context: Context) {
         val now = readWirelessDebugging()
         if (_wirelessDebugging.getAndUpdate { now } == now) return
         Log.i(MIRROR_TAG, "setup: wireless debugging=$now")
-        // Turned back on after a failed connect (by hand, or after a restart lost the re-arm): try
-        // again, so mirroring is ready without another tap.
+        // Turned back on after a failed connect: try again, so mirroring is ready without another tap.
+        reconnectFullModeIfNeeded("flip")
+    }
+
+    /** One background connect when [fullModeNeedsReconnect] says so; [why] goes to the event log. */
+    private fun reconnectFullModeIfNeeded(why: String) {
         val setup = mirrorSetup.snapshot.value
-        if (now == true && setup.paired && setup.lastConnectFailed) launchQuietly("mirror: reconnect") { fullModeSetup.ensureConnected() }
+        if (!fullModeNeedsReconnect(_wirelessDebugging.value, setup.paired, setup.lastConnectFailed)) return
+        keepAliveLog.record(KeepAliveEvent.FULL_MODE, "reconnect,why=$why")
+        launchQuietly("mirror: reconnect") { fullModeSetup.ensureConnected() }
     }
 
     private fun readWirelessDebugging(): Boolean? = try {
@@ -1148,6 +1154,9 @@ class AppGraph private constructor(context: Context) {
         }
         scope.launch { store.all() } // load once so the UI knows whether a Mac is paired
         scope.launch { transfers.transfers.collect { releaseFinished() } }
+        // Wireless debugging may have been turned back on while no process ran (the re-arm flag
+        // lived in the old one): the flip is never seen, so check once now.
+        reconnectFullModeIfNeeded("start")
         // Paired (connecting or connected) or given up: the pairing notification has done its job.
         scope.launch {
             fullModeSetup.state.collect { s -> if (closesPairingNotification(s)) PairingNotifications.cancel(app) }

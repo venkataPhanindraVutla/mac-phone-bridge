@@ -68,7 +68,12 @@ internal val PAIRING_CTX_CLASS: String = PairingConnectionCtx::class.java.name
 
 /** libadb 3.1.1's own failures after the TLS handshake, where a wrong code shows. */
 private val AFTER_HANDSHAKE_MESSAGES = setOf("Could not exchange peer info.", "Exchanging message wasn't successful.")
-private const val CIPHER_FAILURE = "Unable to initialize pairing cipher"
+
+/**
+ * When SPAKE2 can't produce a key, libadb logs "Unable to initialize pairing cipher" and throws a
+ * message-less IOException caused by spake2's IllegalStateException with this message.
+ */
+private const val SPAKE2_NO_KEY = "No key was returned"
 private const val MAX_CAUSES = 16
 
 private fun Throwable.chain(): List<Throwable> = generateSequence(this) { it.cause }.take(MAX_CAUSES).toList()
@@ -76,7 +81,7 @@ private fun Throwable.chain(): List<Throwable> = generateSequence(this) { it.cau
 /**
  * The stage of a failed pairing, from what is known (ruling R46): a refused or unroutable connect
  * is NOT_LISTENING; libadb's post-handshake failures (an EOF outside a TLS handshake, its two
- * exchange messages, the pairing cipher) are AFTER_HANDSHAKE; anything else happened on a port
+ * exchange messages, SPAKE2 returning no key) are AFTER_HANDSHAKE; anything else happened on a port
  * that answered and is not a pairing port: HANDSHAKE.
  */
 internal fun pairingStage(e: Throwable): AdbPairingException.Stage {
@@ -86,7 +91,7 @@ internal fun pairingStage(e: Throwable): AdbPairingException.Stage {
     val afterHandshake = chain.any { t ->
         (t is EOFException && !inTlsHandshake) ||
             (t is IOException && t.message in AFTER_HANDSHAKE_MESSAGES) ||
-            t.message?.contains(CIPHER_FAILURE) == true
+            (t is IOException && t.message == null && (t.cause as? IllegalStateException)?.message == SPAKE2_NO_KEY)
     }
     return if (afterHandshake) AdbPairingException.Stage.AFTER_HANDSHAKE else AdbPairingException.Stage.HANDSHAKE
 }
@@ -131,12 +136,14 @@ internal class CloseOnce(private val close: () -> Unit) {
 /**
  * [AdbClient] over libadb-android. [sdk] is the phone's API level (TLS from 30); [deviceName] is
  * what Wireless debugging lists under "Paired devices"; [timeoutMs] bounds pairing and connecting.
+ * [log] gets content-free events (codes and class names).
  */
 class LibAdbClient(
     private val identity: AdbIdentity,
     private val sdk: Int,
     private val deviceName: String = "Android Mirroring",
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    private val log: (String) -> Unit = {},
 ) : AdbClient {
     private val lock = Any()
     @Volatile private var connection: AdbConnection? = null
@@ -144,11 +151,22 @@ class LibAdbClient(
     /** Opens a pairing attempt; tests wrap the real one. */
     internal var pairingSessions = PairingSessionFactory { host, port, code -> libadbPairing(host, port, code) }
 
+    /** Makes the connection's socket (libadb connects it here); tests slow it down. */
+    internal var buildConnection: (host: String, port: Int) -> AdbConnection = { host, port ->
+        AdbConnection.Builder(host, port)
+            .setApi(sdk)
+            .setPrivateKey(identity.privateKey)
+            .setCertificate(identity.certificate)
+            .setDeviceName(deviceName)
+            .build()
+    }
+
     init {
         // libadb caches one TLS context for the process, built with the first key it is given. A
         // client is made per identity: drop the cache, so a new identity is not paired or
-        // connected with the old one's certificate.
-        LibAdbTls.forgetCachedContext()
+        // connected with the old one's certificate. (A libadb thread already inside its lazy
+        // init could still race this; only an abandoned connect can be there, and is accepted.)
+        LibAdbTls.forgetCachedContext()?.let { log("tls-cache-not-cleared,class=$it") }
     }
 
     override val isConnected: Boolean
@@ -198,16 +216,20 @@ class LibAdbClient(
             Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs.toInt()) }
         }
         val made = AtomicReference<AdbConnection?>(null)
+        val abandoned = AtomicBoolean(false)
         val closeOnce = CloseOnce { made.get()?.close() }
         val ok = try {
-            abandonable("adb-connect", timeoutMs + GUARD_SLACK_MS, abandon = { closeOnce() }) {
-                val conn = AdbConnection.Builder(host, port)
-                    .setApi(sdk)
-                    .setPrivateKey(identity.privateKey)
-                    .setCertificate(identity.certificate)
-                    .setDeviceName(deviceName)
-                    .build()
+            abandonable("adb-connect", timeoutMs + GUARD_SLACK_MS, abandon = {
+                abandoned.set(true)
+                closeOnce()
+            }) {
+                val conn = buildConnection(host, port)
                 made.set(conn)
+                // Given up while build() ran: this connection arrived too late; nobody tracks it.
+                if (abandoned.get()) {
+                    runCatching { conn.close() }
+                    throw InterruptedIOException("adb connect abandoned")
+                }
                 conn.connect(timeoutMs, TimeUnit.MILLISECONDS, true)
             }
         } catch (e: Exception) {
@@ -325,14 +347,14 @@ class LibAdbClient(
 internal object LibAdbTls {
     private const val SSL_UTILS = "io.github.muntashirakon.adb.SslUtils"
 
-    fun forgetCachedContext() {
-        runCatching { field().set(null, null) }
-    }
+    /** Null when cleared; otherwise the failure's class name (the field is gone in this libadb). */
+    fun forgetCachedContext(className: String = SSL_UTILS): String? =
+        runCatching { field(className).set(null, null) }.exceptionOrNull()?.javaClass?.simpleName
 
     /** For JVM tests, which have no Conscrypt: the context libadb uses next. */
     fun useContext(context: SSLContext) {
-        field().set(null, context)
+        field(SSL_UTILS).set(null, context)
     }
 
-    private fun field() = Class.forName(SSL_UTILS).getDeclaredField("sslContext").apply { isAccessible = true }
+    private fun field(className: String) = Class.forName(className).getDeclaredField("sslContext").apply { isAccessible = true }
 }

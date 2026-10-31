@@ -129,6 +129,14 @@ fun mirrorAvailability(
     return FeatureAvailability.newBuilder().setEnabled(false).setReason(reason).build()
 }
 
+/**
+ * Whether to try the Wireless debugging connection again on its own: it is on (as read now), Full
+ * mode is paired, and the last connect failed. Checked when the setting turns on and once when the
+ * app process starts, which covers a process that died while the user was in Settings re-enabling it.
+ */
+fun fullModeNeedsReconnect(wirelessDebugging: Boolean?, paired: Boolean, lastConnectFailed: Boolean): Boolean =
+    wirelessDebugging == true && paired && lastConnectFailed
+
 /** The line under "Allow your Mac to show this screen" (the running line comes with the session). */
 enum class MirrorRowLine { NEEDS_ANDROID_11, NEEDS_SETUP, WIRELESS_DEBUGGING_OFF, READY }
 

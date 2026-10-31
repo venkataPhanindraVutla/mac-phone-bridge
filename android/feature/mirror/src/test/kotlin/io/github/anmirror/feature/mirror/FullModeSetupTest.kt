@@ -12,6 +12,7 @@ import io.github.anmirror.adb.LibAdbClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
@@ -237,11 +238,14 @@ class FullModeSetupTest {
     fun nsdConnectPortGivesWrongPort() = runTest {
         // A first setup: no cached port, but NSD found the connect port while looking for the pairing one.
         finder.found[AdbService.CONNECT] = AdbEndpoint("192.168.0.20", 41000)
-        adb.pairResult = { throw AdbPairingException(AdbPairingException.Stage.HANDSHAKE, IOException("reset")) }
+        // On its own this failure reads as a wrong code: only the known connect port makes it WRONG_PORT.
+        adb.pairResult = { throw AdbPairingException(AdbPairingException.Stage.AFTER_HANDSHAKE, IOException("Could not exchange peer info.")) }
         val s = setup()
         s.startPairing()
         advanceUntilIdle()
         assertEquals(PairingError.WRONG_PORT, s.submitReply("41000 482916"))
+        // The same failure on another port is the code.
+        assertEquals(PairingError.WRONG_CODE, s.submitReply("37123 482916"))
     }
 
     @Test
@@ -287,8 +291,11 @@ class FullModeSetupTest {
             delay(50)
             // Queued behind the pairing on the mutex; it must get through once the pairing gives up.
             val other = async(Dispatchers.Default) { s.ensureConnected() }
-            assertEquals(PairingError.TIMEOUT, reply.await())
-            assertFalse(other.await())
+            // Bounded, so a regression fails here instead of hanging the suite.
+            withTimeout(5_000) {
+                assertEquals(PairingError.TIMEOUT, reply.await())
+                assertFalse(other.await())
+            }
             val took = System.currentTimeMillis() - started
             assertTrue(took < 3_000, "took $took ms")
             assertEquals(SetupState.PairFailed(PairingError.TIMEOUT), s.state.value)

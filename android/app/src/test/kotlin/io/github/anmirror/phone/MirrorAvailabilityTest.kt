@@ -54,6 +54,16 @@ class MirrorAvailabilityTest {
     }
 
     @Test
+    fun reconnectOnlyWhenOnPairedAndFailed() {
+        // A process that starts (or a setting that flips) with Wireless debugging on after a failed connect.
+        assertEquals(true, fullModeNeedsReconnect(wirelessDebugging = true, paired = true, lastConnectFailed = true))
+        assertEquals(false, fullModeNeedsReconnect(wirelessDebugging = true, paired = true, lastConnectFailed = false)) // ready already
+        assertEquals(false, fullModeNeedsReconnect(wirelessDebugging = true, paired = false, lastConnectFailed = true)) // needs pairing
+        assertEquals(false, fullModeNeedsReconnect(wirelessDebugging = false, paired = true, lastConnectFailed = true))
+        assertEquals(false, fullModeNeedsReconnect(wirelessDebugging = null, paired = true, lastConnectFailed = true)) // unreadable: no guess
+    }
+
+    @Test
     fun rowLineFollowsTheSetup() {
         fun line(sdk: Int = 34, on: Boolean = true, paired: Boolean = true, wd: Boolean? = true, failed: Boolean = false) =
             mirrorRowLine(sdk, on, paired, wd, failed)

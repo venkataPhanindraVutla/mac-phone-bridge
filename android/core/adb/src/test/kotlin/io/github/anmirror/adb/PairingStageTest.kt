@@ -26,7 +26,11 @@ class PairingStageTest {
         assertEquals(Stage.AFTER_HANDSHAKE, pairingStage(EOFException()))
         assertEquals(Stage.AFTER_HANDSHAKE, pairingStage(IOException("Could not exchange peer info.")))
         assertEquals(Stage.AFTER_HANDSHAKE, pairingStage(IOException("Exchanging message wasn't successful.")))
-        assertEquals(Stage.AFTER_HANDSHAKE, pairingStage(IOException("x", IllegalStateException("Unable to initialize pairing cipher"))))
+        // What libadb throws when SPAKE2 yields no key: new IOException() with initCause(spake2's exception).
+        assertEquals(Stage.AFTER_HANDSHAKE, pairingStage(IOException().apply { initCause(IllegalStateException("No key was returned")) }))
+        // Only that shape: another spake2 failure, or the same cause under a message, is not this rule.
+        assertEquals(Stage.HANDSHAKE, pairingStage(IOException().apply { initCause(IllegalStateException("The context was destroyed.")) }))
+        assertEquals(Stage.HANDSHAKE, pairingStage(IOException("other", IllegalStateException("No key was returned"))))
     }
 
     @Test

@@ -1,12 +1,16 @@
 package io.github.anmirror.adb
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.ConnectException
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
@@ -15,6 +19,8 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** libadb itself, against real loopback sockets (the JVM's TLS stands in for Conscrypt). */
@@ -91,7 +97,8 @@ class LibAdbClientTest {
     fun silentServerTimesOutWithinTheLimit() = runBlocking {
         val port = server { c -> c.getInputStream().read(ByteArray(4096)) } // reads the hello, never answers
         val started = System.currentTimeMillis()
-        assertFailsWith<SocketTimeoutException> { client(timeoutMs = 500).pair("127.0.0.1", port, "482916") }
+        // Bounded, so a regression fails here instead of hanging the suite.
+        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { client(timeoutMs = 500).pair("127.0.0.1", port, "482916") } }
         val took = System.currentTimeMillis() - started
         assertTrue(took < 2_000, "took $took ms")
         // The abandoned attempt ends when the peer goes, and closes its context there, once.
@@ -110,10 +117,39 @@ class LibAdbClientTest {
     fun connectToSilentServerTimesOutWithinTheLimit() = runBlocking {
         val port = server { c -> c.getInputStream().read(ByteArray(4096)) }
         val started = System.currentTimeMillis()
-        val e = assertFailsWith<IOException> { client(timeoutMs = 500).connect("127.0.0.1", port) }
+        val e = withTimeout(5_000) { assertFailsWith<IOException> { client(timeoutMs = 500).connect("127.0.0.1", port) } }
         val took = System.currentTimeMillis() - started
         assertTrue(e is SocketTimeoutException, e.toString())
         assertTrue(took < 4_000, "took $took ms")
+    }
+
+    @Test
+    fun connectAbandonedDuringBuildClosesTheLateConnection() = runBlocking {
+        val firstReads = ConcurrentLinkedQueue<Int>()
+        val ended = CountDownLatch(2) // our timed probe, then libadb's socket
+        val port = server { c ->
+            firstReads += c.getInputStream().read(ByteArray(64))
+            ended.countDown()
+        }
+        val c = client(timeoutMs = 300)
+        val release = CountDownLatch(1)
+        val real = c.buildConnection
+        c.buildConnection = { host, p ->
+            release.await() // build() is still running when the connect is given up
+            real(host, p)
+        }
+        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { c.connect("127.0.0.1", port) } }
+        release.countDown()
+        assertTrue(ended.await(3, TimeUnit.SECONDS), "the late connection was not closed")
+        // Both sockets closed without a byte: the late connection never sent CNXN, and isn't tracked.
+        assertEquals(listOf(-1, -1), firstReads.toList())
+        assertFalse(c.isConnected)
+    }
+
+    @Test
+    fun missingTlsCacheFieldIsReported() {
+        assertNull(LibAdbTls.forgetCachedContext())
+        assertEquals("ClassNotFoundException", LibAdbTls.forgetCachedContext("io.github.muntashirakon.adb.Gone"))
     }
 
     @Test

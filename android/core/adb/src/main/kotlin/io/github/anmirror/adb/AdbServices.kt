@@ -9,7 +9,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 
 /** The two Wireless debugging services the phone advertises over NSD. */
@@ -48,21 +51,42 @@ internal interface NsdApi {
 
     fun stopDiscovery(token: Any)
 
-    /** Resolves [service]; [done] gets null when the resolve failed. */
-    fun resolve(service: FoundService, done: (ResolvedService?) -> Unit)
+    /** Resolves [service]; [done] gets null when the resolve failed. Returns the token [stopResolve] takes. */
+    fun resolve(service: FoundService, done: (ResolvedService?) -> Unit): Any
+
+    /** Gives up a resolve that never answered (API 34+; earlier the platform has no way to). */
+    fun stopResolve(token: Any)
+}
+
+/** Runs [action] after [delayMs]; the returned function cancels it. Tests drive time by hand. */
+internal fun interface Timer {
+    fun schedule(delayMs: Long, action: () -> Unit): () -> Unit
+}
+
+/** [Timer] on one shared daemon thread. */
+internal object ExecutorTimer : Timer {
+    private val executor = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "adb-nsd-timer").apply { isDaemon = true } }
+
+    override fun schedule(delayMs: Long, action: () -> Unit): () -> Unit {
+        val future = executor.schedule(action, delayMs, TimeUnit.MILLISECONDS)
+        return { future.cancel(false) }
+    }
 }
 
 /**
  * [AdbServiceFinder] over NSD (ruling R47), keeping only records whose address is one of this
  * phone's own ([ownAddresses]): other phones on the network advertise the same services. Resolves
- * run one at a time for the whole finder (before API 34 the platform refuses a second one), and a
- * failed resolve is tried once more. A search ended before its discovery has started is still
+ * run one at a time for the whole finder (before API 34 the platform refuses a second one); one
+ * that doesn't answer within [RESOLVE_TIMEOUT_MS] is given up (and stopped on API 34+), so it can't
+ * hold up later lookups. A failed or silent resolve is tried once more, [RETRY_DELAY_MS] later
+ * (another resolve on the same NsdManager, the Mac discovery's, may be what refused it). A search ended before its discovery has started is still
  * stopped. Nothing here binds or listens. Some phones never advertise; the typed port is the
  * fallback.
  */
 internal class NsdAdbFinder(
     private val nsd: NsdApi,
     private val ownAddresses: () -> Set<InetAddress>,
+    private val timer: Timer = ExecutorTimer,
 ) : AdbServiceFinder {
     private val lock = Any()
     private val queue = ArrayDeque<Pending>()
@@ -96,17 +120,31 @@ internal class NsdAdbFinder(
             queue.removeFirstOrNull().also { if (it == null) resolving = false }
         } ?: return
         val handled = AtomicBoolean(false)
+        val token = AtomicReference<Any?>(null)
+        val cancelTimeout = AtomicReference<() -> Unit>({})
         val done: (ResolvedService?) -> Unit = { resolved ->
             if (handled.compareAndSet(false, true)) {
+                cancelTimeout.get().invoke()
                 when {
                     resolved != null -> next.search.onResolved(resolved)
-                    !next.retried -> synchronized(lock) { queue.addLast(Pending(next.search, next.service, retried = true)) }
+                    !next.retried -> timer.schedule(RETRY_DELAY_MS) {
+                        if (!next.search.finished) enqueue(Pending(next.search, next.service, retried = true))
+                    }
                 }
                 resolveNext()
             }
         }
+        // Armed first: a resolve may answer before resolve() returns.
+        cancelTimeout.set(
+            timer.schedule(RESOLVE_TIMEOUT_MS) {
+                if (!handled.get()) {
+                    token.get()?.let { t -> runCatching { nsd.stopResolve(t) } }
+                    done(null)
+                }
+            },
+        )
         try {
-            nsd.resolve(next.service, done)
+            token.set(nsd.resolve(next.service, done))
         } catch (e: RuntimeException) { // the platform refused the request
             done(null)
         }
@@ -173,8 +211,10 @@ internal class NsdAdbFinder(
         }
     }
 
-    private companion object {
-        const val MAX_PORT = 65_535
+    companion object {
+        private const val MAX_PORT = 65_535
+        const val RESOLVE_TIMEOUT_MS = 3_000L
+        const val RETRY_DELAY_MS = 750L
     }
 }
 
@@ -202,14 +242,19 @@ internal class AndroidNsdApi(context: Context) : NsdApi {
 
     // resolveService is deprecated from API 34 but still works there, and is the only call below it.
     @Suppress("DEPRECATION")
-    override fun resolve(service: FoundService, done: (ResolvedService?) -> Unit) {
-        nsd.resolveService(
-            service.raw as NsdServiceInfo,
-            object : NsdManager.ResolveListener {
-                override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = done(null)
-                override fun onServiceResolved(info: NsdServiceInfo) = done(ResolvedService(hostsOf(info), info.port))
-            },
-        )
+    override fun resolve(service: FoundService, done: (ResolvedService?) -> Unit): Any {
+        val listener = object : NsdManager.ResolveListener {
+            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = done(null)
+            override fun onServiceResolved(info: NsdServiceInfo) = done(ResolvedService(hostsOf(info), info.port))
+        }
+        nsd.resolveService(service.raw as NsdServiceInfo, listener)
+        return listener
+    }
+
+    override fun stopResolve(token: Any) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            nsd.stopServiceResolution(token as NsdManager.ResolveListener)
+        }
     }
 
     @Suppress("DEPRECATION")
