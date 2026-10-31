@@ -42,13 +42,16 @@ object PairingNotifications {
      * The pairing notification would show: permitted, the app's notifications on, and this channel
      * not turned off. Without it the code can't be typed in, so the Full mode screen says so.
      */
-    fun canPost(context: Context): Boolean {
+    fun canPost(context: Context): Boolean = permitted(context) && appNotificationsOn(context) && channelOn(context)
+
+    /** The user hasn't turned off all of this app's notifications. */
+    fun appNotificationsOn(context: Context): Boolean = NotificationManagerCompat.from(context.applicationContext).areNotificationsEnabled()
+
+    /** The user hasn't turned off the "Full mode setup" channel. */
+    fun channelOn(context: Context): Boolean {
         val app = context.applicationContext
-        if (!permitted(app)) return false
-        val manager = NotificationManagerCompat.from(app)
-        if (!manager.areNotificationsEnabled()) return false
         createChannel(app)
-        return manager.getNotificationChannelCompat(CHANNEL_ID)?.importance != NotificationManagerCompat.IMPORTANCE_NONE
+        return NotificationManagerCompat.from(app).getNotificationChannelCompat(CHANNEL_ID)?.importance != NotificationManagerCompat.IMPORTANCE_NONE
     }
 
     private fun createChannel(app: Context) {
@@ -98,6 +101,31 @@ object PairingNotifications {
     fun cancel(context: Context) {
         NotificationManagerCompat.from(context.applicationContext).cancel(TAG_PAIRING, NOTIFICATION_ID)
     }
+}
+
+/** POST_NOTIFICATIONS as the Full mode screen sees it: granted, still to ask for, or refused. */
+enum class NotificationPermission { GRANTED, ASKABLE, DENIED }
+
+/** Where the pairing code is typed. */
+enum class PairingInput {
+    /** The RemoteInput notification, over Settings' pairing screen. */
+    NOTIFICATION,
+
+    /** "Start pairing" asks for POST_NOTIFICATIONS first. */
+    ASK_PERMISSION,
+
+    /** The notification can't show: the Full mode screen's own port and code fields (ruling R50). */
+    IN_APP,
+}
+
+/**
+ * The notification while it can show; the in-app fields when the permission was refused, or the
+ * app's notifications or the "Full mode setup" channel are turned off; otherwise ask first.
+ */
+fun pairingInput(permission: NotificationPermission, appNotificationsOn: Boolean, channelOn: Boolean): PairingInput = when (permission) {
+    NotificationPermission.ASKABLE -> PairingInput.ASK_PERMISSION
+    NotificationPermission.DENIED -> PairingInput.IN_APP
+    NotificationPermission.GRANTED -> if (appNotificationsOn && channelOn) PairingInput.NOTIFICATION else PairingInput.IN_APP
 }
 
 /** The pairing has done its job once the setup connects (or gives up connecting): the notification goes. */

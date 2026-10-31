@@ -306,6 +306,40 @@ class FullModeSetupTest {
     }
 
     @Test
+    fun inAppSubmitGoesThroughTheSameMapping() = runTest {
+        finder.found[AdbService.PAIRING] = AdbEndpoint("192.168.0.20", 37123)
+        finder.found[AdbService.CONNECT] = AdbEndpoint("192.168.0.20", 41000)
+        val s = setup()
+        s.startPairing()
+        advanceUntilIdle()
+        assertEquals(37123, s.pairingPort) // prefills the port field
+
+        // Each failure maps as it would from the notification.
+        val cases = listOf(
+            AdbPairingException(AdbPairingException.Stage.NOT_LISTENING, ConnectException("refused")) to PairingError.NOT_LISTENING,
+            AdbPairingException(AdbPairingException.Stage.HANDSHAKE, IOException("reset")) to PairingError.WRONG_PORT,
+            AdbPairingException(AdbPairingException.Stage.AFTER_HANDSHAKE, IOException("Could not exchange peer info.")) to PairingError.WRONG_CODE,
+            java.net.SocketTimeoutException("adb: adb-pair timed out") to PairingError.TIMEOUT,
+        )
+        for ((failure, expected) in cases) {
+            adb.pairResult = { throw failure }
+            assertEquals(expected, s.submitInApp(" 37123 ", "482916"), failure.toString())
+            assertEquals(SetupState.PairFailed(expected), s.state.value)
+        }
+        // The known connect port in the port field is the wrong port, whatever failed.
+        assertEquals(PairingError.WRONG_PORT, s.submitInApp("41000", "482916"))
+        // Field checks are the reply's: a five-digit code never reaches the client.
+        val before = adb.pairs.size
+        assertEquals(PairingError.INVALID, s.submitInApp("37123", "48291"))
+        assertEquals(before, adb.pairs.size)
+        // An empty port field uses the port NSD found; success pairs and connects as usual.
+        adb.pairResult = {}
+        assertNull(s.submitInApp("", "482916"))
+        assertEquals("127.0.0.1:37123:482916", adb.pairs.last())
+        assertEquals(SetupState.Ready, s.state.value)
+    }
+
+    @Test
     fun forgetDeletesIdentity() = runTest {
         identities.current = testIdentity
         store.paired = true

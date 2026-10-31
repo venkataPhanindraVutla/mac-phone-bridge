@@ -85,6 +85,9 @@ class FullModeSetup(
     /** What the last [startPairing] found; a bare code in the reply uses its port. */
     @Volatile private var pairingEndpoint: AdbEndpoint? = null
 
+    /** The pairing port the last [startPairing] found, to prefill the in-app port field. */
+    val pairingPort: Int? get() = pairingEndpoint?.port
+
     /** The connect port NSD found while looking for the pairing port: typing it is the commonest mistake. */
     @Volatile private var discoveredConnectPort: Int? = null
 
@@ -160,6 +163,12 @@ class FullModeSetup(
         connectLocked(typedPort = null)
         null
     }
+
+    /**
+     * The in-app "Pairing port" and "Pairing code" fields, for when the notification can't show
+     * (ruling R50): the same reply rules, pairing, errors and notify as [submitReply].
+     */
+    suspend fun submitInApp(port: String, code: String): PairingError? = submitReply(PairingReply.fromFields(port, code))
 
     /**
      * Connects unless connected: the cached port, then the port NSD finds (5 s), then [typedPort].

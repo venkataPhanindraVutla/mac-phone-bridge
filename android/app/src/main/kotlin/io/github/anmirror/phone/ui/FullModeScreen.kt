@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -44,7 +45,10 @@ import io.github.anmirror.feature.mirror.MakerGuidance
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.pairingErrorRes
+import io.github.anmirror.phone.service.NotificationPermission
+import io.github.anmirror.phone.service.PairingInput
 import io.github.anmirror.phone.service.PairingNotifications
+import io.github.anmirror.phone.service.pairingInput
 import io.github.anmirror.phone.statusRes
 
 /**
@@ -56,20 +60,40 @@ import io.github.anmirror.phone.statusRes
 fun FullModeScreen(
     state: SetupState,
     maker: MakerGuidance,
+    pairingPort: Int?,
     onStartPairing: () -> Unit,
+    onPairInApp: (port: String, code: String) -> Unit,
     onConnect: (port: Int) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     BackHandler(onBack = onBack)
     val needed = fullModePairingPermissions()
-    // The code is typed into a notification: the permission, the app's notifications and the channel must all allow it.
-    var notificationsShown by rememberSaveable { mutableStateOf(PairingNotifications.canPost(context)) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { notificationsShown = PairingNotifications.canPost(context) }
+    // The code goes into a notification while it can show; otherwise into this screen (R50). A
+    // refusal is remembered for the screen: asking again after a permanent one shows nothing.
+    var refused by rememberSaveable { mutableStateOf(false) }
+    fun readInput() = pairingInput(
+        permission = when {
+            PairingNotifications.permitted(context) -> NotificationPermission.GRANTED
+            refused -> NotificationPermission.DENIED
+            else -> NotificationPermission.ASKABLE
+        },
+        appNotificationsOn = PairingNotifications.appNotificationsOn(context),
+        channelOn = PairingNotifications.channelOn(context),
+    )
+    var input by remember { mutableStateOf(readInput()) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { input = readInput() }
     val start by rememberUpdatedState(onStartPairing)
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        notificationsShown = PairingNotifications.canPost(context)
-        if (notificationsShown) start()
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        refused = !granted
+        input = readInput()
+        start() // by notification, or in this screen when refused
+    }
+    var pairingPortText by rememberSaveable { mutableStateOf("") }
+    var pairingCode by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(state) {
+        // Prefill the port NSD found, unless one was typed already.
+        if (state is SetupState.Pairing && pairingPortText.isEmpty()) pairingPort?.let { pairingPortText = it.toString() }
     }
     // The typed port stays offered from the first failed connect until the setup is ready.
     var portOffered by rememberSaveable { mutableStateOf(false) }
@@ -104,18 +128,50 @@ fun FullModeScreen(
         }
         Button(
             onClick = {
-                when {
-                    notificationsShown -> onStartPairing()
-                    !PairingNotifications.permitted(context) && needed.isNotEmpty() -> ask.launch(needed.first())
-                    else -> context.openAppNotificationSettings() // turned off by the user: only Settings can turn them on
+                when (input) {
+                    PairingInput.ASK_PERMISSION -> if (needed.isNotEmpty()) ask.launch(needed.first()) else onStartPairing()
+                    PairingInput.NOTIFICATION, PairingInput.IN_APP -> onStartPairing()
                 }
             },
             // Also while waiting for the code: the pairing screen may have been closed, or the notification swiped away.
             enabled = state != SetupState.Looking && state != SetupState.Connecting,
             modifier = Modifier.fillMaxWidth(),
         ) { Text(stringResource(R.string.full_start_pairing)) }
-        if (!notificationsShown) {
+        if (input == PairingInput.ASK_PERMISSION) {
             Text(stringResource(R.string.full_notifications_needed), style = MaterialTheme.typography.bodyMedium)
+        }
+        val waitingForCode = state is SetupState.Pairing || state is SetupState.PairFailed
+        if (input == PairingInput.IN_APP && waitingForCode) {
+            // The notification's own words, then its two inputs.
+            val portKnown = pairingPort != null
+            Text(
+                stringResource(if (portKnown) R.string.pairing_notification_text_code else R.string.pairing_notification_text_port_and_code),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            OutlinedTextField(
+                value = pairingPortText,
+                onValueChange = { typed -> pairingPortText = typed.filter { it in '0'..'9' }.take(PORT_DIGITS) },
+                label = { Text(stringResource(R.string.full_pairing_port)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val pair = { onPairInApp(pairingPortText, pairingCode) }
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = { typed -> pairingCode = typed.filter { it in '0'..'9' }.take(CODE_DIGITS) },
+                label = { Text(stringResource(R.string.pairing_notification_input_code)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { pair() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { pair() },
+                // The setup checks the fields (INVALID otherwise); here only an obviously short code waits.
+                enabled = pairingCode.length == CODE_DIGITS,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.full_pair)) }
         }
         state.statusRes()?.let { status ->
             Text(
@@ -172,3 +228,4 @@ internal fun MakerGuidance.lineRes(): Int? = when (this) {
 
 private const val MAX_PORT = 65_535
 private const val PORT_DIGITS = 5
+private const val CODE_DIGITS = 6

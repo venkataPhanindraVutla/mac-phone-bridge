@@ -17,6 +17,12 @@ object PairingReply {
     private val PORT_AND_CODE = Regex("([0-9]+)(?:\\s+|:)([0-9]+)")
     private const val MAX_PORT = 65_535
 
+    /**
+     * The in-app fields (used when the notification can't show) as one reply, so they go through
+     * [parse] like the notification's: "port code", or the code alone when the port field is empty.
+     */
+    fun fromFields(port: String, code: String): String = listOf(port.trim(), code.trim()).filter { it.isNotEmpty() }.joinToString(" ")
+
     fun parse(text: String, discoveredPort: Int?): ReplyParse {
         val t = text.trim()
         if (CODE.matches(t)) return discoveredPort?.let { ReplyParse.Ok(it, t) } ?: ReplyParse.Invalid

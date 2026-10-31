@@ -20,6 +20,14 @@ class PairingReplyTest {
     }
 
     @Test
+    fun inAppFieldsMakeTheSameReply() {
+        assertEquals("37123 482916", PairingReply.fromFields(" 37123 ", " 482916"))
+        assertEquals("482916", PairingReply.fromFields("", "482916"))
+        assertEquals(ReplyParse.Ok(37123, "482916"), PairingReply.parse(PairingReply.fromFields("", "482916"), discoveredPort = 37123))
+        assertEquals(ReplyParse.Invalid, PairingReply.parse(PairingReply.fromFields("37123", ""), discoveredPort = null))
+    }
+
+    @Test
     fun noPortKnownNeedsBoth() {
         assertEquals(ReplyParse.Invalid, PairingReply.parse("482916", discoveredPort = null))
     }

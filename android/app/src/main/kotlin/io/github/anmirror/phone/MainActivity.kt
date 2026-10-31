@@ -169,7 +169,9 @@ private fun AppRoot(graph: AppGraph) {
                 screen == Screen.FullMode -> FullModeScreen(
                     state = fullMode,
                     maker = fullModeMaker,
+                    pairingPort = graph.fullModeSetup.pairingPort,
                     onStartPairing = graph.fullModeSetup::startPairing,
+                    onPairInApp = { port, code -> graph.scope.launch { graph.fullModeSetup.submitInApp(port, code) } },
                     onConnect = { port -> graph.scope.launch { graph.fullModeSetup.ensureConnected(typedPort = port) } },
                     onBack = { screen = Screen.Main },
                 )

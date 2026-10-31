@@ -229,18 +229,6 @@ fun Context.openAllFilesAccessSettings() {
 fun fullModePairingPermissions(): List<String> =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
 
-/** This app's notification settings, where notifications the user turned off are turned back on. */
-fun Context.openAppNotificationSettings() {
-    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    try {
-        startActivity(intent)
-    } catch (e: android.content.ActivityNotFoundException) {
-        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-}
-
 /** Developer options; About phone (where Build number turns them on) when they are not on yet. */
 fun Context.openDeveloperOptions() {
     try {

@@ -266,4 +266,7 @@
     <string name="pairing_notification_action">Enter code</string>
     <string name="pairing_notification_input_code">Pairing code</string>
     <string name="pairing_notification_input_port_and_code">Port and code</string>
+    <!-- R50: the in-app fields, used only when the pairing notification can't show. -->
+    <string name="full_pairing_port">Pairing port</string>
+    <string name="full_pair">Pair</string>
 </resources>
