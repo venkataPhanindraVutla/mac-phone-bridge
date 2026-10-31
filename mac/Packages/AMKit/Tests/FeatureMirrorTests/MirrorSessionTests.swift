@@ -90,6 +90,48 @@ final class StalledPipe: BulkPipe, @unchecked Sendable {
         #expect(fake.elapsed == .zero)
     }
 
+    /// The lateness half of the backlog rule: a packet more than 500 ms late (LatenessMeter) drops
+    /// everything queued up to the next key frame and asks for RESET_VIDEO, once.
+    @Test func latePacketDropsToNextKeyFrameAndRequestsReset() async throws {
+        let fake = FakeResetClock()
+        let events = Recorder<String>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .needsReset = event { events.append("needsReset") }
+        }, clock: fake.clock)
+        defer { session.close() }
+        let pts = Recorder<UInt64>()
+        session.onFrameForTesting = { pts.append($0) }
+        session.decoder.hold()
+        let (mac, phone) = MemoryPipe.pair()
+        session.attach(mac, role: .mirrorVideo)
+        // The prelude, the size, the config and frames 0...9, all at once (a burst is not late).
+        let head = Data([0]) + sampleStream.prefix(68) + sessionBytes(width: 320, height: 640)
+        let packets = samplePackets.map { packetBytes(config: $0.config, key: $0.key, pts: $0.pts, payload: $0.payload) }
+        try await phone.send(head + packets[0...10].reduce(Data(), +))
+        try await until("ten frames parsed") { session.packetsParsed == 11 }
+        #expect(events.count == 0)
+        #expect(session.decoder.backlog == 10)
+        // A second later frames 10...29 arrive (frame 10 was made at 167 ms: about 1 s late).
+        // Without the lateness rule they would just queue (20 + 10, not over the backlog of 30).
+        fake.advance(by: .seconds(1))
+        try await phone.send(packets[11...30].reduce(Data(), +))
+        try await until("frames 10...29 parsed") { session.packetsParsed == 31 }
+        #expect(events.all == ["needsReset"])
+        // Everything queued went, and frames wait for the next key frame.
+        #expect(session.decoder.backlog == 0)
+        // The key frame at 30 and what follows stay, without another reset.
+        try await phone.send(packets[31...].reduce(Data(), +))
+        try await until("the stream parsed") { session.packetsParsed == 61 }
+        #expect(events.all == ["needsReset"])
+        #expect(session.decoder.backlog == 30)
+        let sample = session.qualitySample()
+        #expect(sample.backlog == 30)
+        #expect((sample.medianMs ?? 0) > 400) // ten on-time frames, then 983 ms falling to 167 ms
+        session.decoder.release()
+        try await until("30 frames") { pts.count == 30 }
+        #expect(pts.all.first == 30 * 16_667)
+    }
+
     /// A link attached after close() is closed at once.
     @Test func linkAfterCloseIsClosed() {
         let session = MirrorSession(id: 1, sink: CountingSink(), events: { _ in })

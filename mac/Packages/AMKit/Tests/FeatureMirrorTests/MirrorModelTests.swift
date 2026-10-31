@@ -23,6 +23,8 @@ private final class Rig {
             startDeadline: startDeadline
         )
         model.linkGrace = .milliseconds(100)
+        // Auto quality is evaluated by hand here (`evaluateQuality`); the 1 s ticker stays out of the way.
+        model.qualityInterval = .seconds(3600)
     }
 
     /// Connected, sharing `mirror.v1`, with the phone's availability enabled.
@@ -559,5 +561,295 @@ private final class Rig {
         rig.model.muted = true
         await rig.model.start()
         #expect(rig.model.session?.audioMuted == true)
+    }
+
+    // MARK: quality
+
+    /// Five late seconds under Auto: a new session at Balanced replaces the running one. The window
+    /// is kept (the phase goes from running to starting, never ended) and the Mac sends no stop.
+    @Test func autoSwitchRestartsAndKeepsWindow() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        #expect(rig.model.autoQuality)
+        let t0 = ContinuousClock.now
+        for s in 1...4 {
+            await rig.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(s))
+            #expect(rig.model.phase == .running(width: 320, height: 640))
+        }
+        #expect(rig.starts.count == 1)
+        await rig.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(5))
+        #expect(rig.model.sessionID == 2)
+        #expect(rig.model.phase == .starting)
+        #expect(rig.model.preset == .balanced)
+        #expect(rig.model.autoQuality)
+        let start = try #require(rig.starts.last)
+        #expect(start.session == 2)
+        #expect(start.maxSize == 1280 && start.videoBitRate == 4_000_000 && start.maxFps == 60)
+        #expect(rig.stops.isEmpty)
+        #expect(rig.bulk.revoked == ["mirror-1"])
+        // The new session runs like any other.
+        let video = rig.link(.mirrorVideo, session: 2)
+        await rig.state(2, .running)
+        try await video.phone.send(sampleWithDummyByte)
+        try await until("running again") { rig.model.phase == .running(width: 320, height: 640) }
+        #expect(rig.model.sessionID == 2)
+    }
+
+    /// R22: a restart is an automatic `mirror.start`, so it needs the phone's availability.
+    @Test func autoRestartNeedsAvailability() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        await rig.availability(false, .offByUser)
+        let t0 = ContinuousClock.now
+        for s in 1...8 { await rig.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(s)) }
+        #expect(rig.starts.count == 1)
+        #expect(rig.model.sessionID == 1)
+        #expect(rig.model.preset == .high)
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+        await rig.availability(true)
+        for s in 9...13 { await rig.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(s)) }
+        #expect(rig.starts.count == 2)
+        #expect(rig.model.preset == .balanced)
+    }
+
+    /// Nothing is evaluated while not running, or with Auto off.
+    @Test func autoNeedsARunningSessionAndAuto() async throws {
+        let rig = Rig()
+        await rig.ready()
+        await rig.model.start()
+        let t0 = ContinuousClock.now
+        for s in 1...6 { await rig.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(s)) }
+        #expect(rig.starts.count == 1)
+        #expect(rig.model.preset == .high)
+        let rig2 = Rig()
+        _ = try await rig2.running()
+        rig2.model.autoQuality = false
+        for s in 1...6 { await rig2.model.evaluateQuality(medianMs: 200, backlog: 0, now: t0 + .seconds(s)) }
+        #expect(rig2.starts.count == 1)
+    }
+
+    /// The 1 s ticker feeds the session's lateness and backlog to Auto while a session runs.
+    @Test func tickerEvaluatesWhileRunning() async throws {
+        let fake = FakeResetClock()
+        let rig = Rig()
+        rig.model.sessionClock = fake.clock
+        rig.model.qualityInterval = .milliseconds(5)
+        rig.model.qualityInputForTesting = { (200, 0) }
+        _ = try await rig.running()
+        for _ in 0..<10 where rig.model.sessionID == 1 {
+            let ticks = rig.model.qualityTicks
+            fake.advance(by: .seconds(1))
+            try await until("a tick") { rig.model.qualityTicks > ticks || rig.model.sessionID == 2 }
+        }
+        #expect(rig.model.sessionID == 2)
+        #expect(rig.starts.last?.maxSize == 1280)
+        // Not running yet: the ticker has stopped.
+        let ticks = rig.model.qualityTicks
+        fake.advance(by: .seconds(1))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.model.qualityTicks == ticks)
+    }
+
+    /// A preset picked by hand turns Auto off and restarts a running session at once.
+    @Test func manualPresetRestartsAndTurnsAutoOff() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        await rig.model.choosePreset(.low)
+        #expect(!rig.model.autoQuality)
+        #expect(rig.model.preset == .low)
+        #expect(rig.model.sessionID == 2)
+        #expect(rig.model.phase == .starting)
+        #expect(rig.starts.last?.maxSize == 960)
+        // The same preset again changes nothing.
+        await rig.model.choosePreset(.low)
+        #expect(rig.starts.count == 2)
+        // Auto back on: no restart, Auto goes on from Low.
+        rig.model.autoQuality = true
+        #expect(rig.starts.count == 2)
+        #expect(rig.model.preset == .low)
+        // Not running: the choice applies at the next start.
+        await rig.model.stop()
+        await rig.model.choosePreset(.high)
+        #expect(rig.starts.count == 2)
+        await rig.model.start()
+        #expect(rig.starts.last?.maxSize == 1920)
+    }
+
+    /// LINK_SLOW (the phone ended it): the copy says so, and under Auto the next start is one preset lower.
+    @Test func linkSlowEndsAndStartsLowerNextTime() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        await rig.state(1, .failed, .linkSlow)
+        #expect(rig.model.phase == .ended(.phone(.linkSlow)))
+        #expect(MirrorCopy.failure(.phone(.linkSlow)) == "The connection was too slow to show the phone screen.")
+        #expect(rig.starts.count == 1) // no automatic restart
+        #expect(rig.model.preset == .balanced)
+        await rig.model.start()
+        #expect(rig.starts.last?.maxSize == 1280)
+        // A preset picked by hand stays.
+        await rig.model.choosePreset(.high)
+        await rig.state(rig.model.sessionID, .failed, .linkSlow)
+        #expect(rig.model.preset == .high)
+    }
+
+    // MARK: H.265
+
+    @Test func h265FailureFallsBackToH264Once() async throws {
+        let rig = Rig()
+        await rig.ready()
+        await rig.model.setH265(true)
+        #expect(rig.starts.isEmpty) // nothing running: applies at the next start
+        await rig.model.start()
+        #expect(rig.starts.last?.videoCodec == .h265)
+        await rig.state(1, .failed, .helperFailed)
+        // Started again with H.264, the window kept; the toggle is off and the note shows.
+        #expect(rig.starts.count == 2)
+        #expect(rig.starts.last?.videoCodec == .h264)
+        #expect(rig.model.sessionID == 2)
+        #expect(rig.model.phase == .starting)
+        #expect(rig.model.codec == .h264)
+        #expect(rig.model.h265Refused)
+        #expect(rig.stops.isEmpty)
+        // H.264 fails too: that is the end, once.
+        await rig.state(2, .failed, .helperFailed)
+        #expect(rig.model.phase == .ended(.phone(.helperFailed)))
+        #expect(rig.starts.count == 2)
+        #expect(MirrorCopy.h265Note == "This phone can't send H.265. Using H.264.")
+        // Turning H.265 on again clears the note.
+        await rig.model.setH265(true)
+        #expect(!rig.model.h265Refused)
+    }
+
+    /// Only a failure before RUNNING falls back; other reasons, or H.264, just end.
+    @Test func h265FallbackOnlyForHelperFailedBeforeRunning() async throws {
+        let rig = Rig()
+        await rig.ready()
+        await rig.model.setH265(true)
+        await rig.model.start()
+        await rig.state(1, .failed, .adbFailed)
+        #expect(rig.model.phase == .ended(.phone(.adbFailed)))
+        #expect(rig.starts.count == 1)
+        // Running on H.265, then HELPER_FAILED: an ordinary end.
+        let rig2 = Rig()
+        await rig2.ready()
+        await rig2.model.setH265(true)
+        _ = try await rig2.running()
+        await rig2.state(rig2.model.sessionID, .failed, .helperFailed)
+        #expect(rig2.model.phase == .ended(.phone(.helperFailed)))
+        #expect(rig2.model.codec == .h265)
+        #expect(!rig2.model.h265Refused)
+    }
+
+    /// "Use H.265" restarts a running session with it.
+    @Test func useH265RestartsARunningSession() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        await rig.model.setH265(true)
+        #expect(rig.model.sessionID == 2)
+        #expect(rig.starts.last?.videoCodec == .h265)
+        await rig.model.setH265(false)
+        #expect(rig.model.sessionID == 3)
+        #expect(rig.starts.last?.videoCodec == .h264)
+    }
+
+    // MARK: Measure Delay
+
+    /// The phone's DELAY test screen played by the test: white while the finger is down, black
+    /// otherwise, shown through the session as decoded pictures.
+    @Test func measureDelayRunsThePatternsAndTaps() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        rig.model.delayHarness = DelayHarness(trials: 3, timeout: .seconds(2), pause: .zero,
+                                              firstBlack: .seconds(2), fpsDuration: .milliseconds(200))
+        let session = try #require(rig.model.session)
+        let black = try #require(nv12Picture(outer: 16))
+        let touches = Recorder<Data>()
+        let phone = playDelayScreen(control: links.control.phone, session: session, touches: touches)
+        defer { phone.cancel() }
+        #expect(rig.model.canMeasureDelay)
+        let measuring = Task { await rig.model.measureDelay() }
+        try await until("DELAY sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 1 }
+        #expect(rig.model.measuringDelay)
+        #expect(!rig.model.canMeasureDelay)
+        session.frameShown(black)
+        // The frame-rate pattern: a few frames while it is counted.
+        try await until("FPS sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 2 }
+        for _ in 0..<4 { session.frameShown(black) }
+        let result = try #require(await measuring.value)
+        #expect(result.trials == 3)
+        #expect(result.misses == 0)
+        #expect(result.medianMs >= 0 && result.medianMs < 1_000)
+        #expect(result.fpsMean > 0)
+        let patterns = rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self)
+        #expect(patterns.map(\.mode) == [.delay, .fps, .off])
+        #expect(patterns.allSatisfy { $0.session == 1 })
+        // DOWN and UP at the centre, at the video size, three times.
+        try await until("six touches") { touches.count == 6 }
+        #expect(touches.all == Array(repeating: [touchDown(160, 320, 320, 640), touchUp(160, 320, 320, 640)], count: 3).flatMap { $0 })
+        #expect(!rig.model.measuringDelay)
+        #expect(rig.model.phase == .running(width: 320, height: 640))
+    }
+
+    /// No black centre within the first wait: every tap counts as missed, no frame count, OFF sent.
+    @Test func measureDelayWithoutTheTestScreen() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        rig.model.delayHarness = DelayHarness(trials: 5, timeout: .milliseconds(50), pause: .zero,
+                                              firstBlack: .milliseconds(100), fpsDuration: .seconds(30))
+        let result = try #require(await rig.model.measureDelay())
+        #expect(result.trials == 5 && result.misses == 5)
+        #expect(result.fpsMean == 0)
+        #expect(rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).map(\.mode) == [.delay, .off])
+    }
+
+    /// The session ends while measuring: no result, and it returns promptly.
+    @Test func measureDelayStopsWhenTheSessionEnds() async throws {
+        let rig = Rig()
+        _ = try await rig.running()
+        rig.model.delayHarness = DelayHarness(trials: 50, timeout: .seconds(3), pause: .milliseconds(500),
+                                              firstBlack: .seconds(5), fpsDuration: .seconds(30))
+        let started = ContinuousClock.now
+        let measuring = Task { await rig.model.measureDelay() }
+        try await until("DELAY sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 1 }
+        await rig.phoneStop(1, .user)
+        #expect(await measuring.value == nil)
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(!rig.model.measuringDelay)
+    }
+
+    @Test func measureDelayNeedsARunningSession() async throws {
+        let rig = Rig()
+        await rig.ready()
+        await rig.model.start()
+        #expect(!rig.model.canMeasureDelay)
+        #expect(await rig.model.measureDelay() == nil)
+        #expect(rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).isEmpty)
+    }
+
+    @Test func delayCopy() {
+        let r = DelayResult(medianMs: 61.4, p95Ms: 88.6, minMs: 40, trials: 50, misses: 2, fpsMean: 58.25)
+        #expect(MirrorCopy.delayTitle == "Delay")
+        #expect(MirrorCopy.delayRoundTrip(r) == "Round trip: median 61 ms, 95th percentile 89 ms, 50 taps (2 missed).")
+        #expect(MirrorCopy.delayFrameRate(r).hasPrefix("Frame rate: 58"))
+        #expect(MirrorCopy.delayFrameRate(r).hasSuffix(" fps."))
+    }
+}
+
+/// The phone's DELAY screen behind a control link: each touch DOWN shows a white picture through
+/// `session`, each UP a black one. The touches are recorded.
+private func playDelayScreen(control: MemoryPipe, session: MirrorSession, touches: Recorder<Data>) -> Task<Void, Never> {
+    Task.detached {
+        guard let black = nv12Picture(outer: 16), let white = nv12Picture(outer: 235) else { return }
+        var bytes = Data()
+        var seen = 0
+        while let chunk = try? await control.receive(maximum: 1 << 16) {
+            bytes += chunk
+            let messages = controlMessages(bytes)
+            for m in messages.dropFirst(seen) where m.first == 2 {
+                touches.append(m)
+                session.frameShown(m[1] == 0 ? white : black)
+            }
+            seen = messages.count
+        }
     }
 }

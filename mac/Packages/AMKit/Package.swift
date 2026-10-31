@@ -140,7 +140,7 @@ let package = Package(
         .executableTarget(
             name: "am-mac-sim",
             dependencies: [
-                "AMProtocol", "ConnectionCore", "FeatureFiles", "FeatureMedia",
+                "AMProtocol", "ConnectionCore", "FeatureFiles", "FeatureMedia", "FeatureMirror",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),

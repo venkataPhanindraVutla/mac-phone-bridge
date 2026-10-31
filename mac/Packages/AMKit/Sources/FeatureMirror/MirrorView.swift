@@ -32,12 +32,30 @@ public enum MirrorCopy {
             case .adbFailed: return String(localized: "Couldn't reach Wireless debugging on the phone.", bundle: .main)
             case .helperFailed: return String(localized: "The phone couldn't start sharing its screen.", bundle: .main)
             case .linkFailed: return String(localized: "The connection to the phone dropped.", bundle: .main)
+            case .linkSlow: return String(localized: "The connection was too slow to show the phone screen.", bundle: .main)
             case .turnedOff: return offByUser
             case .unavailable: return String(localized: "Showing the phone screen needs Android 11 or later.", bundle: .main)
             default: return nil
             }
         case .disconnected, .macSleep, .user: return nil
         }
+    }
+
+    /// The window's note after the H.265 fallback.
+    public static var h265Note: String { String(localized: "This phone can't send H.265. Using H.264.", bundle: .main) }
+
+    /// The "Measure Delay…" results alert: its title, and its two lines.
+    public static var delayTitle: String { String(localized: "Delay", bundle: .main) }
+
+    public static func delayRoundTrip(_ r: DelayResult) -> String {
+        let m = Int(r.medianMs.rounded()), p = Int(r.p95Ms.rounded())
+        return String(localized: "Round trip: median \(m) ms, 95th percentile \(p) ms, \(r.trials) taps (\(r.misses) missed).",
+                      bundle: .main)
+    }
+
+    public static func delayFrameRate(_ r: DelayResult) -> String {
+        let f = r.fpsMean.formatted(.number.precision(.fractionLength(1)))
+        return String(localized: "Frame rate: \(f) fps.", bundle: .main)
     }
 
     private static var offByUser: String {
@@ -63,6 +81,8 @@ public final class MirrorView: NSView {
     public internal(set) var input: InputMapper?
 
     private let line = NSTextField(wrappingLabelWithString: "")
+    /// A note over the top of the picture (the H.265 fallback); hidden when there is none.
+    private let note = NSTextField(wrappingLabelWithString: "")
     private let button = NSButton(title: "", target: nil, action: nil)
     private let overlay = NSStackView()
     /// The input method's composition, shown and never sent until committed.
@@ -101,6 +121,14 @@ public final class MirrorView: NSView {
         overlay.translatesAutoresizingMaskIntoConstraints = false
         addSubview(overlay)
 
+        note.alignment = .center
+        note.textColor = .white
+        note.drawsBackground = true
+        note.backgroundColor = NSColor.black.withAlphaComponent(0.75)
+        note.isHidden = true
+        note.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(note)
+
         marked.font = .systemFont(ofSize: NSFont.systemFontSize + 4)
         marked.textColor = .white
         marked.drawsBackground = true
@@ -119,6 +147,10 @@ public final class MirrorView: NSView {
             marked.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
             marked.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
             marked.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            note.centerXAnchor.constraint(equalTo: centerXAnchor),
+            note.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            note.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
+            note.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
         ])
         registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
@@ -175,6 +207,15 @@ public final class MirrorView: NSView {
         // The last picture stays under a starting session; anything else hides behind the line.
         displayLayer.opacity = phase == .starting || phase.isRunning ? 1 : 0.25
     }
+
+    /// Shows `text` as a note over the top of the picture; nil hides it.
+    public func showNote(_ text: String?) {
+        note.stringValue = text ?? ""
+        note.isHidden = text == nil
+    }
+
+    /// The note shown, if any (internal, for tests).
+    var noteShown: String? { note.isHidden ? nil : note.stringValue }
 
     @objc private func showAgain() { onShowAgain?() }
 

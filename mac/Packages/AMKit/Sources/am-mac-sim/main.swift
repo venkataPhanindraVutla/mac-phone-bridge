@@ -15,6 +15,8 @@
 //   EVENT files-sent bytes=<n> mbps=<x>                     (--files: that file sent back, Mac to phone rate)
 //   EVENT files-failed <transfer-id> <reason>               (--files)
 //   EVENT media-roundtrip ms=<n>                            (--media-toggle: a TOGGLE to the next media.state)
+//   EVENT mirror-frames decoded=<n> size=<w>x<h>            (--mirror; parsed=<n> when nothing could be decoded)
+//   EVENT mirror-ended <reason>                             (--mirror: the session ended first; exit 1)
 //   EVENT rejected <reason>
 //   EVENT disconnected <phone-id>
 //   EVENT unpaired <phone-id>
@@ -26,12 +28,18 @@
 // With --liveness it advertises liveness.v1 (SPEC 7): when the phone lists it too, the Mac pings
 // every 30 s (or --ping-interval-ms) and drops the phone at the third consecutive silent interval.
 // --silence-ms <n> replaces the 75 s silence rule for phones without liveness.v1 (sim speed).
+// With --mirror it advertises mirror.v1 and runs the mirror model (VideoToolbox decode, headless,
+// into a counting sink): on the phone's first enabled mirror.availability it starts a session
+// (High, H.264, audio off); after the first frame it sends one touch DOWN and UP at the centre;
+// after 60 decoded frames, or 2 s without a frame, it prints mirror-frames, stops and exits 0.
 
 import AMProtocol
 import ConnectionCore
+import CoreVideo
 import CryptoKit
 import FeatureFiles
 import FeatureMedia
+import FeatureMirror
 import Foundation
 import SwiftProtobuf
 
@@ -41,6 +49,7 @@ let usage = """
     usage: am-mac-sim --identity <p12> --state-dir <dir> [--port <n|0>] [--password <pw>]
                       [--name <mac name>] [--auto-confirm] [--ring-after-connect] [--echo-notify] [--no-bonjour]
                       [--files <dir>] [--media-toggle] [--liveness] [--ping-interval-ms <n>] [--silence-ms <n>]
+                      [--mirror]
     """
 
 struct Options {
@@ -58,6 +67,7 @@ struct Options {
     var liveness = false
     var pingIntervalMs: Int?
     var silenceMs: Int?
+    var mirror = false
 }
 
 func fail(_ message: String) -> Never {
@@ -88,6 +98,7 @@ func parse(_ args: [String]) -> Options {
         case "--files": o.filesDir = value(arg)
         case "--media-toggle": o.mediaToggle = true
         case "--liveness": o.liveness = true
+        case "--mirror": o.mirror = true
         case "--ping-interval-ms":
             guard let ms = Int(value(arg)), ms > 0 else { fail("--ping-interval-ms must be a positive integer") }
             o.pingIntervalMs = ms
@@ -218,6 +229,7 @@ if options.echoNotify { capabilities.insert("notify.v1") }
 if options.filesDir != nil { capabilities.insert("files.v1") }
 if options.mediaToggle { capabilities.insert("media.v1") }
 if options.liveness { capabilities.insert(Liveness.capability) }
+if options.mirror { capabilities.insert("mirror.v1") }
 
 let server = MacServer(
     identity: identityProvider,
@@ -260,6 +272,10 @@ func megabytesPerSecond(_ bytes: UInt64, since start: ContinuousClock.Instant?) 
 /// Transfer ID to when it started (offer seen, or send queued), for the rates printed.
 var transferStarts: [String: ContinuousClock.Instant] = [:]
 
+/// The bulk listener, for --files and --mirror.
+let bulk: BulkServer? = options.filesDir != nil || options.mirror
+    ? MainActor.assumeIsolated { BulkServer(identity: identityProvider) } : nil
+
 let transfers: TransferEngine? = options.filesDir.map { path in
     let dir = URL(fileURLWithPath: path, isDirectory: true)
     do {
@@ -267,12 +283,11 @@ let transfers: TransferEngine? = options.filesDir.map { path in
     } catch {
         fail("cannot create files dir: \(error)")
     }
-    let bulk = BulkServer(identity: identityProvider)
+    guard let bulk else { fail("no bulk listener") }
     let engine = TransferEngine(
         bulk: bulk,
         send: { type, message in try? await server.send(type, message, channel: .files) },
         destination: { _ in .folder(dir) })
-    bulk.onLink = { pipe, grant in engine.link(pipe, grant: grant) }
     engine.onFinished = { item, _, url in
         let start = transferStarts.removeValue(forKey: item.id)
         switch (item.direction, item.state) {
@@ -287,11 +302,6 @@ let transfers: TransferEngine? = options.filesDir.map { path in
         default:
             break
         }
-    }
-    do {
-        try bulk.start()
-    } catch {
-        fail("cannot start the bulk listener: \(error)")
     }
     return engine
 }
@@ -337,6 +347,108 @@ final class MediaToggle {
 
 let media: MediaToggle? = options.mediaToggle ? MainActor.assumeIsolated { MediaToggle() } : nil
 
+// MARK: mirror (--mirror)
+
+/// Counts the pictures VideoToolbox decodes; nothing is shown.
+final class CountingFrameSink: FrameSink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var shown = 0
+
+    func show(_ image: CVPixelBuffer) { lock.withLock { shown += 1 } }
+    func flush() {}
+    var count: Int { lock.withLock { shown } }
+}
+
+/// One mirror session against the phone: started on the first enabled availability, touched once
+/// at the centre after the first frame, stopped after 60 frames or 2 s without one.
+@MainActor
+final class MirrorRun {
+    static let frames = 60
+    static let idle: Duration = .seconds(2)
+
+    let model: MirrorModel
+    private let sink: CountingFrameSink
+    private var started = false
+
+    init(bulk: BulkServer) {
+        let sink = CountingFrameSink()
+        self.sink = sink
+        model = MirrorModel(
+            bulk: bulk,
+            send: { type, message in try? await server.send(type, message, channel: .mirror) },
+            makeSink: { sink })
+        model.audioEnabled = false
+        model.codec = .h264
+    }
+
+    func message(_ envelope: AMEnvelope) async {
+        await model.message(envelope)
+        guard !started, model.canStart else { return }
+        started = true
+        await model.start()
+        Task { await self.watch() }
+    }
+
+    private func watch() async {
+        var received = 0
+        var lastFrame = ContinuousClock.now
+        var firstReceived: ContinuousClock.Instant?
+        var touched = false
+        while true {
+            try? await Task.sleep(for: .milliseconds(10))
+            if case let .ended(reason) = model.phase {
+                emit("EVENT mirror-ended \(reason)")
+                exit(1)
+            }
+            guard let session = model.session else { continue }
+            let now = ContinuousClock.now
+            if session.videoFramesReceived != received {
+                received = session.videoFramesReceived
+                lastFrame = now
+                if firstReceived == nil { firstReceived = now }
+            }
+            let decoded = sink.count
+            // After the first frame (or, when nothing decodes, a second after the first one came).
+            if !touched, let size = session.videoSize,
+               decoded > 0 || firstReceived.map({ now - $0 >= .seconds(1) }) == true {
+                touched = true
+                let (x, y) = (Int32(size.width / 2), Int32(size.height / 2))
+                let (w, h) = (UInt16(clamping: size.width), UInt16(clamping: size.height))
+                session.sendControl(ScrcpyControl.touch(action: 0, x: x, y: y, width: w, height: h, pressure: 1))
+                session.sendControl(ScrcpyControl.touch(action: 1, x: x, y: y, width: w, height: h, pressure: 0))
+            }
+            guard decoded >= Self.frames || (received > 0 && now - lastFrame >= Self.idle) else { continue }
+            let size = session.videoSize ?? (0, 0)
+            let count = decoded > 0 ? "decoded=\(decoded)" : "parsed=\(received)"
+            emit("EVENT mirror-frames \(count) size=\(size.width)x\(size.height)")
+            await model.stop()
+            // The control link drains (at most 200 ms) before the process goes.
+            try? await Task.sleep(for: .milliseconds(300))
+            exit(0)
+        }
+    }
+}
+
+let mirrorRun: MirrorRun? = options.mirror ? MainActor.assumeIsolated { bulk.map { MirrorRun(bulk: $0) } } : nil
+
+if let bulk {
+    MainActor.assumeIsolated {
+        bulk.onLink = { pipe, grant in
+            switch grant.role {
+            case .mirrorVideo, .mirrorAudio, .mirrorControl:
+                if let mirrorRun { mirrorRun.model.link(pipe, grant: grant) } else { pipe.close() }
+            default:
+                if let transfers { transfers.link(pipe, grant: grant) } else { pipe.close() }
+            }
+        }
+        do {
+            try bulk.start()
+        } catch {
+            fail("cannot start the bulk listener: \(error)")
+        }
+    }
+}
+
 var announced = false
 server.onEvent = { event in
     switch event {
@@ -362,6 +474,12 @@ server.onEvent = { event in
         if let media {
             featureWork.yield { await media.model.connected(phoneID: phone.id, phoneName: phone.name, shared: shared) }
         }
+        if let mirrorRun, let bulk {
+            featureWork.yield {
+                bulk.allow(peerFingerprint: Data(hex: phone.id))
+                await mirrorRun.model.connected(phoneID: phone.id, phoneName: phone.name, shared: shared)
+            }
+        }
         if options.ringAfterConnect, shared.contains("find.v1") {
             Task { try? await server.send(.findRing, AMRingRequest(), channel: .find) }
         }
@@ -369,6 +487,7 @@ server.onEvent = { event in
         emit("EVENT disconnected \(phone.id)")
         if let transfers { featureWork.yield { transfers.disconnected() } }
         if let media { featureWork.yield { media.model.disconnected() } }
+        if let mirrorRun { featureWork.yield { mirrorRun.model.disconnected() } }
     case let .unpaired(phone):
         emit("EVENT unpaired \(phone.id)")
     case let .rejected(reason):
@@ -387,6 +506,10 @@ server.onMessage = { envelope in
     }
     if let media, media.model.messagePrefixes.contains(where: { envelope.type.hasPrefix($0) }) {
         featureWork.yield { await media.message(envelope) }
+        return
+    }
+    if let mirrorRun, mirrorRun.model.messagePrefixes.contains(where: { envelope.type.hasPrefix($0) }) {
+        featureWork.yield { await mirrorRun.message(envelope) }
         return
     }
     switch envelope.type {

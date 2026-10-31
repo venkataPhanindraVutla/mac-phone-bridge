@@ -77,6 +77,7 @@ private final class ExtrasRig {
             record?(type)
         }, makeSink: { CountingSink() }, startDeadline: startDeadline)
         model.linkGrace = .milliseconds(100)
+        model.qualityInterval = .seconds(3600)
         if let clock { model.sessionClock = clock.clock }
         record = { [unowned self] type in log.append((type, control?.mac.bytesSent ?? 0)) }
     }
@@ -261,6 +262,55 @@ private final class ExtrasRig {
         #expect(start.controlBytes >= before + UInt64(screenOnBytes.count))
         // The phone ends the old session itself (REPLACED).
         #expect(rig.sent.of(.mirrorStop, AMMirrorStop.self).isEmpty)
+    }
+
+    /// A quality restart keeps the screen-off state: the old session's screen comes back on before
+    /// the new start, and the new session turns it off again after its first frame.
+    @Test func qualityRestartKeepsTheScreenOff() async throws {
+        let rig = ExtrasRig()
+        let links = try await rig.running()
+        rig.model.setScreenOff(true)
+        #expect(try await rig.nextControl(links.control, 1) == [screenOffBytes])
+        await rig.model.choosePreset(.balanced)
+        #expect(rig.model.sessionID == 2)
+        #expect(try await rig.controlUntilClosed(links.control) == [screenOnBytes])
+        let (videoMac, videoPhone) = MemoryPipe.pair()
+        rig.model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-2"))
+        let (controlMac, controlPhone) = MemoryPipe.pair()
+        rig.model.link(controlMac, grant: BulkGrant(role: .mirrorControl, context: "mirror-2"))
+        var s = AMMirrorState()
+        s.session = 2
+        s.phase = .running
+        await rig.model.message(envelope(.mirror, .mirrorState, s))
+        try await videoPhone.send(sampleWithDummyByte)
+        try await until("running") { rig.model.phase == .running(width: 320, height: 640) }
+        #expect(try await rig.nextControl(controlPhone, 1) == [screenOffBytes])
+        #expect(rig.model.screenOff)
+    }
+
+    /// A screen the user turned back on stays on after a quality restart, even with the setting on.
+    @Test func qualityRestartKeepsTheScreenOn() async throws {
+        let rig = ExtrasRig()
+        rig.model.screenOffByDefault = true
+        let links = try await rig.running()
+        #expect(try await rig.nextControl(links.control, 1) == [screenOffBytes])
+        rig.model.setScreenOff(false)
+        #expect(try await rig.nextControl(links.control, 1) == [screenOnBytes])
+        await rig.model.choosePreset(.low)
+        let (videoMac, videoPhone) = MemoryPipe.pair()
+        rig.model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-2"))
+        let (controlMac, controlPhone) = MemoryPipe.pair()
+        rig.model.link(controlMac, grant: BulkGrant(role: .mirrorControl, context: "mirror-2"))
+        var s = AMMirrorState()
+        s.session = 2
+        s.phase = .running
+        await rig.model.message(envelope(.mirror, .mirrorState, s))
+        try await videoPhone.send(sampleWithDummyByte)
+        try await until("running") { rig.model.phase == .running(width: 320, height: 640) }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!rig.model.screenOff)
+        controlMac.close()
+        #expect(try await rig.controlUntilClosed(controlPhone).isEmpty)
     }
 
     /// Going to sleep can't wait: SET_DISPLAY_POWER(on) is queued before the release, and both go

@@ -2795,6 +2795,94 @@
           }
         }
       }
+    },
+    "The connection was too slow to show the phone screen.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection was too slow to show the phone screen."
+          }
+        }
+      }
+    },
+    "This phone can't send H.265. Using H.264.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This phone can't send H.265. Using H.264."
+          }
+        }
+      }
+    },
+    "Delay": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delay"
+          }
+        }
+      }
+    },
+    "Round trip: median %lld ms, 95th percentile %lld ms, %lld taps (%lld missed).": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Round trip: median %lld ms, 95th percentile %lld ms, %lld taps (%lld missed)."
+          }
+        }
+      }
+    },
+    "Frame rate: %@ fps.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Frame rate: %@ fps."
+          }
+        }
+      }
+    },
+    "Auto": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto"
+          }
+        }
+      }
+    },
+    "Use H.265": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use H.265"
+          }
+        }
+      }
+    },
+    "Measure Delay…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measure Delay…"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

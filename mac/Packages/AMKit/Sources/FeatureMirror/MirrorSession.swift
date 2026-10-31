@@ -50,6 +50,13 @@ struct ResetClock: Sendable {
 public final class MirrorSession: @unchecked Sendable {
     /// More undecoded packets than this drops to the next key frame (Global Constraints).
     public static let maxBacklog = 30
+    /// A packet this much later than the window's on-time packets (`LatenessMeter`) drops to the
+    /// next key frame too (Global Constraints). The bar then moves up to that lateness, and back
+    /// down with it as the link recovers, so a link that stays late drops again only after another
+    /// 500 ms and the next key frame is shown.
+    public static let maxLatenessMs = 500.0
+    /// The window Auto quality's median lateness is taken over.
+    public static let qualityWindow: Duration = .seconds(5)
     /// RESET_VIDEO is asked for at most this often.
     static let resetInterval: Duration = .seconds(1)
     static let readChunk = 262_144
@@ -90,6 +97,11 @@ public final class MirrorSession: @unchecked Sendable {
     private var deviceChunks = 0
     private var flushDeadlines = 0
     private var deviceUnreadable = false
+    private var meter = LatenessMeter()
+    /// Lateness up to this is not acted on again (see `maxLatenessMs`).
+    private var lateBar = 0.0
+    private var framesReceived = 0
+    private var frameObserver: (@Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void)?
 
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "mirror")
 
@@ -102,7 +114,7 @@ public final class MirrorSession: @unchecked Sendable {
         self.events = events
         self.clock = clock
         let relay = Relay()
-        decoder = VideoDecoder(sink: sink, onFrame: { relay.session?.frameDecoded($0) })
+        decoder = VideoDecoder(sink: ObservedSink(sink, relay: relay), onFrame: { relay.session?.frameDecoded($0) })
         decoder.onKeyFrameNeeded = { relay.session?.requestReset() }
         relay.session = self
     }
@@ -202,6 +214,7 @@ public final class MirrorSession: @unchecked Sendable {
     public func close() {
         let (now, draining, writer): ([any BulkPipe], (any BulkPipe)?, AsyncStream<ControlItem>.Continuation?) = lock.withLock {
             closed = true
+            frameObserver = nil
             defer {
                 pipes = [:]
                 control = nil
@@ -220,6 +233,29 @@ public final class MirrorSession: @unchecked Sendable {
 
     /// Media packets parsed so far (internal, for tests).
     var packetsParsed: Int { lock.withLock { parsed } }
+
+    /// Video frames (not config packets) received so far, decoded or not.
+    public var videoFramesReceived: Int { lock.withLock { framesReceived } }
+
+    /// What Auto quality reads every second: the median lateness of the last 5 s (nil when no frame
+    /// came) and the decode backlog.
+    public func qualitySample() -> (medianMs: Double?, backlog: Int) {
+        let now = clock.now()
+        let median = lock.withLock { meter.median(last: Self.qualityWindow, now: now) }
+        return (median, decoder.backlog)
+    }
+
+    /// Gets every picture shown from now on, with when it was decoded, on the decoder's side
+    /// ("Measure Delay…"); nil stops it. Nothing is called after `close()`.
+    public func observeFrames(_ observer: (@Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void)?) {
+        lock.withLock { frameObserver = closed ? nil : observer }
+    }
+
+    /// A picture reached the sink (internal so tests can show pictures without decoding).
+    func frameShown(_ image: CVPixelBuffer) {
+        guard let observer = lock.withLock({ closed ? nil : frameObserver }) else { return }
+        observer(image, ContinuousClock.now)
+    }
 
     /// Audio packets decoded to sound so far (internal, for tests).
     var audioBuffersDecoded: Int { lock.withLock { audioDecoded } }
@@ -253,7 +289,12 @@ public final class MirrorSession: @unchecked Sendable {
                         guard let c = ScrcpyCodec(rawValue: raw), c == .h264 || c == .h265 else { break reading }
                         codec = c
                     case let .session(width, height):
-                        lock.withLock { size = (width, height) }
+                        lock.withLock {
+                            size = (width, height)
+                            // A new encoder: its PTS may start over.
+                            meter.reset()
+                            lateBar = 0
+                        }
                         emit(.size(width: width, height: height))
                     case let .packet(packet):
                         guard let codec else { break reading }
@@ -268,7 +309,22 @@ public final class MirrorSession: @unchecked Sendable {
     }
 
     private func video(_ packet: MediaPacket, codec: ScrcpyCodec) {
-        lock.withLock { parsed += 1 }
+        let arrival = clock.now()
+        let late: Bool = lock.withLock {
+            parsed += 1
+            guard !packet.config else { return false }
+            framesReceived += 1
+            let lateness = meter.record(pts: packet.pts, arrival: arrival)
+            lateBar = min(lateBar, lateness)
+            guard lateness - lateBar > Self.maxLatenessMs else { return false }
+            lateBar = lateness
+            return true
+        }
+        if late {
+            // Before this packet is queued: a late key frame is kept, anything else waits for one.
+            decoder.dropUntilKeyFrame()
+            requestReset()
+        }
         decoder.decode(packet, codec: codec)
         if decoder.backlog > Self.maxBacklog {
             decoder.dropUntilKeyFrame()
@@ -464,6 +520,25 @@ private final class ResumeOnce: @unchecked Sendable {
         }
         c?.resume()
     }
+}
+
+/// The session's sink as the decoder sees it: each picture goes to the real sink, then to the
+/// session's frame observer.
+private final class ObservedSink: FrameSink, @unchecked Sendable {
+    private let sink: any FrameSink
+    private let relay: Relay
+
+    init(_ sink: any FrameSink, relay: Relay) {
+        self.sink = sink
+        self.relay = relay
+    }
+
+    func show(_ image: CVPixelBuffer) {
+        sink.show(image)
+        relay.session?.frameShown(image)
+    }
+
+    func flush() { sink.flush() }
 }
 
 /// Lets the decoder's callbacks reach the session without the decoder owning it.

@@ -1,6 +1,7 @@
 import AMProtocol
 import AppKit
 import ConnectionCore
+import CoreVideo
 import Foundation
 import Observation
 import os
@@ -42,6 +43,16 @@ public enum MirrorEndReason: Equatable, Sendable {
 ///
 /// The helper's clipboard goes to `onPhoneClipboard`, and files dropped on the view to
 /// `onDropFiles`; the app decides what to do with them.
+///
+/// Quality: Auto (the default, `QualityController`) is evaluated every second while a session runs,
+/// from the session's 5 s median lateness and decode backlog; a step restarts the session with the
+/// new preset. So does a preset picked by hand (which turns Auto off) and "Use H.265". A restart is
+/// an automatic `mirror.start` (it needs the phone's availability, R22); it keeps the window and its
+/// last picture (the phase goes from running to starting, never ended) and the screen-off state:
+/// the old screen comes back on first, and the new session turns it off again after its first
+/// frame when it was off. LINK_SLOW from the phone makes Auto start one preset lower next time.
+/// A session on H.265 that fails HELPER_FAILED before running starts again once on H.264
+/// (`h265Refused`). "Measure Delay…" is `measureDelay()`.
 @MainActor
 @Observable
 public final class MirrorModel: SessionFeature {
@@ -62,9 +73,30 @@ public final class MirrorModel: SessionFeature {
     public private(set) var phoneAvailability: AMFeatureAvailability?
     /// The current (or last) session, a Mac counter from 1.
     public private(set) var sessionID: UInt32 = 0
-    public var preset: QualityPreset = .high
+    /// The quality preset of the next start (under Auto, its current step). Setting it is a choice
+    /// by hand: Auto turns off. Nothing restarts here (`choosePreset` does).
+    public var preset: QualityPreset {
+        get {
+            access(keyPath: \.preset)
+            return quality.preset
+        }
+        set { updateQuality { $0.choose(newValue); return .keep } }
+    }
+    /// Auto quality (the default). Turning it on goes on from the current preset, with no restart.
+    public var autoQuality: Bool {
+        get {
+            access(keyPath: \.autoQuality)
+            return quality.auto
+        }
+        set { updateQuality { $0.auto = newValue; return .keep } }
+    }
     /// The codec asked for; unspecified is sent as H.264.
     public var codec: AMVideoCodec = .h264
+    /// The phone couldn't start on H.265, so this session fell back to H.264: the window shows
+    /// `MirrorCopy.h265Note`. Cleared by the user's next start or by turning H.265 on again.
+    public private(set) var h265Refused = false
+    /// "Measure Delay…" is running.
+    public private(set) var measuringDelay = false
     /// "Play phone audio on this Mac" (Settings, default on). A change applies at the next start.
     public var audioEnabled = true
     /// Mute / Unmute in the window: the audio link stays up and is decoded, the output drops it.
@@ -137,6 +169,21 @@ public final class MirrorModel: SessionFeature {
     @ObservationIgnored private var videoSize: (width: Int, height: Int)?
     @ObservationIgnored private var deadline: Task<Void, Never>?
     @ObservationIgnored private var linkEnd: Task<Void, Never>?
+    @ObservationIgnored private var quality = QualityController()
+    /// How often Auto is evaluated (internal, so tests can keep the ticker out of the way).
+    @ObservationIgnored var qualityInterval: Duration = QualityController.interval
+    /// Replaces the session's lateness and backlog for the ticker (internal, for tests).
+    @ObservationIgnored var qualityInputForTesting: (() -> (Double?, Int))?
+    /// Ticker evaluations so far (internal, for tests).
+    @ObservationIgnored private(set) var qualityTicks = 0
+    /// Moves whenever a session ends or a ticker starts: a ticker of another generation stops.
+    @ObservationIgnored private var tickerGeneration = 0
+    /// The screen-off state a restart carries into the current session: nil uses `screenOffByDefault`.
+    @ObservationIgnored private var carriedScreenOff: Bool?
+    /// The trial counts and waits of "Measure Delay…" (internal, so tests can shorten them).
+    @ObservationIgnored var delayHarness = DelayHarness()
+    /// The centre luma of each picture while the delay trials run; finished when the session ends.
+    @ObservationIgnored private var delayFrames: AsyncStream<(Double, ContinuousClock.Instant)>.Continuation?
 
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "mirror")
 
@@ -185,6 +232,10 @@ public final class MirrorModel: SessionFeature {
                 phoneRunning = true
                 becomeRunningIfReady()
             case .stopped, .failed:
+                if s.phase == .failed, s.reason == .helperFailed, phase == .starting, codec == .h265 {
+                    await fallBackToH264()
+                    return
+                }
                 end(.phone(s.reason))
             default:
                 break
@@ -215,6 +266,12 @@ public final class MirrorModel: SessionFeature {
     /// when `canStart`. A stop, window close or sleep (or another start) that comes while the old
     /// screen is coming back on wins: no session starts.
     public func start() async {
+        await begin(carryScreenOff: nil, keepNote: false)
+    }
+
+    /// `start()`, carrying a screen-off state into the new session (a restart) and keeping the
+    /// H.265 note (a restart or the fallback).
+    private func begin(carryScreenOff: Bool?, keepNote: Bool) async {
         guard canStart else { return }
         let replacing = current
         let generation = stopGeneration
@@ -222,6 +279,7 @@ public final class MirrorModel: SessionFeature {
         guard stopGeneration == generation, current == nil || current === replacing,
               canStart, let port = bulk.port else { return }
         if current != nil { end(nil) }
+        if !keepNote { h265Refused = false }
         sessionID += 1
         let id = sessionID
         let context = Self.context(id)
@@ -251,6 +309,7 @@ public final class MirrorModel: SessionFeature {
         screenOffSettled = false
         screenOnQueued = false
         controlLinked = false
+        carriedScreenOff = carryScreenOff
         videoSize = nil
         phase = .starting
         deadline = Task { [weak self, startDeadline] in
@@ -316,6 +375,166 @@ public final class MirrorModel: SessionFeature {
         screenOff = off
         current.sendControl(ScrcpyControl.setDisplayPower(on: !off))
         Self.log.info("session \(self.sessionID, privacy: .public) screen \(off ? "off" : "on", privacy: .public)")
+    }
+
+    // MARK: quality
+
+    /// A preset picked by hand: Auto turns off, and a session that is starting or running starts
+    /// again with it. The preset already in use changes nothing but Auto.
+    public func choosePreset(_ preset: QualityPreset) async {
+        let changed = preset != quality.preset
+        self.preset = preset
+        guard changed else { return }
+        Self.log.info("session \(self.sessionID, privacy: .public) quality \(preset.name, privacy: .public) by hand")
+        await restart()
+    }
+
+    /// "Use H.265": the codec of the next start; a session that is starting or running starts again.
+    public func setH265(_ on: Bool) async {
+        let wanted: AMVideoCodec = on ? .h265 : .h264
+        if on { h265Refused = false }
+        guard wanted != (codec == .h265 ? .h265 : .h264) else { return }
+        codec = wanted
+        await restart()
+    }
+
+    /// One Auto evaluation (the ticker's, every second; internal so tests can feed it). Only while
+    /// a session runs, the phone's availability allows a start, and no delay measurement runs.
+    func evaluateQuality(medianMs: Double?, backlog: Int, now: ContinuousClock.Instant) async {
+        guard quality.auto, phase.isRunning, canStart, !measuringDelay else { return }
+        let decision = updateQuality { $0.tick(medianMs: medianMs, backlog: backlog, now: now) }
+        guard case let .switchTo(next) = decision else { return }
+        Self.log.info("session \(self.sessionID, privacy: .public) quality auto \(next.name, privacy: .public)")
+        await restart()
+    }
+
+    /// A session that is starting or running starts again with the current settings, keeping the
+    /// window and the screen-off state.
+    private func restart() async {
+        guard phase == .starting || phase.isRunning, current != nil else { return }
+        let off: Bool? = screenOffSettled ? screenOff : carriedScreenOff
+        await begin(carryScreenOff: off, keepNote: true)
+    }
+
+    /// The phone couldn't start on H.265 (HELPER_FAILED before running): once more on H.264.
+    private func fallBackToH264() async {
+        Self.log.info("session \(self.sessionID, privacy: .public) h265 refused, starting with h264")
+        codec = .h264
+        h265Refused = true
+        end(nil)
+        await begin(carryScreenOff: nil, keepNote: true)
+        if current == nil, phase == .starting { phase = .ended(.phone(.helperFailed)) }
+    }
+
+    /// Applies a change to the controller, telling observers when the preset or Auto changed.
+    @discardableResult
+    private func updateQuality(_ change: (inout QualityController) -> QualityController.Decision) -> QualityController.Decision {
+        var next = quality
+        let decision = change(&next)
+        if next.preset != quality.preset || next.auto != quality.auto {
+            withMutation(keyPath: \.preset) {
+                withMutation(keyPath: \.autoQuality) { quality = next }
+            }
+        } else {
+            quality = next
+        }
+        return decision
+    }
+
+    /// Evaluates Auto every `qualityInterval` while this session runs.
+    private func startQualityTicker() {
+        tickerGeneration += 1
+        let generation = tickerGeneration
+        let interval = qualityInterval
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(for: interval)
+                guard let self, self.tickerGeneration == generation else { return }
+                await self.tickQuality()
+            }
+        }
+    }
+
+    private func tickQuality() async {
+        guard let session = current else { return }
+        qualityTicks += 1
+        let (median, backlog) = qualityInputForTesting?() ?? session.qualitySample()
+        await evaluateQuality(medianMs: median, backlog: backlog, now: sessionClock.now())
+    }
+
+    // MARK: Measure Delay
+
+    /// "Measure Delay…" is offered: a session runs, its control link is there, and none is running.
+    public var canMeasureDelay: Bool { phase.isRunning && controlLinked && !measuringDelay }
+
+    /// "Measure Delay…": the phone's DELAY test screen (`mirror.test_pattern`), up to 5 s for its
+    /// black centre, the trials (`DelayProbe`: a touch at the centre, wait for white, lift, wait for
+    /// black), then the FPS screen and 30 s of counting decoded frames, then OFF. Auto pauses
+    /// meanwhile. Nil when no session runs or it ends before the measurement is done. Logged as
+    /// one line of numbers.
+    public func measureDelay() async -> DelayResult? {
+        guard canMeasureDelay, let session = current else { return nil }
+        measuringDelay = true
+        defer { measuringDelay = false }
+        let id = sessionID
+        let harness = delayHarness
+        let frames = AsyncStream.makeStream(of: (Double, ContinuousClock.Instant).self,
+                                            bufferingPolicy: .bufferingNewest(256))
+        delayFrames = frames.continuation
+        session.observeFrames(Self.lumaObserver(frames.continuation))
+        await sendTestPattern(.delay, session: id)
+        let probe = DelayProbe(tap: { [weak self] down in self?.tapCentre(down) }, luma: { frames.stream },
+                               trials: harness.trials, timeout: harness.timeout, pause: harness.pause)
+        probe.firstBlack = harness.firstBlack
+        var result = await probe.run()
+        session.observeFrames(nil)
+        frames.continuation.finish()
+        delayFrames = nil
+        guard current === session else { return nil }
+        if result.misses < result.trials {
+            let counter = FrameCounter()
+            session.observeFrames(Self.countingObserver(counter))
+            await sendTestPattern(.fps, session: id)
+            let began = ContinuousClock.now
+            while current === session, ContinuousClock.now - began < harness.fpsDuration {
+                try? await Task.sleep(for: min(.milliseconds(100), harness.fpsDuration))
+            }
+            session.observeFrames(nil)
+            guard current === session else { return nil }
+            result = result.with(fpsMean: Double(counter.count) / (LatenessMeter.ms(ContinuousClock.now - began) / 1_000))
+        }
+        await sendTestPattern(.off, session: id)
+        let size = videoSize ?? session.videoSize ?? (0, 0)
+        let codecName = codec == .h265 ? "h265" : "h264"
+        Self.log.info("delay median \(Int(result.medianMs.rounded()), privacy: .public) p95 \(Int(result.p95Ms.rounded()), privacy: .public) min \(Int(result.minMs.rounded()), privacy: .public) trials \(result.trials, privacy: .public) misses \(result.misses, privacy: .public) fps \(String(format: "%.1f", result.fpsMean), privacy: .public) size \(size.width, privacy: .public)x\(size.height, privacy: .public) preset \(self.quality.preset.name, privacy: .public) codec \(codecName, privacy: .public)")
+        return result
+    }
+
+    /// The frame observer for the delay trials: built here, nonisolated, as it runs on the decoder's side.
+    nonisolated private static func lumaObserver(
+        _ frames: AsyncStream<(Double, ContinuousClock.Instant)>.Continuation
+    ) -> @Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void {
+        { image, at in frames.yield((LumaProbe.centerLuma(image), at)) }
+    }
+
+    /// The frame observer that counts pictures for the frame rate, built nonisolated like `lumaObserver`.
+    nonisolated private static func countingObserver(_ counter: FrameCounter) -> @Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void {
+        { _, _ in counter.add() }
+    }
+
+    /// A touch DOWN or UP at the centre of the current video, on the control link.
+    private func tapCentre(_ down: Bool) {
+        guard let current, let size = videoSize ?? current.videoSize, size.width > 0, size.height > 0 else { return }
+        current.sendControl(ScrcpyControl.touch(
+            action: down ? 0 : 1, x: Int32(size.width / 2), y: Int32(size.height / 2),
+            width: UInt16(clamping: size.width), height: UInt16(clamping: size.height), pressure: down ? 1 : 0))
+    }
+
+    private func sendTestPattern(_ mode: AMTestPatternMode, session id: UInt32) async {
+        var pattern = AMMirrorTestPattern()
+        pattern.session = id
+        pattern.mode = mode
+        await send(.mirrorTestPattern, pattern)
     }
 
     // MARK: files
@@ -389,12 +608,13 @@ public final class MirrorModel: SessionFeature {
         phase = .running(width: size.width, height: size.height)
         deadline?.cancel()
         deadline = nil
+        startQualityTicker()
         Self.log.info("session \(self.sessionID, privacy: .public) running \(size.width, privacy: .public)x\(size.height, privacy: .public)")
     }
 
     /// `screenOffByDefault` after the session's first frame, once its control link is there.
     private func applyScreenOffSetting() {
-        guard screenOffByDefault, !screenOffSettled, firstFrameSeen, let current, current.hasControlLink else { return }
+        guard carriedScreenOff ?? screenOffByDefault, !screenOffSettled, firstFrameSeen, let current, current.hasControlLink else { return }
         setScreenOff(true)
     }
 
@@ -454,6 +674,12 @@ public final class MirrorModel: SessionFeature {
         deadline = nil
         linkEnd?.cancel()
         linkEnd = nil
+        tickerGeneration += 1
+        delayFrames?.finish()
+        delayFrames = nil
+        if reason == .phone(.linkSlow) {
+            updateQuality { $0.linkTooSlow(now: sessionClock.now()); return .keep }
+        }
         bulk.revoke(context: Self.context(session.id))
         if closing { session.close() }
         let errors = session.decoder.decodeErrors
@@ -472,6 +698,25 @@ public final class MirrorModel: SessionFeature {
         case .user: "user"
         }
     }
+}
+
+/// The waits and counts of "Measure Delay…" (Global Constraints).
+struct DelayHarness {
+    var trials = 50
+    var timeout: Duration = .seconds(3)
+    var pause: Duration = .milliseconds(500)
+    /// For the test screen's first black centre.
+    var firstBlack: Duration = .seconds(5)
+    var fpsDuration: Duration = .seconds(30)
+}
+
+/// Counts pictures from the decoder's side.
+private final class FrameCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func add() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
 }
 
 /// Tells the main actor when the Mac is about to sleep. The observer block is built here,

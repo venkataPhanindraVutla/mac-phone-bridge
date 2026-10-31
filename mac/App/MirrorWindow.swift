@@ -1,6 +1,8 @@
 import AppKit
+import CoreMedia
 import FeatureMirror
 import Observation
+import VideoToolbox
 
 /// Makes the mirror window the first time it is shown, and each session's sink from it.
 @MainActor
@@ -36,6 +38,10 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// The video size the window was last fitted to; nil before the first.
     private var fitted: (width: Int, height: Int)?
     private let qualityMenu = NSMenu()
+    /// Quality menu tags besides the presets' indices.
+    private static let autoTag = 100
+    private static let h265Tag = 200
+    private static let measureTag = 300
 
     private static let qualityItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.quality")
     private static let muteItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.mute")
@@ -113,6 +119,10 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
             _ = model.audioActive
             _ = model.screenOff
             _ = model.canSetScreenOff
+            _ = model.autoQuality
+            _ = model.codec
+            _ = model.h265Refused
+            _ = model.measuringDelay
         } onChange: { [weak self] in
             Self.later { self?.render(); self?.observe() }
         }
@@ -127,6 +137,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         guard let window else { return }
         window.title = title()
         mirrorView.show(model.phase, canStart: model.canStart)
+        mirrorView.showNote(model.h265Refused ? MirrorCopy.h265Note : nil)
         updateQualityMenu()
         updateKeyItems()
         updateMuteItem()
@@ -236,12 +247,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         item.toolTip = label
         item.image = NSImage(systemSymbolName: "dial.medium", accessibilityDescription: label)
         item.showsIndicator = true
-        for (i, preset) in QualityPreset.all.enumerated() {
-            let entry = NSMenuItem(title: Self.title(preset), action: #selector(choosePreset(_:)), keyEquivalent: "")
-            entry.target = self
-            entry.tag = i
-            qualityMenu.addItem(entry)
-        }
+        buildQualityMenu()
         item.menu = qualityMenu
         updateQualityMenu()
         return item
@@ -341,24 +347,92 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
     }
 
+    /// "Auto", the presets, "Use H.265" (when this Mac decodes HEVC in hardware) and, as the
+    /// Option alternate of the last item, "Measure Delay…".
+    private func buildQualityMenu() {
+        guard qualityMenu.items.isEmpty else { return }
+        qualityMenu.autoenablesItems = false
+        let auto = NSMenuItem(title: String(localized: "Auto"), action: #selector(chooseAuto(_:)), keyEquivalent: "")
+        auto.target = self
+        auto.tag = Self.autoTag
+        qualityMenu.addItem(auto)
+        qualityMenu.addItem(.separator())
+        for (i, preset) in QualityPreset.all.enumerated() {
+            let entry = NSMenuItem(title: Self.title(preset), action: #selector(choosePreset(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = i
+            qualityMenu.addItem(entry)
+        }
+        if VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) {
+            qualityMenu.addItem(.separator())
+            let h265 = NSMenuItem(title: String(localized: "Use H.265"), action: #selector(toggleH265(_:)), keyEquivalent: "")
+            h265.target = self
+            h265.tag = Self.h265Tag
+            qualityMenu.addItem(h265)
+        }
+        // The Option alternate of the item above it (which takes no modifier).
+        qualityMenu.items.last?.keyEquivalentModifierMask = []
+        let measure = NSMenuItem(title: String(localized: "Measure Delay…"), action: #selector(measureDelay(_:)), keyEquivalent: "")
+        measure.target = self
+        measure.tag = Self.measureTag
+        measure.keyEquivalentModifierMask = [.option]
+        measure.isAlternate = true
+        qualityMenu.addItem(measure)
+    }
+
     private func updateQualityMenu() {
         for item in qualityMenu.items {
-            item.state = QualityPreset.all.indices.contains(item.tag) && QualityPreset.all[item.tag] == model.preset ? .on : .off
+            switch item.tag {
+            case Self.autoTag:
+                item.state = model.autoQuality ? .on : .off
+            case Self.h265Tag:
+                item.state = model.codec == .h265 ? .on : .off
+            case Self.measureTag:
+                item.isEnabled = model.canMeasureDelay
+            case QualityPreset.all.indices:
+                item.state = QualityPreset.all[item.tag] == model.preset ? .on : .off
+            default:
+                break
+            }
         }
     }
 
-    /// Sets the preset and restarts a session that is starting or running.
+    /// Auto on: it goes on from the current preset (no restart).
+    @objc private func chooseAuto(_ sender: NSMenuItem) {
+        model.autoQuality = true
+    }
+
+    /// A preset by hand: Auto turns off and a session that is starting or running restarts.
     @objc private func choosePreset(_ sender: NSMenuItem) {
         guard QualityPreset.all.indices.contains(sender.tag) else { return }
         let preset = QualityPreset.all[sender.tag]
-        guard preset != model.preset else { return }
-        model.preset = preset
-        switch model.phase {
-        case .starting, .running:
-            let model = model
-            Task { await model.start() }
-        default:
-            break
+        let model = model
+        Task { await model.choosePreset(preset) }
+    }
+
+    @objc private func toggleH265(_ sender: NSMenuItem) {
+        let model = model
+        let on = model.codec != .h265
+        Task { await model.setH265(on) }
+    }
+
+    /// "Measure Delay…": runs the harness, then shows the results on the window.
+    @objc private func measureDelay(_ sender: NSMenuItem) {
+        let model = model
+        Task { [weak self] in
+            guard let result = await model.measureDelay() else { return }
+            self?.showDelay(result)
+        }
+    }
+
+    private func showDelay(_ result: DelayResult) {
+        let alert = NSAlert()
+        alert.messageText = MirrorCopy.delayTitle
+        alert.informativeText = MirrorCopy.delayRoundTrip(result) + "\n" + MirrorCopy.delayFrameRate(result)
+        if let window, window.isVisible {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
         }
     }
 }

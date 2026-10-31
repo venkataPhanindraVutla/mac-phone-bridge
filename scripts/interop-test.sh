@@ -349,6 +349,29 @@ case13() {
   if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a phone that pings (silence rule)"; return 1; fi
 }
 
+# Mirror relay (F-17): phone-sim plays the canned 60-frame H.264 sample (paced by its PTS) on the
+# Mac's mirror.start; the Mac decodes it headless (or only parses it, when VideoToolbox can't
+# decode in this session), touches the centre once, and stops after 60 frames.
+MIRROR_SAMPLE="$ROOT/protocol/testdata/mirror/sample-h264-320x640.scrcpy"
+case14() {
+  begin_case "14 mirror relay"
+  local pstate how; pstate="$(new_dir c14-phone)"
+  start_mac c14 --auto-confirm --mirror || return 1
+  local mac_pid=$MAC_PID
+  start_phone c14 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --mirror-relay "$MIRROR_SAMPLE"
+  need "$MAC_LOG" '^EVENT mirror-frames (decoded|parsed)=60 size=320x640$' "mac EVENT mirror-frames (decoded|parsed)=60 size=320x640" || return 1
+  need "$PHONE_LOG" '^EVENT mirror-control type=2 action=0$' "phone EVENT mirror-control type=2 action=0" || return 1
+  need "$PHONE_LOG" '^EVENT mirror-control type=2 action=1$' "phone EVENT mirror-control type=2 action=1" || return 1
+  need "$PHONE_LOG" '^EVENT mirror-token-reuse refused$' "phone EVENT mirror-token-reuse refused" || return 1
+  need "$PHONE_LOG" '^EVENT mirror-stop$' "phone EVENT mirror-stop" || return 1
+  wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit after mirror-stop"; return 1; }
+  [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
+  wait_exit "$mac_pid" || { fail_reason="mac-sim did not exit after the stop"; return 1; }
+  [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="mac-sim exit $EXIT_CODE, expected 0"; return 1; }
+  how="$(extract "$MAC_LOG" '^EVENT mirror-frames (decoded|parsed)=60 .*$')"
+  echo "interop: mirror relay 60 frames 320x640 ($how)"
+}
+
 run_case() {
   local rc=0
   "$1" || rc=$?
@@ -368,10 +391,11 @@ run_case case10
 run_case case11
 run_case case12
 run_case case13
+run_case case14
 
 echo
 if [[ $FAILED -eq 0 ]]; then
-  echo "interop: all 13 cases passed"
+  echo "interop: all 14 cases passed"
 else
   echo "interop: $FAILED case(s) failed"
   exit 1
