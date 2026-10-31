@@ -87,6 +87,9 @@ public final class MirrorSession: @unchecked Sendable {
     private var lastGetClipboard: ContinuousClock.Instant?
     private var frameHook: (@Sendable (UInt64) -> Void)?
     private var audioDecoded = 0
+    private var deviceChunks = 0
+    private var flushDeadlines = 0
+    private var deviceUnreadable = false
 
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "mirror")
 
@@ -172,8 +175,13 @@ public final class MirrorSession: @unchecked Sendable {
                 return
             }
             clock.after(Self.controlDrainDeadline) { once.resume() }
+            lock.withLock { flushDeadlines += 1 }
         }
     }
+
+    /// `flushControl` calls that have queued their marker and set their deadline (internal, for
+    /// tests: a fake clock can be moved once this counts the call).
+    var flushesWaitingOrDone: Int { lock.withLock { flushDeadlines } }
 
     /// A control link is attached and the session is not closed.
     public var hasControlLink: Bool { lock.withLock { control != nil } }
@@ -215,6 +223,11 @@ public final class MirrorSession: @unchecked Sendable {
 
     /// Audio packets decoded to sound so far (internal, for tests).
     var audioBuffersDecoded: Int { lock.withLock { audioDecoded } }
+
+    /// Chunks read from the control link so far, and whether its device messages were given up
+    /// (internal, for tests).
+    var deviceChunksRead: Int { lock.withLock { deviceChunks } }
+    var deviceMessagesUnreadable: Bool { lock.withLock { deviceUnreadable } }
 
     /// Audio buffers the output took to play (internal, for tests: none while muted).
     var audioBuffersAccepted: Int { audioOutput.stats.accepted }
@@ -348,11 +361,13 @@ public final class MirrorSession: @unchecked Sendable {
         var readable = true
         do {
             while let data = try await pipe.receive(maximum: Self.readChunk) {
+                defer { lock.withLock { deviceChunks += 1 } }
                 guard readable else { continue }
                 do {
                     for message in try parser.push(data) { deviceMessage(message) }
                 } catch {
                     readable = false
+                    lock.withLock { deviceUnreadable = true }
                     Self.log.error("session \(self.id, privacy: .public) device messages unreadable, ignored from now on")
                 }
             }

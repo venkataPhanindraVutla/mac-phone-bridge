@@ -72,8 +72,9 @@ public final class MirrorView: NSView {
     /// The composition is being dropped: whatever the input method hands back now is not sent.
     private var discarding = false
     private var windowObservers: [NSObjectProtocol] = []
-    /// Where dropped files go; set by `bind(_:closeWindow:)`.
-    private weak var dropModel: MirrorModel?
+    /// The model bound by `bind(_:closeWindow:)`: where dropped files go, and told when the
+    /// window closes.
+    private weak var boundModel: MirrorModel?
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -144,7 +145,7 @@ public final class MirrorView: NSView {
         )
         input = mapper
         model.releaseInput = { [weak mapper] in mapper?.releaseAll() }
-        dropModel = model
+        boundModel = model
     }
 
     /// A sink that draws on this view's layer, for a new session.
@@ -198,17 +199,26 @@ public final class MirrorView: NSView {
         for token in windowObservers { NotificationCenter.default.removeObserver(token) }
         windowObservers = []
         if let newWindow {
-            windowObservers = Self.observeRelease(of: newWindow) { [weak self] in self?.input?.releaseAll() }
+            // On close the phone's screen comes back on before the release's UP (the stop follows).
+            windowObservers = Self.observeRelease(of: newWindow, beforeClose: { [weak self] in
+                self?.boundModel?.screenOnBeforeClose()
+            }) { [weak self] in self?.input?.releaseAll() }
         }
     }
 
-    /// Calls `release` when `window` resigns key or closes. Built here, nonisolated, so the blocks
-    /// handed to NotificationCenter carry no main-actor isolation; they run on the main queue.
+    /// Calls `release` when `window` resigns key or closes, and `beforeClose` just before it on
+    /// close. Built here, nonisolated, so the blocks handed to NotificationCenter carry no
+    /// main-actor isolation; they run on the main queue.
     nonisolated static func observeRelease(of window: NSWindow, center: NotificationCenter = .default,
+                                           beforeClose: (@MainActor @Sendable () -> Void)? = nil,
                                            _ release: @escaping @MainActor @Sendable () -> Void) -> [NSObjectProtocol] {
         [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification].map { name in
-            center.addObserver(forName: name, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { release() }
+            let closing = name == NSWindow.willCloseNotification ? beforeClose : nil
+            return center.addObserver(forName: name, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    closing?()
+                    release()
+                }
             }
         }
     }
@@ -401,7 +411,7 @@ extension MirrorView: @preconcurrency NSTextInputClient {
 
 extension MirrorView {
     /// A file drag would be taken now (internal, for tests).
-    var acceptsFileDrop: Bool { dropModel?.canDropFiles == true }
+    var acceptsFileDrop: Bool { boundModel?.canDropFiles == true }
 
     public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         dragOperation(sender)
@@ -420,20 +430,28 @@ extension MirrorView {
     }
 
     public override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        acceptsFileDrop && !Self.fileURLs(sender).isEmpty
+        takes(Self.fileURLs(sender))
     }
 
     public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         showDropTarget(false)
-        return dropModel?.dropFiles(Self.fileURLs(sender)) ?? false
+        let urls = Self.fileURLs(sender)
+        guard takes(urls) else { return false }
+        return boundModel?.dropFiles(urls) ?? false
     }
 
     /// Copy while a drop would be taken, with the system's focus ring colour around the picture;
     /// otherwise no drop, as AppKit shows it.
     private func dragOperation(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        let take = acceptsFileDrop && !Self.fileURLs(sender).isEmpty
+        let take = takes(Self.fileURLs(sender))
         showDropTarget(take)
         return take ? .copy : []
+    }
+
+    /// A drop is taken now and carries at least one file (folders alone don't go; with files,
+    /// they are left to the app, which says so).
+    private func takes(_ urls: [URL]) -> Bool {
+        acceptsFileDrop && urls.contains { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true }
     }
 
     private func showDropTarget(_ on: Bool) {

@@ -90,6 +90,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         super.showWindow(sender)
     }
 
+    /// The user closes the window: a screen that is off comes back on first, ahead of the release
+    /// the view sends as the window resigns key and closes (its stop follows in `windowWillClose`).
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        model.screenOnBeforeClose()
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
         let model = model
         Task { await model.stop() }
@@ -105,6 +112,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
             _ = model.muted
             _ = model.audioActive
             _ = model.screenOff
+            _ = model.canSetScreenOff
         } onChange: { [weak self] in
             Self.later { self?.render(); self?.observe() }
         }
@@ -300,13 +308,14 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         model.muted.toggle()
     }
 
-    /// "Screen Off" / "Screen On": the title says what a click does. Enabled while running.
+    /// "Screen Off" / "Screen On": the title says what a click does. Enabled while running with
+    /// the control link there.
     private func configureScreen(_ item: NSToolbarItem) {
         let title = model.screenOff ? String(localized: "Screen On") : String(localized: "Screen Off")
         item.label = title
         item.toolTip = title
         item.image = NSImage(systemSymbolName: model.screenOff ? "iphone" : "iphone.slash", accessibilityDescription: title)
-        item.isEnabled = isRunning
+        item.isEnabled = model.canSetScreenOff
     }
 
     private func updateScreenItem() {

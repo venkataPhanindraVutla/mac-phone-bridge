@@ -68,14 +68,16 @@ private final class ExtrasRig {
     var log: [(type: MessageType, controlBytes: UInt64)] = []
     var control: (mac: MemoryPipe, phone: MemoryPipe)?
 
-    init() {
+    /// With `clock`, the sessions' deadlines (the control flush and drain) run on it.
+    init(clock: FakeResetClock? = nil, startDeadline: Duration = .seconds(20)) {
         let sent = sent
         var record: ((MessageType) -> Void)?
         model = MirrorModel(bulk: bulk, send: { type, message in
             sent.all.append((type, message))
             record?(type)
-        }, makeSink: { CountingSink() })
+        }, makeSink: { CountingSink() }, startDeadline: startDeadline)
         model.linkGrace = .milliseconds(100)
+        if let clock { model.sessionClock = clock.clock }
         record = { [unowned self] type in log.append((type, control?.mac.bytesSent ?? 0)) }
     }
 
@@ -105,6 +107,27 @@ private final class ExtrasRig {
         try await until("running") { [model] in model.phase == .running(width: 320, height: 640) }
         return (videoPhone, controlPhone)
     }
+
+    /// Running like `running()`, but with a control link that never takes a byte (a stalled phone).
+    func runningStalled() async throws -> (video: MemoryPipe, control: StalledPipe) {
+        await ready()
+        await model.start()
+        let id = model.sessionID
+        let (videoMac, videoPhone) = MemoryPipe.pair()
+        model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-\(id)"))
+        let stalled = StalledPipe()
+        model.link(stalled, grant: BulkGrant(role: .mirrorControl, context: "mirror-\(id)"))
+        var s = AMMirrorState()
+        s.session = id
+        s.phase = .running
+        await model.message(envelope(.mirror, .mirrorState, s))
+        try await videoPhone.send(sampleWithDummyByte)
+        try await until("running") { [model] in model.phase == .running(width: 320, height: 640) }
+        return (videoPhone, stalled)
+    }
+
+    var starts: Int { sent.of(.mirrorStart, AMMirrorStart.self).count }
+    var stops: Int { sent.of(.mirrorStop, AMMirrorStop.self).count }
 
     /// The control messages the phone end has, until the Mac closes the link.
     func controlUntilClosed(_ phone: MemoryPipe) async throws -> [Data] {
@@ -137,8 +160,8 @@ private final class ExtrasRig {
         rig.model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-\(id)"))
         let (controlMac, controlPhone) = MemoryPipe.pair()
         rig.model.link(controlMac, grant: BulkGrant(role: .mirrorControl, context: "mirror-\(id)"))
-        // Nothing before the first frame.
-        try await Task.sleep(for: .milliseconds(50))
+        // Nothing before the first frame: everything queued so far has been written, and it is nothing.
+        await rig.model.session?.flushControl()
         #expect(controlMac.bytesSent == 0)
         #expect(!rig.model.screenOff)
         try await videoPhone.send(sampleWithDummyByte)
@@ -172,7 +195,7 @@ private final class ExtrasRig {
     @Test func screenStaysOnWithoutTheSetting() async throws {
         let rig = ExtrasRig()
         let links = try await rig.running()
-        try await Task.sleep(for: .milliseconds(50))
+        // Decided with the first frame, before the session ran.
         #expect(!rig.model.screenOff)
         await rig.model.stop()
         // Nothing but what the decoder asked for.
@@ -270,6 +293,164 @@ private final class ExtrasRig {
         #expect(try await rig.controlUntilClosed(links.control).isEmpty)
     }
 
+    // MARK: fix round 1: ends that race, close order, dead links
+
+    /// I1: a restart waits for the old screen to come back on; a stop that comes meanwhile wins,
+    /// whichever resumes first, and no session starts.
+    @Test func stopDuringRestartFlushStartsNothing() async throws {
+        let fake = FakeResetClock()
+        let rig = ExtrasRig(clock: fake)
+        _ = try await rig.runningStalled()
+        rig.model.setScreenOff(true)
+        let session = try #require(rig.model.session)
+        let restart = Task { await rig.model.start() }
+        // The restart has queued the screen-on and waits for it (the link takes nothing).
+        try await until("restart waiting") { session.flushesWaitingOrDone == 1 }
+        let generation = rig.model.stopGeneration
+        let stop = Task { await rig.model.stop() }
+        // The stop has begun and waits for the same screen-on, with the session still current.
+        try await until("stop begun") { rig.model.stopGeneration == generation + 1 && session.flushesWaitingOrDone == 2 }
+        #expect(rig.model.session === session)
+        #expect(rig.starts == 1)
+        fake.advance(by: .milliseconds(200))
+        await restart.value
+        await stop.value
+        #expect(rig.starts == 1, "no new session")
+        #expect(rig.stops == 1)
+        #expect(rig.model.phase == .ended(.user))
+        #expect(rig.model.session == nil)
+        #expect(rig.model.sessionID == 1)
+    }
+
+    /// I1: the same for the Mac going to sleep while a restart waits.
+    @Test func sleepDuringRestartFlushStartsNothing() async throws {
+        let fake = FakeResetClock()
+        let rig = ExtrasRig(clock: fake)
+        _ = try await rig.runningStalled()
+        rig.model.setScreenOff(true)
+        let session = try #require(rig.model.session)
+        let restart = Task { await rig.model.start() }
+        try await until("restart waiting") { session.flushesWaitingOrDone == 1 }
+        rig.model.macWillSleepNow()
+        #expect(rig.model.phase == .ended(.macSleep))
+        fake.advance(by: .milliseconds(200))
+        await restart.value
+        #expect(rig.starts == 1, "no session across sleep")
+        #expect(rig.model.phase == .ended(.macSleep))
+        #expect(rig.model.session == nil)
+        try await until("stop sent") { rig.stops == 1 }
+    }
+
+    /// M1: closing the window, the view releases held input on `willClose` and the window's stop
+    /// follows: the screen still comes back on before the release's UP.
+    @Test func windowCloseTurnsScreenOnBeforeTheRelease() async throws {
+        let rig = ExtrasRig()
+        let links = try await rig.running()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 320), styleMask: [.titled, .closable],
+                              backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        window.contentView = view
+        view.bind(rig.model, closeWindow: {})
+        rig.model.setScreenOff(true)
+        view.input?.mouseDown(at: CGPoint(x: 80, y: 160), viewSize: view.bounds.size)
+        let down = touchDown(160, 320, 320, 640), up = touchUp(160, 320, 320, 640)
+        #expect(try await rig.nextControl(links.control, 2) == [screenOffBytes, down])
+
+        window.close() // willClose: the view's observers
+        await rig.model.stop() // what MirrorWindowController.windowWillClose does
+        #expect(try await rig.controlUntilClosed(links.control) == [screenOnBytes, up])
+        let stop = try #require(rig.log.first { $0.type == .mirrorStop })
+        #expect(stop.controlBytes >= UInt64(screenOffBytes.count + down.count + screenOnBytes.count))
+    }
+
+    /// M1: the window's `windowShouldClose` calls `screenOnBeforeClose()` before the window
+    /// resigns key, whose release may come before `willClose`.
+    @Test func screenOnBeforeCloseComesBeforeAResignKeyRelease() async throws {
+        let rig = ExtrasRig()
+        let links = try await rig.running()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 320), styleMask: [.titled, .closable],
+                              backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        window.contentView = view
+        view.bind(rig.model, closeWindow: {})
+        rig.model.setScreenOff(true)
+        view.input?.mouseDown(at: CGPoint(x: 80, y: 160), viewSize: view.bounds.size)
+        #expect(try await rig.nextControl(links.control, 2).count == 2)
+
+        rig.model.screenOnBeforeClose()
+        #expect(!rig.model.screenOff)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        window.close()
+        await rig.model.stop()
+        // On once, then the UP, then the link closes.
+        #expect(try await rig.controlUntilClosed(links.control) == [screenOnBytes, touchUp(160, 320, 320, 640)])
+    }
+
+    /// M2: link failed with the screen off and the control link already dead: the screen-on
+    /// can't go, and the stop doesn't wait for the drain deadline (the clock never moves).
+    @Test func linkFailedWithDeadControlLinkDoesNotWait() async throws {
+        let fake = FakeResetClock()
+        let rig = ExtrasRig(clock: fake)
+        let links = try await rig.running()
+        rig.model.setScreenOff(true)
+        #expect(try await rig.nextControl(links.control, 1) == [screenOffBytes])
+        links.control.close()
+        try await until("link failed") { rig.model.phase == .ended(.phone(.linkFailed)) && rig.stops == 1 }
+        #expect(fake.elapsed == .zero)
+        #expect(!rig.model.screenOff)
+    }
+
+    /// M2: the start deadline with the screen off and a control link that takes nothing: the stop
+    /// goes at the 200 ms drain deadline, not before and not later.
+    @Test func timeoutWithStalledControlLinkWaitsAtMostTheDeadline() async throws {
+        let fake = FakeResetClock()
+        // Long enough for the first frame to turn the screen off first, even on a busy machine.
+        let rig = ExtrasRig(clock: fake, startDeadline: .seconds(2))
+        rig.model.screenOffByDefault = true
+        await rig.ready()
+        await rig.model.start()
+        let (videoMac, videoPhone) = MemoryPipe.pair()
+        rig.model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-1"))
+        rig.model.link(StalledPipe(), grant: BulkGrant(role: .mirrorControl, context: "mirror-1"))
+        // Frames, but no RUNNING from the phone: the start deadline will pass.
+        try await videoPhone.send(sampleWithDummyByte)
+        try await until("screen off") { rig.model.screenOff }
+        let session = try #require(rig.model.session)
+        // The deadline queues the screen-on and waits for it to be written.
+        try await until("timed out, waiting") { session.flushesWaitingOrDone == 1 }
+        #expect(!rig.model.screenOff)
+        fake.advance(by: .milliseconds(199))
+        #expect(rig.stops == 0)
+        #expect(rig.model.phase == .starting)
+        fake.advance(by: .milliseconds(1))
+        try await until("stopped") { rig.model.phase == .ended(.timeout) && rig.stops == 1 }
+    }
+
+    /// M3: Screen Off / Screen On is offered only with the control link there.
+    @Test func canSetScreenOffNeedsTheControlLink() async throws {
+        let rig = ExtrasRig()
+        await rig.ready()
+        await rig.model.start()
+        let (videoMac, videoPhone) = MemoryPipe.pair()
+        rig.model.link(videoMac, grant: BulkGrant(role: .mirrorVideo, context: "mirror-1"))
+        var s = AMMirrorState()
+        s.session = 1
+        s.phase = .running
+        await rig.model.message(envelope(.mirror, .mirrorState, s))
+        try await videoPhone.send(sampleWithDummyByte)
+        try await until("running") { rig.model.phase == .running(width: 320, height: 640) }
+        #expect(!rig.model.canSetScreenOff)
+        rig.model.setScreenOff(true)
+        #expect(!rig.model.screenOff)
+        let (controlMac, _) = MemoryPipe.pair()
+        rig.model.link(controlMac, grant: BulkGrant(role: .mirrorControl, context: "mirror-1"))
+        #expect(rig.model.canSetScreenOff)
+        await rig.model.stop()
+        #expect(!rig.model.canSetScreenOff)
+    }
+
     // MARK: the helper's clipboard
 
     @Test func deviceClipboardReachesTheHook() async throws {
@@ -323,19 +504,33 @@ private final class ExtrasRig {
         session.close()
     }
 
-    /// Bytes the Mac can't read end the device messages, not the session: video goes on and the
-    /// link is still drained.
+    /// Bytes the Mac can't read end the device messages, not the session: nothing more is
+    /// reported from the link, it is still drained, and it doesn't count as ended.
     @Test func unreadableDeviceMessagesKeepTheSession() async throws {
-        let rig = ExtrasRig()
-        let links = try await rig.running()
-        let got = Recorder<String>()
-        rig.model.onPhoneClipboard = { text, _ in got.append(text) }
-        try await links.control.send(Data([9, 9, 9]) + deviceClipboardBytes("after garbage"))
-        try await Task.sleep(for: .milliseconds(250)) // past the link grace
-        #expect(got.count == 0)
-        #expect(rig.model.phase == .running(width: 320, height: 640))
-        #expect(!rig.model.linkEndPending)
-        #expect(rig.control?.mac.isClosed == false)
+        let events = Recorder<String>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            switch event {
+            case let .clipboard(text, _): events.append("clipboard \(text)")
+            case let .linkEnded(role): events.append("linkEnded \(role)")
+            default: break
+            }
+        })
+        let (controlMac, controlPhone) = MemoryPipe.pair()
+        session.attach(controlMac, role: .mirrorControl)
+        try await controlPhone.send(deviceClipboardBytes("before"))
+        try await until("first chunk") { session.deviceChunksRead == 1 }
+        try await controlPhone.send(Data([9, 9, 9]) + deviceClipboardBytes("after garbage"))
+        try await until("second chunk") { session.deviceChunksRead == 2 }
+        #expect(session.deviceMessagesUnreadable)
+        try await controlPhone.send(deviceClipboardBytes("later"))
+        try await until("third chunk") { session.deviceChunksRead == 3 }
+        // Events are reported from the read loop itself, before the next chunk is read.
+        #expect(events.all == ["clipboard before"])
+        #expect(!controlMac.isClosed)
+        // Its end is still reported.
+        controlPhone.close()
+        try await until("ended") { events.all == ["clipboard before", "linkEnded mirrorControl"] }
+        session.close()
     }
 
     /// The Task 6 review's acceptance test, wired as `AppModel` wires it: emoji and other scripts
@@ -423,4 +618,126 @@ private final class ExtrasRig {
         try await rig.running(ready: false)
         #expect(view.acceptsFileDrop)
     }
+
+    // MARK: the view's drag path (M4, M5)
+
+    /// A file dragged from the Finder while running with files.v1: copy, then the drop goes to
+    /// `onDropFiles` as the file URLs.
+    @Test func dragOfFilesIsTakenAndDropped() async throws {
+        let files = try DragFiles()
+        defer { files.remove() }
+        let rig = ExtrasRig()
+        try await rig.running(shared: ["mirror.v1", "files.v1"])
+        var dropped: [[URL]] = []
+        rig.model.onDropFiles = { dropped.append($0) }
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        view.bind(rig.model, closeWindow: {})
+        let drag = FakeDrag([files.file, files.folder])
+        #expect(view.draggingEntered(drag) == .copy)
+        #expect(view.draggingUpdated(drag) == .copy)
+        #expect(view.prepareForDragOperation(drag))
+        #expect(view.performDragOperation(drag))
+        // Folders among files go to the app, which skips them and says so.
+        #expect(dropped.map { $0.map(\.lastPathComponent) } == [["a.txt", "folder"]])
+    }
+
+    /// M4: only folders: no copy cursor, and nothing dropped.
+    @Test func folderOnlyDragIsNotTaken() async throws {
+        let files = try DragFiles()
+        defer { files.remove() }
+        let rig = ExtrasRig()
+        try await rig.running(shared: ["mirror.v1", "files.v1"])
+        var dropped: [[URL]] = []
+        rig.model.onDropFiles = { dropped.append($0) }
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        view.bind(rig.model, closeWindow: {})
+        let drag = FakeDrag([files.folder])
+        #expect(view.draggingEntered(drag) == [])
+        #expect(!view.prepareForDragOperation(drag))
+        #expect(!view.performDragOperation(drag))
+        #expect(dropped.isEmpty)
+    }
+
+    /// A web link is not a file: not taken.
+    @Test func webURLDragIsNotTaken() async throws {
+        let rig = ExtrasRig()
+        try await rig.running(shared: ["mirror.v1", "files.v1"])
+        var dropped: [[URL]] = []
+        rig.model.onDropFiles = { dropped.append($0) }
+        let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+        view.bind(rig.model, closeWindow: {})
+        let drag = FakeDrag([try #require(URL(string: "https://example.com/a.txt"))])
+        #expect(view.draggingEntered(drag) == [])
+        #expect(!view.performDragOperation(drag))
+        #expect(dropped.isEmpty)
+    }
+
+    /// Files, but not running or without files.v1: not taken.
+    @Test func fileDragNotTakenWhenTheModelWouldNot() async throws {
+        let files = try DragFiles()
+        defer { files.remove() }
+        let drag = FakeDrag([files.file])
+        for shared: Set<String> in [["mirror.v1"], ["mirror.v1", "files.v1"]] {
+            let rig = ExtrasRig()
+            var dropped: [[URL]] = []
+            rig.model.onDropFiles = { dropped.append($0) }
+            let view = MirrorView(frame: NSRect(x: 0, y: 0, width: 160, height: 320))
+            view.bind(rig.model, closeWindow: {})
+            await rig.ready(shared: shared)
+            #expect(view.draggingEntered(drag) == [], "idle, \(shared)")
+            #expect(!view.performDragOperation(drag))
+            try await rig.running(shared: shared, ready: false)
+            let running = view.draggingEntered(drag)
+            #expect(running == (shared.contains("files.v1") ? .copy : []), "running, \(shared)")
+            #expect(view.performDragOperation(drag) == shared.contains("files.v1"))
+            #expect(dropped.count == (shared.contains("files.v1") ? 1 : 0))
+        }
+    }
+}
+
+/// A file and a folder in a temporary folder of their own.
+struct DragFiles {
+    let root: URL
+    var file: URL { root.appendingPathComponent("a.txt") }
+    var folder: URL { root.appendingPathComponent("folder", isDirectory: true) }
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("am-drag-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("folder"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("a.txt"))
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+/// A drag whose pasteboard (a private one) holds `urls`. AppKit calls drag destinations on the
+/// main thread only; `@preconcurrency` checks that at run time.
+@MainActor
+final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
+    let draggingPasteboard = NSPasteboard(name: NSPasteboard.Name("am-test-drag-\(UUID().uuidString)"))
+
+    init(_ urls: [URL]) {
+        super.init()
+        draggingPasteboard.clearContents()
+        draggingPasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+
+    deinit { MainActor.assumeIsolated { draggingPasteboard.releaseGlobally() } }
+
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 0
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

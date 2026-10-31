@@ -80,6 +80,8 @@ public final class MirrorModel: SessionFeature {
     /// "Turn the phone's screen off while mirroring" (Settings, default off): applied after each
     /// session's first frame.
     public var screenOffByDefault = false
+    /// The current session's control link is attached: Screen Off / Screen On can reach the phone.
+    private var controlLinked = false
 
     /// `mirror.v1` is shared, the phone's availability is enabled and the bulk listener has a port.
     public var canStart: Bool {
@@ -123,6 +125,14 @@ public final class MirrorModel: SessionFeature {
     @ObservationIgnored private(set) var firstFrameSeen = false
     /// `screenOffByDefault` was applied to the current session (or the user chose for it).
     @ObservationIgnored private var screenOffSettled = false
+    /// SET_DISPLAY_POWER(on) is queued on the current session for its end.
+    @ObservationIgnored private var screenOnQueued = false
+    /// Moves when an end from this side begins (stop, window close, sleep, timeout, link failed),
+    /// before it waits for anything, so a `start()` waiting for the old screen to come back on
+    /// knows it was overtaken, whichever of the two resumes first. Internal, for tests.
+    @ObservationIgnored private(set) var stopGeneration = 0
+    /// The clock each session's throttles and deadlines run on (internal, so tests can hold them).
+    @ObservationIgnored var sessionClock = ResetClock.system
     /// The current session's last reported video size.
     @ObservationIgnored private var videoSize: (width: Int, height: Int)?
     @ObservationIgnored private var deadline: Task<Void, Never>?
@@ -202,11 +212,15 @@ public final class MirrorModel: SessionFeature {
     // MARK: API
 
     /// Starts a new session (replacing the current one, whose screen is turned back on first),
-    /// when `canStart`.
+    /// when `canStart`. A stop, window close or sleep (or another start) that comes while the old
+    /// screen is coming back on wins: no session starts.
     public func start() async {
         guard canStart else { return }
+        let replacing = current
+        let generation = stopGeneration
         await screenOnBeforeEnd()
-        guard canStart, let port = bulk.port else { return }
+        guard stopGeneration == generation, current == nil || current === replacing,
+              canStart, let port = bulk.port else { return }
         if current != nil { end(nil) }
         sessionID += 1
         let id = sessionID
@@ -227,13 +241,16 @@ public final class MirrorModel: SessionFeature {
         if audio { start.tokens.audio = bulk.issue(role: .mirrorAudio, context: context) }
         start.tokens.control = bulk.issue(role: .mirrorControl, context: context)
 
-        let session = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id))
+        let session = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id),
+                                    clock: sessionClock)
         session.audioMuted = muted
         current = session
         audioActive = audio
         phoneRunning = false
         firstFrameSeen = false
         screenOffSettled = false
+        screenOnQueued = false
+        controlLinked = false
         videoSize = nil
         phase = .starting
         deadline = Task { [weak self, startDeadline] in
@@ -262,6 +279,7 @@ public final class MirrorModel: SessionFeature {
     /// the stop goes out from a task. A screen that is off is turned on first (queued ahead of the
     /// release, both written before the control link closes).
     public func macWillSleepNow() {
+        stopGeneration += 1
         queueScreenOn()
         guard let stop = endLocally(.macSleep, closeFirst: true) else { return }
         Task { await send(.mirrorStop, stop.message) }
@@ -274,7 +292,20 @@ public final class MirrorModel: SessionFeature {
             return
         }
         current.attach(pipe, role: grant.role)
-        if grant.role == .mirrorControl { applyScreenOffSetting() }
+        if grant.role == .mirrorControl {
+            controlLinked = current.hasControlLink
+            applyScreenOffSetting()
+        }
+    }
+
+    /// Screen Off / Screen On is offered: a session runs and its control link is there.
+    public var canSetScreenOff: Bool { phase.isRunning && controlLinked }
+
+    /// The mirror window is closing (its `stop()` follows): a screen that is off is turned back on
+    /// now, ahead of the release the view sends as the window goes. `stop()` still waits for it to
+    /// be written before `mirror.stop`.
+    public func screenOnBeforeClose() {
+        queueScreenOn()
     }
 
     /// Screen Off / Screen On: SET_DISPLAY_POWER on the current session's control link (nothing
@@ -371,6 +402,7 @@ public final class MirrorModel: SessionFeature {
     private func queueScreenOn() {
         guard screenOff, let current else { return }
         screenOff = false
+        screenOnQueued = true
         current.sendControl(ScrcpyControl.setDisplayPower(on: true))
         Self.log.info("session \(self.sessionID, privacy: .public) screen on before end")
     }
@@ -378,8 +410,9 @@ public final class MirrorModel: SessionFeature {
     /// Before an end from this side: the screen back on, written to the control link (at most
     /// the drain deadline) before anything else goes to the phone.
     private func screenOnBeforeEnd() async {
-        guard screenOff, let session = current else { return }
+        guard let session = current else { return }
         queueScreenOn()
+        guard screenOnQueued else { return }
         await session.flushControl()
     }
 
@@ -389,6 +422,7 @@ public final class MirrorModel: SessionFeature {
     /// A screen that is off goes back on first: SET_DISPLAY_POWER(on) is written before the stop
     /// (when the links close first it is queued ahead of the release, and drained with it).
     private func stopCurrent(_ reason: MirrorEndReason, closeFirst: Bool = false) async {
+        stopGeneration += 1
         if closeFirst { queueScreenOn() } else { await screenOnBeforeEnd() }
         guard let stop = endLocally(reason, closeFirst: closeFirst) else { return }
         await send(.mirrorStop, stop.message)
@@ -414,6 +448,8 @@ public final class MirrorModel: SessionFeature {
         current = nil
         audioActive = false
         screenOff = false
+        screenOnQueued = false
+        controlLinked = false
         deadline?.cancel()
         deadline = nil
         linkEnd?.cancel()
