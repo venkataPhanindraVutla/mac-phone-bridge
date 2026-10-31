@@ -2740,6 +2740,28 @@
           }
         }
       }
+    },
+    "Screen Mirroring": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen Mirroring"
+          }
+        }
+      }
+    },
+    "Play phone audio on this Mac": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play phone audio on this Mac"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

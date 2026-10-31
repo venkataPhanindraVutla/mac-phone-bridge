@@ -107,6 +107,7 @@ final class AppModel {
     @ObservationIgnored private static let clipboardKey = "sendMacClipboard"
     @ObservationIgnored private static let syncFocusKey = "syncFocus"
     @ObservationIgnored private static let pointerControlKey = "allowPointerControl"
+    @ObservationIgnored private static let mirrorAudioKey = "mirrorAudio"
     private static var savedShowPhoneCalls: Bool {
         UserDefaults.standard.object(forKey: callsKey) as? Bool ?? true
     }
@@ -121,6 +122,9 @@ final class AppModel {
     }
     private static var savedContactsForNames: Bool {
         UserDefaults.standard.object(forKey: contactsKey) as? Bool ?? true
+    }
+    private static var savedMirrorAudio: Bool {
+        UserDefaults.standard.object(forKey: mirrorAudioKey) as? Bool ?? true
     }
     @ObservationIgnored private static let appLog = Logger(subsystem: "io.github.anmirror.mac", category: "app")
     #if DEBUG
@@ -272,6 +276,7 @@ final class AppModel {
             },
             makeSink: { mirrorWindow.makeSink() }
         )
+        mirror.audioEnabled = Self.savedMirrorAudio
         self.mirror = mirror
         // Thumbnail streams go to the photos model, the mirror streams to the mirror model (never
         // through the session's work queue); the transfer roles to the engine.
@@ -634,6 +639,15 @@ final class AppModel {
     }
 
     // MARK: mirroring
+
+    /// The "Play phone audio on this Mac" switch in Settings (default on); applies at the next start.
+    var playMirrorAudio: Bool { mirror.audioEnabled }
+
+    func setPlayMirrorAudio(_ on: Bool) {
+        guard on != mirror.audioEnabled else { return }
+        mirror.audioEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.mirrorAudioKey)
+    }
 
     /// "Show Phone Screen" is offered while the connected phone can show its screen now.
     var canMirror: Bool { isConnected && mirror.canStart }

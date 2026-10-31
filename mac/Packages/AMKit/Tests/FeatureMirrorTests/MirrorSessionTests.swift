@@ -45,12 +45,16 @@ final class StalledPipe: BulkPipe, @unchecked Sendable {
         let session = MirrorSession(id: 1, sink: CountingSink(), events: { _ in })
         let (videoMac, _) = MemoryPipe.pair()
         let (controlMac, controlPhone) = MemoryPipe.pair()
+        let (audioMac, _) = MemoryPipe.pair()
         session.attach(videoMac, role: .mirrorVideo)
+        session.attach(audioMac, role: .mirrorAudio)
         session.attach(controlMac, role: .mirrorControl)
         let up = ScrcpyControl.touch(action: 1, x: 1, y: 2, width: 320, height: 640, pressure: 0)
         session.sendControl(up)
         session.close()
+        // Video and audio close at once; only control drains.
         #expect(videoMac.isClosed)
+        #expect(audioMac.isClosed)
         // Nothing queued after close() goes out.
         session.sendControl(Data([0xEE]))
         let bytes = try await readAll(controlPhone, 1 << 20)
@@ -93,5 +97,24 @@ final class StalledPipe: BulkPipe, @unchecked Sendable {
         let (controlMac, _) = MemoryPipe.pair()
         session.attach(controlMac, role: .mirrorControl)
         #expect(controlMac.isClosed)
+    }
+    /// An audio stream the Mac can't play (here a video codec ID) ends the audio path only: the
+    /// session says so and keeps the link open, drained, so the phone sees no failure.
+    @Test func unsupportedAudioCodecEndsTheAudioPathOnly() async throws {
+        let events = Recorder<String>()
+        let session = MirrorSession(id: 1, sink: CountingSink(), events: { event in
+            if case .audioEnded = event { events.append("audioEnded") }
+            if case let .linkEnded(role) = event { events.append("linkEnded \(role)") }
+        })
+        let (audioMac, audioPhone) = MemoryPipe.pair()
+        session.attach(audioMac, role: .mirrorAudio)
+        try await audioPhone.send(Data([0x68, 0x32, 0x36, 0x34]) + packetBytes(pts: 0, payload: Data([1, 2, 3])))
+        try await until("audio ended") { events.all == ["audioEnded"] }
+        #expect(!audioMac.isClosed)
+        // More bytes are drained; the end of the link is still reported.
+        try await audioPhone.send(Data(repeating: 7, count: 100))
+        audioPhone.close()
+        try await until("link ended") { events.all == ["audioEnded", "linkEnded mirrorAudio"] }
+        session.close()
     }
 }

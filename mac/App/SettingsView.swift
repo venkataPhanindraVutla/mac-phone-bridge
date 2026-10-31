@@ -62,6 +62,13 @@ struct SettingsView: View {
                     let input = model.input
                     Task { await input.recheckTrust() }
                 }
+                Section("Screen Mirroring") {
+                    Toggle("Play phone audio on this Mac", isOn: Binding(
+                        get: { model.playMirrorAudio },
+                        set: { model.setPlayMirrorAudio($0) }
+                    ))
+                    .accessibilityLabel(Text("Play phone audio on this Mac"))
+                }
                 Section("Screenshots") {
                     Picker("Save phone screenshots to", selection: Binding(
                         get: { model.screenshotDestination },

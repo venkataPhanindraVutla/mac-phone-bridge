@@ -38,6 +38,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let qualityMenu = NSMenu()
 
     private static let qualityItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.quality")
+    private static let muteItem = NSToolbarItem.Identifier("io.github.anmirror.mirror.mute")
     /// The phone keys, in toolbar order.
     private static let keys: [(id: NSToolbarItem.Identifier, key: ToolbarKey, symbol: String)] = [
         (NSToolbarItem.Identifier("io.github.anmirror.mirror.back"), .back, "chevron.backward"),
@@ -100,6 +101,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
             _ = model.phase
             _ = model.canStart
             _ = model.preset
+            _ = model.muted
+            _ = model.audioActive
         } onChange: { [weak self] in
             Self.later { self?.render(); self?.observe() }
         }
@@ -116,6 +119,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         mirrorView.show(model.phase, canStart: model.canStart)
         updateQualityMenu()
         updateKeyItems()
+        updateMuteItem()
         if case let .running(width, height) = model.phase, width > 0, height > 0,
            fitted.map({ $0 != (width, height) }) ?? true {
             fit(width: width, height: height)
@@ -180,17 +184,27 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.keys.prefix(3).map(\.id) + [.flexibleSpace] + Self.keys.dropFirst(3).map(\.id) + [Self.qualityItem]
+        Self.keys.prefix(3).map(\.id) + [.flexibleSpace] + Self.keys.dropFirst(3).map(\.id) + [Self.muteItem, Self.qualityItem]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.keys.map(\.id) + [.flexibleSpace, .space, Self.qualityItem]
+        Self.keys.map(\.id) + [.flexibleSpace, .space, Self.muteItem, Self.qualityItem]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if let key = Self.keys.first(where: { $0.id == id }) {
             return keyItem(id: id, key: key.key, symbol: key.symbol)
+        }
+        if id == Self.muteItem {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.paletteLabel = String(localized: "Mute")
+            item.isBordered = true
+            item.target = self
+            item.action = #selector(toggleMute(_:))
+            item.autovalidates = false
+            configureMute(item)
+            return item
         }
         guard id == Self.qualityItem else { return nil }
         let item = NSMenuToolbarItem(itemIdentifier: id)
@@ -249,6 +263,27 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
         for item in window?.toolbar?.items ?? [] where ids.contains(item.itemIdentifier) {
             item.isEnabled = running
         }
+    }
+
+    /// "Mute" / "Unmute": the title says what a click does. Enabled while running with audio (not
+    /// when audio is off in Settings, or the phone sends none).
+    private func configureMute(_ item: NSToolbarItem) {
+        let title = model.muted ? String(localized: "Unmute") : String(localized: "Mute")
+        item.label = title
+        item.toolTip = title
+        item.image = NSImage(systemSymbolName: model.muted ? "speaker.slash" : "speaker.wave.2",
+                             accessibilityDescription: title)
+        item.isEnabled = isRunning && model.audioActive
+    }
+
+    private func updateMuteItem() {
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == Self.muteItem {
+            configureMute(item)
+        }
+    }
+
+    @objc private func toggleMute(_ sender: NSToolbarItem) {
+        model.muted.toggle()
     }
 
     @objc private func pressKey(_ sender: NSToolbarItem) {

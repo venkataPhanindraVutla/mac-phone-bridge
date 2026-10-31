@@ -57,6 +57,16 @@ public final class MirrorModel: SessionFeature {
     public var preset: QualityPreset = .high
     /// The codec asked for; unspecified is sent as H.264.
     public var codec: AMVideoCodec = .h264
+    /// "Play phone audio on this Mac" (Settings, default on). A change applies at the next start.
+    public var audioEnabled = true
+    /// Mute / Unmute in the window: the audio link stays up and is decoded, the output drops it.
+    /// Kept across sessions.
+    public var muted = false {
+        didSet { current?.audioMuted = muted }
+    }
+    /// The current session carries the phone's audio: asked for, and not ended (the phone can't
+    /// capture or failed to, or its link ended). The Mute button is enabled only then.
+    public private(set) var audioActive = false
 
     /// `mirror.v1` is shared, the phone's availability is enabled and the bulk listener has a port.
     public var canStart: Bool {
@@ -82,6 +92,8 @@ public final class MirrorModel: SessionFeature {
     @ObservationIgnored private let startDeadline: Duration
     /// How long a link end waits for the phone's state before it counts as LINK_FAILED (internal, for tests).
     @ObservationIgnored var linkGrace: Duration = .seconds(1)
+    /// Whether this Mac decodes Opus (internal, so tests can say it doesn't); AAC otherwise.
+    @ObservationIgnored var opusSupported: () -> Bool = { AudioDecoder.supports(.opus) }
     private var sharesMirror = false
     /// The phone in session; a forget for any other phone leaves this model alone.
     @ObservationIgnored private var phoneID: String?
@@ -172,6 +184,8 @@ public final class MirrorModel: SessionFeature {
         let id = sessionID
         let context = Self.context(id)
         let videoCodec: AMVideoCodec = codec == .h265 ? .h265 : .h264
+        let audio = audioEnabled
+        let audioCodec: AMAudioCodec = opusSupported() ? .opus : .aac
         var start = AMMirrorStart()
         start.session = id
         start.port = UInt32(port)
@@ -179,11 +193,16 @@ public final class MirrorModel: SessionFeature {
         start.videoBitRate = preset.bitRate
         start.maxFps = preset.maxFps
         start.videoCodec = videoCodec
-        start.audio = false // Task 7 turns audio on; its token stays empty until then.
+        start.audio = audio
+        start.audioCodec = audioCodec
         start.tokens.video = bulk.issue(role: .mirrorVideo, context: context)
+        if audio { start.tokens.audio = bulk.issue(role: .mirrorAudio, context: context) }
         start.tokens.control = bulk.issue(role: .mirrorControl, context: context)
 
-        current = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id))
+        let session = MirrorSession(id: id, sink: makeSink(), events: Self.eventHandler(for: self, session: id))
+        session.audioMuted = muted
+        current = session
+        audioActive = audio
         phoneRunning = false
         firstFrameSeen = false
         videoSize = nil
@@ -193,7 +212,8 @@ public final class MirrorModel: SessionFeature {
             guard !Task.isCancelled, let self, self.sessionID == id, self.phase == .starting else { return }
             await self.stopCurrent(.timeout)
         }
-        Self.log.info("session \(id, privacy: .public) start preset \(self.preset.name, privacy: .public) codec \(videoCodec == .h265 ? "h265" : "h264", privacy: .public)")
+        let audioName = audio ? (audioCodec == .opus ? "opus" : "aac") : "off"
+        Self.log.info("session \(id, privacy: .public) start preset \(self.preset.name, privacy: .public) codec \(videoCodec == .h265 ? "h265" : "h264", privacy: .public) audio \(audioName, privacy: .public)")
         await send(.mirrorStart, start)
     }
 
@@ -252,9 +272,15 @@ public final class MirrorModel: SessionFeature {
             if changed { releaseInput?() }
         case .needsReset:
             current.sendControl(Self.resetVideo)
+        case .audioEnded:
+            audioActive = false
         case let .linkEnded(role):
-            // Audio may end on its own (Task 7); video or control ending ends the session.
-            guard role != .mirrorAudio, linkEnd == nil else { return }
+            // Audio may end on its own; video or control ending ends the session.
+            if role == .mirrorAudio {
+                audioActive = false
+                return
+            }
+            guard linkEnd == nil else { return }
             linkEnd = Task { [weak self, linkGrace] in
                 try? await Task.sleep(for: linkGrace)
                 guard !Task.isCancelled, let self, self.sessionID == id, self.current != nil else { return }
@@ -302,6 +328,7 @@ public final class MirrorModel: SessionFeature {
         guard let session = current else { return nil }
         releaseInput?()
         current = nil
+        audioActive = false
         deadline?.cancel()
         deadline = nil
         linkEnd?.cancel()

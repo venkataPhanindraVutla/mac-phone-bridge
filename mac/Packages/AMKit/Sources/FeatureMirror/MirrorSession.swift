@@ -1,6 +1,8 @@
 import AMProtocol
+import AVFoundation
 import ConnectionCore
 import Foundation
+import os
 
 /// What a session tells its model. Delivered from the session's read loops and the decoder's
 /// side, never on the main thread: the model hops to the main actor itself.
@@ -11,6 +13,9 @@ public enum MirrorSessionEvent: Sendable {
     case size(width: Int, height: Int)
     /// A link ended (EOF, an error, or a bad stream such as an oversized packet).
     case linkEnded(AMBulkRole)
+    /// The audio path ended while its link stays up: the phone sends no audio (it can't capture,
+    /// or failed to), or a stream the Mac can't decode. Video goes on.
+    case audioEnded
     /// The decoder dropped to the next key frame (a backlog or a decode error); send RESET_VIDEO.
     /// At most once per second: a request inside the window is deferred to its end, and further
     /// requests before then join it, so the phone is always asked again for a key frame.
@@ -34,9 +39,10 @@ struct ResetClock: Sendable {
     )
 }
 
-/// One mirror session's links, parsers and decoder. Every read loop runs off the main actor;
-/// pictures go from the decoder to the sink without passing through it. Mirror bytes never go
-/// through the app's NotifyWork queue: only `mirror.*` control-channel messages do.
+/// One mirror session's links, parsers and decoders. Every read loop runs off the main actor;
+/// pictures go from the decoder to the sink, and sound from the audio decoder to `AudioOutput`,
+/// without passing through it. Mirror bytes never go through the app's NotifyWork queue: only
+/// `mirror.*` control-channel messages do.
 public final class MirrorSession: @unchecked Sendable {
     /// More undecoded packets than this drops to the next key frame (Global Constraints).
     public static let maxBacklog = 30
@@ -52,6 +58,8 @@ public final class MirrorSession: @unchecked Sendable {
     public let id: UInt32
     /// Internal so tests can hold it.
     let decoder: VideoDecoder
+    /// The phone's sound; its engine starts with the first buffer played.
+    let audioOutput = AudioOutput()
     private let events: @Sendable (MirrorSessionEvent) -> Void
     private let clock: ResetClock
     private let lock = NSLock()
@@ -67,6 +75,9 @@ public final class MirrorSession: @unchecked Sendable {
     private var parsed = 0
     private var control: AsyncStream<Data>.Continuation?
     private var frameHook: (@Sendable (UInt64) -> Void)?
+    private var audioDecoded = 0
+
+    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "mirror")
 
     public convenience init(id: UInt32, sink: any FrameSink, events: @escaping @Sendable (MirrorSessionEvent) -> Void) {
         self.init(id: id, sink: sink, events: events, clock: .system)
@@ -114,8 +125,7 @@ public final class MirrorSession: @unchecked Sendable {
             // Device messages (Task 8 reads them); drained so the phone's side never backs up.
             Task.detached { [self] in await drain(pipe, role: role) }
         default:
-            // Audio is not played yet (Task 7): drained and discarded.
-            Task.detached { [self] in await drain(pipe, role: role) }
+            Task.detached { [self] in await readAudio(pipe) }
         }
     }
 
@@ -126,6 +136,12 @@ public final class MirrorSession: @unchecked Sendable {
 
     /// The last session packet's size.
     public var videoSize: (width: Int, height: Int)? { lock.withLock { size } }
+
+    /// Muted, the audio link stays up and is decoded; the output drops it.
+    public var audioMuted: Bool {
+        get { audioOutput.muted }
+        set { audioOutput.muted = newValue }
+    }
 
     /// Closes the video and audio links at once and stops the decoder. The control link closes
     /// once what is already queued on it has been written (a release's touch UP), or after
@@ -147,10 +163,17 @@ public final class MirrorSession: @unchecked Sendable {
             clock.after(Self.controlDrainDeadline) { draining.close() }
         }
         decoder.invalidate()
+        audioOutput.stop()
     }
 
     /// Media packets parsed so far (internal, for tests).
     var packetsParsed: Int { lock.withLock { parsed } }
+
+    /// Audio packets decoded to sound so far (internal, for tests).
+    var audioBuffersDecoded: Int { lock.withLock { audioDecoded } }
+
+    /// The audio engine has started (internal, for tests).
+    var audioOutputStarted: Bool { audioOutput.started }
 
     /// Gets each decoded picture's PTS (internal, for tests).
     var onFrameForTesting: (@Sendable (UInt64) -> Void)? {
@@ -194,6 +217,68 @@ public final class MirrorSession: @unchecked Sendable {
             decoder.dropUntilKeyFrame()
             requestReset()
         }
+    }
+
+    /// Decodes the audio link into `audioOutput`. When the phone sends no audio, or audio the Mac
+    /// can't decode, the audio path ends (`audioEnded`) but the link is kept and drained until the
+    /// phone closes it, so its end looks like any other.
+    private func readAudio(_ pipe: any BulkPipe) async {
+        var parser = AudioStreamParser()
+        var codec: ScrcpyCodec?
+        var decoder: AudioDecoder?
+        var playing = true
+        do {
+            while let data = try await pipe.receive(maximum: Self.readChunk) {
+                guard playing else { continue }
+                events: for event in try parser.push(data) {
+                    switch event {
+                    case let .codec(raw):
+                        guard let c = ScrcpyCodec(rawValue: raw), AudioDecoder.supports(c) else {
+                            endAudio(playing: &playing, "unsupported codec")
+                            break events
+                        }
+                        codec = c
+                        Self.log.info("session \(self.id, privacy: .public) audio codec \(c == .opus ? "opus" : "aac", privacy: .public)")
+                    case .unavailable:
+                        endAudio(playing: &playing, "unavailable")
+                        break events
+                    case .failed:
+                        endAudio(playing: &playing, "failed")
+                        break events
+                    case let .packet(packet):
+                        guard let codec else { break }
+                        if packet.config || decoder == nil {
+                            // The first config packet is the decoder's cookie; a stream with none starts without one.
+                            guard let made = try? AudioDecoder(codec: codec, config: packet.config ? packet.payload : Data()) else {
+                                endAudio(playing: &playing, "decoder failed")
+                                break events
+                            }
+                            decoder = made
+                            if packet.config { break }
+                        }
+                        if let pcm = decoder?.decode(packet.payload) {
+                            lock.withLock { audioDecoded += 1 }
+                            audioOutput.enqueue(pcm)
+                        }
+                    }
+                }
+            }
+        } catch {
+            // EOF, a closed link or a bad stream: the link has ended.
+        }
+        audioOutput.stop() // nothing more will come: release the engine now
+        if decoder != nil {
+            let stats = audioOutput.stats
+            Self.log.info("session \(self.id, privacy: .public) audio drops \(stats.drops, privacy: .public) (\(Int(stats.droppedMs), privacy: .public) ms) underruns \(stats.underruns, privacy: .public)")
+        }
+        ended(pipe, role: .mirrorAudio)
+    }
+
+    private func endAudio(playing: inout Bool, _ why: StaticString) {
+        playing = false
+        audioOutput.stop()
+        Self.log.info("session \(self.id, privacy: .public) audio ended: \(String(describing: why), privacy: .public)")
+        emit(.audioEnded)
     }
 
     private func drain(_ pipe: any BulkPipe, role: AMBulkRole) async {
