@@ -351,11 +351,12 @@ case13() {
 
 # Mirror relay (F-17): phone-sim plays the canned 60-frame H.264 sample (paced by its PTS) on the
 # Mac's mirror.start; the Mac decodes it headless (or only parses it, when VideoToolbox can't
-# decode in this session), touches the centre once, and stops after 60 frames.
+# decode in this session), touches the centre once, and stops after 60 frames. The frames must
+# arrive over at least 900 ms (the sample spans 983 ms of PTS): proof they were paced, not a burst.
 MIRROR_SAMPLE="$ROOT/protocol/testdata/mirror/sample-h264-320x640.scrcpy"
 case14() {
   begin_case "14 mirror relay"
-  local pstate how; pstate="$(new_dir c14-phone)"
+  local pstate how span; pstate="$(new_dir c14-phone)"
   start_mac c14 --auto-confirm --mirror || return 1
   local mac_pid=$MAC_PID
   start_phone c14 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --mirror-relay "$MIRROR_SAMPLE"
@@ -364,12 +365,14 @@ case14() {
   need "$PHONE_LOG" '^EVENT mirror-control type=2 action=1$' "phone EVENT mirror-control type=2 action=1" || return 1
   need "$PHONE_LOG" '^EVENT mirror-token-reuse refused$' "phone EVENT mirror-token-reuse refused" || return 1
   need "$PHONE_LOG" '^EVENT mirror-stop$' "phone EVENT mirror-stop" || return 1
+  span="$(extract "$MAC_LOG" '^EVENT mirror-span ms=([0-9]+)$')"
+  [[ -n "$span" && "$span" -ge 900 ]] || { fail_reason="frames arrived over ${span:-?} ms, expected >= 900 (paced)"; return 1; }
   wait_exit "$PHONE_PID" || { fail_reason="phone-sim did not exit after mirror-stop"; return 1; }
   [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="phone-sim exit $EXIT_CODE, expected 0"; return 1; }
   wait_exit "$mac_pid" || { fail_reason="mac-sim did not exit after the stop"; return 1; }
   [[ "$EXIT_CODE" -eq 0 ]] || { fail_reason="mac-sim exit $EXIT_CODE, expected 0"; return 1; }
   how="$(extract "$MAC_LOG" '^EVENT mirror-frames (decoded|parsed)=60 .*$')"
-  echo "interop: mirror relay 60 frames 320x640 ($how)"
+  echo "interop: mirror relay 60 frames 320x640 ($how) over $span ms"
 }
 
 run_case() {

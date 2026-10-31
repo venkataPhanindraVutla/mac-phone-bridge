@@ -50,6 +50,17 @@ import Testing
         #expect(meter.median(last: .seconds(1), now: t0 + .seconds(30)) == nil)
     }
 
+    /// A PTS that goes back is a stream that started over: the meter starts over with it. PTS that
+    /// go on (an encoder restart after RESET_VIDEO) keep the lateness.
+    @Test func ptsGoingBackStartsOver() {
+        var meter = LatenessMeter()
+        #expect(meter.record(pts: 0, arrival: t0) == 0)
+        #expect(abs(meter.record(pts: 1_000_000, arrival: t0 + .milliseconds(1_400)) - 400) < 0.01)
+        #expect(abs(meter.record(pts: 1_016_667, arrival: t0 + .microseconds(1_416_667)) - 400) < 0.01)
+        #expect(meter.record(pts: 5_000, arrival: t0 + .milliseconds(1_500)) == 0)
+        #expect(abs(meter.record(pts: 105_000, arrival: t0 + .milliseconds(1_700)) - 100) < 0.01)
+    }
+
     /// A burst (frames arriving faster than they were made, after a stall clears) is not late.
     @Test func burstIsNotLate() {
         var meter = LatenessMeter()

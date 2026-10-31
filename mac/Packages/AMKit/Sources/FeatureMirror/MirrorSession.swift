@@ -54,9 +54,9 @@ public final class MirrorSession: @unchecked Sendable {
     /// next key frame too (Global Constraints). The bar then moves up to that lateness, and back
     /// down with it as the link recovers, so a link that stays late drops again only after another
     /// 500 ms and the next key frame is shown.
-    public static let maxLatenessMs = 500.0
+    static let maxLatenessMs = 500.0
     /// The window Auto quality's median lateness is taken over.
-    public static let qualityWindow: Duration = .seconds(5)
+    static let qualityWindow: Duration = .seconds(5)
     /// RESET_VIDEO is asked for at most this often.
     static let resetInterval: Duration = .seconds(1)
     static let readChunk = 262_144
@@ -239,7 +239,7 @@ public final class MirrorSession: @unchecked Sendable {
 
     /// What Auto quality reads every second: the median lateness of the last 5 s (nil when no frame
     /// came) and the decode backlog.
-    public func qualitySample() -> (medianMs: Double?, backlog: Int) {
+    func qualitySample() -> (medianMs: Double?, backlog: Int) {
         let now = clock.now()
         let median = lock.withLock { meter.median(last: Self.qualityWindow, now: now) }
         return (median, decoder.backlog)
@@ -247,7 +247,7 @@ public final class MirrorSession: @unchecked Sendable {
 
     /// Gets every picture shown from now on, with when it was decoded, on the decoder's side
     /// ("Measure Delay…"); nil stops it. Nothing is called after `close()`.
-    public func observeFrames(_ observer: (@Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void)?) {
+    func observeFrames(_ observer: (@Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void)?) {
         lock.withLock { frameObserver = closed ? nil : observer }
     }
 
@@ -289,12 +289,10 @@ public final class MirrorSession: @unchecked Sendable {
                         guard let c = ScrcpyCodec(rawValue: raw), c == .h264 || c == .h265 else { break reading }
                         codec = c
                     case let .session(width, height):
-                        lock.withLock {
-                            size = (width, height)
-                            // A new encoder: its PTS may start over.
-                            meter.reset()
-                            lateBar = 0
-                        }
+                        // The encoder restarted (a rotation or RESET_VIDEO); its PTS go on, so the
+                        // lateness measured so far still counts (the meter starts over only if the
+                        // PTS ever go back).
+                        lock.withLock { size = (width, height) }
                         emit(.size(width: width, height: height))
                     case let .packet(packet):
                         guard let codec else { break reading }

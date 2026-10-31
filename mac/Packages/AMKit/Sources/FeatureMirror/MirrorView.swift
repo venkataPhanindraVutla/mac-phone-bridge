@@ -58,6 +58,12 @@ public enum MirrorCopy {
         return String(localized: "Frame rate: \(f) fps.", bundle: .main)
     }
 
+    /// The alert's text: the round trip and frame rate, or that the test screen never showed.
+    public static func delayMessage(_ r: DelayResult) -> String {
+        guard r.testScreenOpened else { return String(localized: "The test screen didn't open on the phone.", bundle: .main) }
+        return delayRoundTrip(r) + "\n" + delayFrameRate(r)
+    }
+
     private static var offByUser: String {
         String(localized: "Turn on “Allow your Mac to show this screen” in the phone app.", bundle: .main)
     }

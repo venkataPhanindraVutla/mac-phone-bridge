@@ -16,6 +16,7 @@
 //   EVENT files-failed <transfer-id> <reason>               (--files)
 //   EVENT media-roundtrip ms=<n>                            (--media-toggle: a TOGGLE to the next media.state)
 //   EVENT mirror-frames decoded=<n> size=<w>x<h>            (--mirror; parsed=<n> when nothing could be decoded)
+//   EVENT mirror-span ms=<n>                                (--mirror: first to last frame received, just before mirror-frames)
 //   EVENT mirror-ended <reason>                             (--mirror: the session ended first; exit 1)
 //   EVENT rejected <reason>
 //   EVENT disconnected <phone-id>
@@ -418,6 +419,8 @@ final class MirrorRun {
                 session.sendControl(ScrcpyControl.touch(action: 1, x: x, y: y, width: w, height: h, pressure: 0))
             }
             guard decoded >= Self.frames || (received > 0 && now - lastFrame >= Self.idle) else { continue }
+            let span = firstReceived.map { lastFrame - $0 } ?? .zero
+            emit("EVENT mirror-span ms=\(span.components.seconds * 1000 + span.components.attoseconds / 1_000_000_000_000_000)")
             let size = session.videoSize ?? (0, 0)
             let count = decoded > 0 ? "decoded=\(decoded)" : "parsed=\(received)"
             emit("EVENT mirror-frames \(count) size=\(size.width)x\(size.height)")

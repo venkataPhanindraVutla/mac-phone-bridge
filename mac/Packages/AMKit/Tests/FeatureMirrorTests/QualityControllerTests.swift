@@ -22,6 +22,8 @@ private struct Driver {
     }
 
     mutating func late(_ count: Int) -> QualityController.Decision { tick(count, medianMs: 200) }
+    /// Time passes with no evaluation (a delay measurement, a restart, availability off).
+    mutating func skip(_ count: Int) { seconds += count }
     mutating func healthy(_ count: Int) -> QualityController.Decision { tick(count, medianMs: 20) }
 }
 
@@ -110,6 +112,35 @@ private struct Driver {
         #expect(d.healthy(600) == .keep)
         #expect(d.late(5) == .switchTo(.balanced))
         #expect(d.healthy(60) == .switchTo(.high))
+    }
+
+    /// M1: a run is of evaluations a second apart; a gap (no evaluation for a while) starts it again.
+    @Test func gapInEvaluationsStartsTheRunsAgain() {
+        var d = Driver(start: .balanced)
+        #expect(d.healthy(59) == .keep)
+        d.skip(100)
+        #expect(d.healthy(1) == .keep)
+        #expect(d.healthy(58) == .keep)
+        #expect(d.healthy(1) == .switchTo(.high))
+        #expect(d.late(3) == .keep)
+        d.skip(30)
+        #expect(d.late(2) == .keep)
+        #expect(d.late(2) == .keep)
+        #expect(d.late(1) == .switchTo(.balanced))
+    }
+
+    /// M2: each step up keeps its own back-off: after Low → Balanced → High and 10 minutes at High,
+    /// both Low's and Balanced's waits are back to 60 s.
+    @Test func backoffResetsForEveryStepUpBelow() {
+        var d = Driver(start: .low)
+        #expect(d.healthy(60) == .switchTo(.balanced))
+        #expect(d.late(5) == .switchTo(.low)) // failed: Low waits 120 s
+        #expect(d.healthy(120) == .switchTo(.balanced))
+        #expect(d.healthy(60) == .switchTo(.high))
+        #expect(d.healthy(600) == .keep)
+        #expect(d.late(5) == .switchTo(.balanced))
+        #expect(d.late(5) == .switchTo(.low))
+        #expect(d.healthy(60) == .switchTo(.balanced))
     }
 
     @Test func manualOverridesAuto() {

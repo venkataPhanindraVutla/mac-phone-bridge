@@ -183,7 +183,7 @@ public final class MirrorModel: SessionFeature {
     /// The trial counts and waits of "Measure Delay…" (internal, so tests can shorten them).
     @ObservationIgnored var delayHarness = DelayHarness()
     /// The centre luma of each picture while the delay trials run; finished when the session ends.
-    @ObservationIgnored private var delayFrames: AsyncStream<(Double, ContinuousClock.Instant)>.Continuation?
+    @ObservationIgnored private var delayFrames: AsyncStream<DelayFrame>.Continuation?
 
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "mirror")
 
@@ -467,41 +467,43 @@ public final class MirrorModel: SessionFeature {
     /// "Measure Delay…" is offered: a session runs, its control link is there, and none is running.
     public var canMeasureDelay: Bool { phase.isRunning && controlLinked && !measuringDelay }
 
-    /// "Measure Delay…": the phone's DELAY test screen (`mirror.test_pattern`), up to 5 s for its
-    /// black centre, the trials (`DelayProbe`: a touch at the centre, wait for white, lift, wait for
-    /// black), then the FPS screen and 30 s of counting decoded frames, then OFF. Auto pauses
-    /// meanwhile. Nil when no session runs or it ends before the measurement is done. Logged as
-    /// one line of numbers.
+    /// "Measure Delay…": the phone's DELAY test screen (`mirror.test_pattern`); the trials
+    /// (`DelayProbe`: nothing is tapped until the screen's corner marker shows, R56; then a touch at
+    /// the centre, wait for white, lift, wait for the idle screen); then, when a tap was answered,
+    /// the FPS screen and 30 s of counting decoded frames (from 1 s after it was asked for, so the
+    /// DELAY screen's frames don't count); then OFF. Auto pauses meanwhile. Nil when no session runs
+    /// or it ends before the measurement is done. Logged as one line of numbers.
     public func measureDelay() async -> DelayResult? {
         guard canMeasureDelay, let session = current else { return nil }
         measuringDelay = true
         defer { measuringDelay = false }
         let id = sessionID
         let harness = delayHarness
-        let frames = AsyncStream.makeStream(of: (Double, ContinuousClock.Instant).self,
-                                            bufferingPolicy: .bufferingNewest(256))
+        let frames = AsyncStream.makeStream(of: DelayFrame.self, bufferingPolicy: .bufferingNewest(256))
         delayFrames = frames.continuation
-        session.observeFrames(Self.lumaObserver(frames.continuation))
+        session.observeFrames(Self.delayObserver(frames.continuation))
         await sendTestPattern(.delay, session: id)
-        let probe = DelayProbe(tap: { [weak self] down in self?.tapCentre(down) }, luma: { frames.stream },
+        let probe = DelayProbe(tap: { [weak self] down in self?.tapCentre(down) }, frames: { frames.stream },
                                trials: harness.trials, timeout: harness.timeout, pause: harness.pause)
-        probe.firstBlack = harness.firstBlack
+        probe.markerTimeout = harness.markerTimeout
+        probe.settle = harness.settle
         var result = await probe.run()
         session.observeFrames(nil)
         frames.continuation.finish()
         delayFrames = nil
         guard current === session else { return nil }
-        if result.misses < result.trials {
-            let counter = FrameCounter()
+        if result.testScreenOpened, result.misses < result.trials {
+            let from = ContinuousClock.now + harness.fpsSettle
+            let counter = FrameCounter(from: from)
             session.observeFrames(Self.countingObserver(counter))
             await sendTestPattern(.fps, session: id)
-            let began = ContinuousClock.now
-            while current === session, ContinuousClock.now - began < harness.fpsDuration {
+            let end = from + harness.fpsDuration
+            while current === session, ContinuousClock.now < end {
                 try? await Task.sleep(for: min(.milliseconds(100), harness.fpsDuration))
             }
             session.observeFrames(nil)
             guard current === session else { return nil }
-            result = result.with(fpsMean: Double(counter.count) / (LatenessMeter.ms(ContinuousClock.now - began) / 1_000))
+            result = result.with(fpsMean: Double(counter.count) / (LatenessMeter.ms(ContinuousClock.now - from) / 1_000))
         }
         await sendTestPattern(.off, session: id)
         let size = videoSize ?? session.videoSize ?? (0, 0)
@@ -511,15 +513,17 @@ public final class MirrorModel: SessionFeature {
     }
 
     /// The frame observer for the delay trials: built here, nonisolated, as it runs on the decoder's side.
-    nonisolated private static func lumaObserver(
-        _ frames: AsyncStream<(Double, ContinuousClock.Instant)>.Continuation
+    nonisolated private static func delayObserver(
+        _ frames: AsyncStream<DelayFrame>.Continuation
     ) -> @Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void {
-        { image, at in frames.yield((LumaProbe.centerLuma(image), at)) }
+        { image, at in
+            frames.yield(DelayFrame(centerLuma: LumaProbe.centerLuma(image), marker: LumaProbe.testScreenMarker(image), at: at))
+        }
     }
 
-    /// The frame observer that counts pictures for the frame rate, built nonisolated like `lumaObserver`.
+    /// The frame observer that counts pictures for the frame rate, built nonisolated like `delayObserver`.
     nonisolated private static func countingObserver(_ counter: FrameCounter) -> @Sendable (CVPixelBuffer, ContinuousClock.Instant) -> Void {
-        { _, _ in counter.add() }
+        { _, at in counter.add(at: at) }
     }
 
     /// A touch DOWN or UP at the centre of the current video, on the control link.
@@ -700,22 +704,33 @@ public final class MirrorModel: SessionFeature {
     }
 }
 
-/// The waits and counts of "Measure Delay…" (Global Constraints).
+/// The waits and counts of "Measure Delay…" (Global Constraints, R56).
 struct DelayHarness {
     var trials = 50
     var timeout: Duration = .seconds(3)
     var pause: Duration = .milliseconds(500)
-    /// For the test screen's first black centre.
-    var firstBlack: Duration = .seconds(5)
+    /// For the test screen's corner marker to show.
+    var markerTimeout: Duration = .seconds(5)
+    /// The least time from DELAY to the first tap.
+    var settle: Duration = .milliseconds(500)
+    /// After FPS is asked for, pictures are counted only from this much later.
+    var fpsSettle: Duration = .seconds(1)
     var fpsDuration: Duration = .seconds(30)
 }
 
-/// Counts pictures from the decoder's side.
+/// Counts pictures decoded from `from` on, from the decoder's side.
 private final class FrameCounter: @unchecked Sendable {
+    private let from: ContinuousClock.Instant
     private let lock = NSLock()
     private var value = 0
 
-    func add() { lock.withLock { value += 1 } }
+    init(from: ContinuousClock.Instant) { self.from = from }
+
+    func add(at: ContinuousClock.Instant) {
+        guard at >= from else { return }
+        lock.withLock { value += 1 }
+    }
+
     var count: Int { lock.withLock { value } }
 }
 

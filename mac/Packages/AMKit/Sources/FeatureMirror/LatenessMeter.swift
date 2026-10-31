@@ -4,6 +4,9 @@ import Foundation
 /// never compared with the Mac's). A packet's offset is (arrival − PTS); the earliest offset in
 /// the window is "on time", and a packet's lateness is how far its offset is above that.
 /// A packet that arrives earlier than any in the window (a burst after a stall) reads 0.
+/// The PTS of a scrcpy stream go on across encoder restarts (RESET_VIDEO, rotation), so nothing
+/// is forgotten at a session packet; only a PTS that goes back (a stream that started over)
+/// starts the meter again.
 public struct LatenessMeter: Sendable {
     private struct Sample: Sendable {
         let arrival: ContinuousClock.Instant
@@ -16,6 +19,7 @@ public struct LatenessMeter: Sendable {
     private var base: ContinuousClock.Instant?
     /// The window's samples, oldest first.
     private var samples: [Sample] = []
+    private var lastPts: UInt64?
 
     public init(window: Duration = .seconds(10)) {
         self.window = window
@@ -23,6 +27,8 @@ public struct LatenessMeter: Sendable {
 
     /// lateness = (arrival − pts) − min over the window of (arrival − pts), in ms
     public mutating func record(pts: UInt64, arrival: ContinuousClock.Instant) -> Double {
+        if let lastPts, pts < lastPts { reset() }
+        lastPts = pts
         let base = self.base ?? arrival
         self.base = base
         let offset = Self.ms(arrival - base) - Double(pts) / 1_000
@@ -48,6 +54,7 @@ public struct LatenessMeter: Sendable {
     /// Forgets everything: the next packet is on time (a new stream, whose PTS may start over).
     public mutating func reset() {
         base = nil
+        lastPts = nil
         samples = []
     }
 

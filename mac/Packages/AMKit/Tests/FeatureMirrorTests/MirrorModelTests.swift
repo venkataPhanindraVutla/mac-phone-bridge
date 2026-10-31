@@ -754,28 +754,25 @@ private final class Rig {
 
     // MARK: Measure Delay
 
-    /// The phone's DELAY test screen played by the test: white while the finger is down, black
-    /// otherwise, shown through the session as decoded pictures.
+    /// The phone's DELAY test screen played by the test: black with the corner marker, white while
+    /// the finger is down, shown through the session as decoded pictures every 20 ms.
     @Test func measureDelayRunsThePatternsAndTaps() async throws {
         let rig = Rig()
         let links = try await rig.running()
-        rig.model.delayHarness = DelayHarness(trials: 3, timeout: .seconds(2), pause: .zero,
-                                              firstBlack: .seconds(2), fpsDuration: .milliseconds(200))
+        rig.model.delayHarness = DelayHarness(trials: 3, timeout: .seconds(2), pause: .zero, markerTimeout: .seconds(2),
+                                              settle: .milliseconds(100), fpsSettle: .milliseconds(50),
+                                              fpsDuration: .milliseconds(200))
         let session = try #require(rig.model.session)
-        let black = try #require(nv12Picture(outer: 16))
-        let touches = Recorder<Data>()
-        let phone = playDelayScreen(control: links.control.phone, session: session, touches: touches)
-        defer { phone.cancel() }
+        let phone = FakeDelayPhone(session: session, control: links.control.phone)
+        defer { phone.stop() }
         #expect(rig.model.canMeasureDelay)
         let measuring = Task { await rig.model.measureDelay() }
         try await until("DELAY sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 1 }
         #expect(rig.model.measuringDelay)
         #expect(!rig.model.canMeasureDelay)
-        session.frameShown(black)
-        // The frame-rate pattern: a few frames while it is counted.
-        try await until("FPS sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 2 }
-        for _ in 0..<4 { session.frameShown(black) }
+        phone.showTestScreen()
         let result = try #require(await measuring.value)
+        #expect(result.testScreenOpened)
         #expect(result.trials == 3)
         #expect(result.misses == 0)
         #expect(result.medianMs >= 0 && result.medianMs < 1_000)
@@ -784,30 +781,56 @@ private final class Rig {
         #expect(patterns.map(\.mode) == [.delay, .fps, .off])
         #expect(patterns.allSatisfy { $0.session == 1 })
         // DOWN and UP at the centre, at the video size, three times.
-        try await until("six touches") { touches.count == 6 }
-        #expect(touches.all == Array(repeating: [touchDown(160, 320, 320, 640), touchUp(160, 320, 320, 640)], count: 3).flatMap { $0 })
+        try await until("six touches") { phone.touches.count == 6 }
+        #expect(phone.touches.all == Array(repeating: [touchDown(160, 320, 320, 640), touchUp(160, 320, 320, 640)], count: 3).flatMap { $0 })
         #expect(!rig.model.measuringDelay)
         #expect(rig.model.phase == .running(width: 320, height: 640))
+        #expect(MirrorCopy.delayMessage(result).hasPrefix("Round trip: median "))
     }
 
-    /// No black centre within the first wait: every tap counts as missed, no frame count, OFF sent.
+    /// No test screen within the wait: no tap at all, no frame count, OFF sent, and the alert says so.
     @Test func measureDelayWithoutTheTestScreen() async throws {
         let rig = Rig()
-        _ = try await rig.running()
+        let links = try await rig.running()
         rig.model.delayHarness = DelayHarness(trials: 5, timeout: .milliseconds(50), pause: .zero,
-                                              firstBlack: .milliseconds(100), fpsDuration: .seconds(30))
+                                              markerTimeout: .milliseconds(150), settle: .zero,
+                                              fpsSettle: .zero, fpsDuration: .seconds(30))
         let result = try #require(await rig.model.measureDelay())
-        #expect(result.trials == 5 && result.misses == 5)
+        #expect(!result.testScreenOpened)
+        #expect(result.trials == 0 && result.misses == 0)
         #expect(result.fpsMean == 0)
         #expect(rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).map(\.mode) == [.delay, .off])
+        #expect(MirrorCopy.delayMessage(result) == "The test screen didn't open on the phone.")
+        // Nothing reached the phone's screen.
+        let marker = ScrcpyControl.backOrScreenOn(action: 0)
+        rig.model.session?.sendControl(marker)
+        var bytes = Data()
+        while !bytes.suffix(marker.count).elementsEqual(marker) { bytes += try await readAll(links.control.phone, 1) }
+        #expect(controlMessages(bytes) == [marker])
+    }
+
+    /// R56: the user's own dark screen (no marker) is never tapped, however dark its centre.
+    @Test func measureDelayOnADarkUserScreenTapsNothing() async throws {
+        let rig = Rig()
+        let links = try await rig.running()
+        rig.model.delayHarness = DelayHarness(trials: 5, timeout: .milliseconds(50), pause: .zero,
+                                              markerTimeout: .milliseconds(300), settle: .zero,
+                                              fpsSettle: .zero, fpsDuration: .seconds(30))
+        let session = try #require(rig.model.session)
+        let phone = FakeDelayPhone(session: session, control: links.control.phone)
+        defer { phone.stop() }
+        phone.showDarkUserScreen()
+        let result = try #require(await rig.model.measureDelay())
+        #expect(!result.testScreenOpened)
+        #expect(result.trials == 0)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(phone.touches.count == 0)
     }
 
     /// The session ends while measuring: no result, and it returns promptly.
     @Test func measureDelayStopsWhenTheSessionEnds() async throws {
         let rig = Rig()
         _ = try await rig.running()
-        rig.model.delayHarness = DelayHarness(trials: 50, timeout: .seconds(3), pause: .milliseconds(500),
-                                              firstBlack: .seconds(5), fpsDuration: .seconds(30))
         let started = ContinuousClock.now
         let measuring = Task { await rig.model.measureDelay() }
         try await until("DELAY sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 1 }
@@ -826,30 +849,73 @@ private final class Rig {
         #expect(rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).isEmpty)
     }
 
+    /// The harness's defaults are the Global Constraints' and R56's.
+    @Test func delayHarnessDefaults() {
+        let h = DelayHarness()
+        #expect(h.trials == 50 && h.timeout == .seconds(3) && h.pause == .milliseconds(500))
+        #expect(h.markerTimeout == .seconds(5) && h.settle == .milliseconds(500))
+        #expect(h.fpsDuration == .seconds(30))
+    }
+
     @Test func delayCopy() {
         let r = DelayResult(medianMs: 61.4, p95Ms: 88.6, minMs: 40, trials: 50, misses: 2, fpsMean: 58.25)
         #expect(MirrorCopy.delayTitle == "Delay")
         #expect(MirrorCopy.delayRoundTrip(r) == "Round trip: median 61 ms, 95th percentile 89 ms, 50 taps (2 missed).")
         #expect(MirrorCopy.delayFrameRate(r).hasPrefix("Frame rate: 58"))
         #expect(MirrorCopy.delayFrameRate(r).hasSuffix(" fps."))
+        #expect(MirrorCopy.delayMessage(r) == MirrorCopy.delayRoundTrip(r) + "\n" + MirrorCopy.delayFrameRate(r))
+        let none = DelayResult(medianMs: 0, p95Ms: 0, minMs: 0, trials: 0, misses: 0, fpsMean: 0, testScreenOpened: false)
+        #expect(MirrorCopy.delayMessage(none) == "The test screen didn't open on the phone.")
     }
 }
 
-/// The phone's DELAY screen behind a control link: each touch DOWN shows a white picture through
-/// `session`, each UP a black one. The touches are recorded.
-private func playDelayScreen(control: MemoryPipe, session: MirrorSession, touches: Recorder<Data>) -> Task<Void, Never> {
-    Task.detached {
-        guard let black = nv12Picture(outer: 16), let white = nv12Picture(outer: 235) else { return }
-        var bytes = Data()
-        var seen = 0
-        while let chunk = try? await control.receive(maximum: 1 << 16) {
-            bytes += chunk
-            let messages = controlMessages(bytes)
-            for m in messages.dropFirst(seen) where m.first == 2 {
-                touches.append(m)
-                session.frameShown(m[1] == 0 ? white : black)
+/// A phone behind a session's control link, showing pictures through the session every 20 ms like a
+/// static screen: nothing yet, the delay test screen (black with the corner marker; white while a
+/// touch is down), or the user's own dark screen. The touches it is sent are recorded.
+private final class FakeDelayPhone: @unchecked Sendable {
+    enum Screen { case none, test, darkUser }
+
+    let touches = Recorder<Data>()
+    private let lock = NSLock()
+    private var screen = Screen.none
+    private var down = false
+    private var tasks: [Task<Void, Never>] = []
+
+    init(session: MirrorSession, control: MemoryPipe) {
+        tasks.append(Task.detached { [self] in
+            var bytes = Data()
+            var seen = 0
+            while let chunk = try? await control.receive(maximum: 1 << 16) {
+                bytes += chunk
+                let messages = controlMessages(bytes)
+                for m in messages.dropFirst(seen) where m.first == 2 {
+                    touches.append(m)
+                    lock.withLock { down = m[1] == 0 }
+                    show(on: session)
+                }
+                seen = messages.count
             }
-            seen = messages.count
+        })
+        tasks.append(Task.detached { [self] in
+            while !Task.isCancelled {
+                show(on: session)
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        })
+    }
+
+    func showTestScreen() { lock.withLock { screen = .test } }
+    func showDarkUserScreen() { lock.withLock { screen = .darkUser } }
+    func stop() { tasks.forEach { $0.cancel() } }
+
+    private func show(on session: MirrorSession) {
+        let (screen, down) = lock.withLock { (self.screen, self.down) }
+        let picture: CVPixelBuffer?
+        switch screen {
+        case .none: return
+        case .darkUser: picture = nv12Picture(outer: 31)
+        case .test: picture = down ? nv12Picture(outer: 235) : nv12Picture(outer: 16, corners: 235)
         }
+        if let picture { session.frameShown(picture) }
     }
 }

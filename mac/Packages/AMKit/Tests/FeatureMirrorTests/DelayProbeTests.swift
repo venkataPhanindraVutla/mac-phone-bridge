@@ -2,53 +2,92 @@ import Foundation
 import Testing
 @testable import FeatureMirror
 
-/// The phone's delay test screen, as the probe sees it through the decoder: black, white while a
-/// finger is down. Each answer is stamped `delay` after the tap (or never, for a dropped trial).
+/// The phone's screen as the probe sees it through the decoder, repeated every 10 ms like a static
+/// screen: the delay test screen (black, the corner marker, white while a finger is down) or, with
+/// `marker` off, a dark user screen. A white answer is stamped `delay` after the tap (or never,
+/// for a dropped trial).
 @MainActor
 private final class FakeScreen {
-    let frames = AsyncStream.makeStream(of: (Double, ContinuousClock.Instant).self)
+    let frames = AsyncStream.makeStream(of: DelayFrame.self)
     /// Per trial: how long the white takes, or nil for no answer.
     var delays: [Duration?]
     /// How long the black takes after the finger lifts (0: at once).
     var blackAfter: Duration = .zero
+    /// The test screen's corner marker is shown (false: the user's own dark screen).
+    var marker = true
+    /// The marker shows on every other frame only (never three in a row).
+    var flicker = false
     private(set) var downs = 0
     private(set) var ups = 0
+    private(set) var downTimes: [ContinuousClock.Instant] = []
     /// For each DOWN: whether the screen was still white then.
     private(set) var downWhileWhite: [Bool] = []
-    private var white = false
+    private var down = false
+    private var whiteFrom: ContinuousClock.Instant?
+    private var blackFrom: ContinuousClock.Instant?
+    private var ticks = 0
+    private var repeater: Task<Void, Never>?
 
     init(delays: [Duration?]) {
         self.delays = delays
-        frames.continuation.yield((16, .now)) // the test screen starts black
     }
 
-    func tap(_ down: Bool) {
-        if down {
-            downWhileWhite.append(white)
-            let trial = downs
-            downs += 1
-            guard trial < delays.count, let delay = delays[trial] else { return }
-            white = true
-            frames.continuation.yield((235, ContinuousClock.now + delay))
-        } else {
-            ups += 1
-            guard white else { return }
-            if blackAfter == .zero {
-                white = false
-                frames.continuation.yield((16, .now))
-                return
-            }
-            Task { [blackAfter] in
-                try? await Task.sleep(for: blackAfter)
-                self.white = false
-                self.frames.continuation.yield((16, .now))
+    private func white(at now: ContinuousClock.Instant) -> Bool {
+        if down { return whiteFrom.map { now >= $0 } ?? false }
+        return blackFrom.map { now < $0 } ?? false
+    }
+
+    private func frame(at now: ContinuousClock.Instant) -> DelayFrame {
+        ticks += 1
+        let white = white(at: now)
+        let marked = marker && !white && (!flicker || ticks % 2 == 0)
+        return DelayFrame(centerLuma: white ? 235 : 16, marker: marked, at: now)
+    }
+
+    func start() {
+        repeater = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                frames.continuation.yield(frame(at: .now))
+                try? await Task.sleep(for: .milliseconds(10))
             }
         }
     }
 
-    func probe(trials: Int, timeout: Duration = .seconds(3), pause: Duration = .zero) -> DelayProbe {
+    func stop() {
+        repeater?.cancel()
+        frames.continuation.finish()
+    }
+
+    func tap(_ isDown: Bool) {
+        let now = ContinuousClock.now
+        if isDown {
+            downWhileWhite.append(white(at: now))
+            downTimes.append(now)
+            let trial = downs
+            downs += 1
+            down = true
+            whiteFrom = nil
+            guard trial < delays.count, let delay = delays[trial] else { return }
+            whiteFrom = now + delay
+            frames.continuation.yield(DelayFrame(centerLuma: 235, marker: false, at: now + delay))
+        } else {
+            ups += 1
+            let wasWhite = white(at: now)
+            down = false
+            blackFrom = wasWhite ? now + blackAfter : nil
+        }
+    }
+
+    func run(trials: Int, timeout: Duration = .seconds(3), pause: Duration = .zero,
+             settle: Duration = .milliseconds(30), markerTimeout: Duration = .seconds(2)) async -> DelayResult {
         let stream = frames.stream
-        return DelayProbe(tap: { [unowned self] in tap($0) }, luma: { stream }, trials: trials, timeout: timeout, pause: pause)
+        let probe = DelayProbe(tap: { [unowned self] in tap($0) }, frames: { stream }, trials: trials, timeout: timeout, pause: pause)
+        probe.settle = settle
+        probe.markerTimeout = markerTimeout
+        start()
+        defer { stop() }
+        return await probe.run()
     }
 }
 
@@ -57,7 +96,8 @@ private final class FakeScreen {
     @Test func medianAndP95FromTrials() async {
         let delays: [Duration?] = (1...20).map { .milliseconds($0 * 10) }
         let screen = FakeScreen(delays: delays.reversed())
-        let result = await screen.probe(trials: 20).run()
+        let result = await screen.run(trials: 20)
+        #expect(result.testScreenOpened)
         #expect(result.trials == 20)
         #expect(result.misses == 0)
         // 10 ... 200 ms: the median is between 100 and 110, the 95th percentile (nearest rank) 190.
@@ -70,7 +110,7 @@ private final class FakeScreen {
     @Test func timeoutCountsMiss() async {
         let screen = FakeScreen(delays: [.milliseconds(40), nil, .milliseconds(60), nil])
         let started = ContinuousClock.now
-        let result = await screen.probe(trials: 4, timeout: .milliseconds(80)).run()
+        let result = await screen.run(trials: 4, timeout: .milliseconds(80))
         #expect(result.trials == 4)
         #expect(result.misses == 2)
         #expect(abs(result.medianMs - 50) < 2)
@@ -85,7 +125,7 @@ private final class FakeScreen {
     @Test func waitsForBlackBeforeEachTrial() async {
         let screen = FakeScreen(delays: Array(repeating: .milliseconds(20), count: 5))
         screen.blackAfter = .milliseconds(30)
-        let result = await screen.probe(trials: 5).run()
+        let result = await screen.run(trials: 5)
         #expect(result.misses == 0)
         #expect(screen.downWhileWhite == [false, false, false, false, false])
     }
@@ -93,18 +133,49 @@ private final class FakeScreen {
     @Test func pauseBetweenTrials() async {
         let screen = FakeScreen(delays: Array(repeating: .milliseconds(5), count: 3))
         let started = ContinuousClock.now
-        _ = await screen.probe(trials: 3, pause: .milliseconds(100)).run()
+        _ = await screen.run(trials: 3, pause: .milliseconds(100))
         // Two pauses between three trials.
         #expect(ContinuousClock.now - started >= .milliseconds(200))
     }
 
-    /// The frames stop (the session ended): the probe returns with the trials it ran.
+    /// R56: the user's own dark screen (a black centre, no corner marker) never gets a tap.
+    @Test func darkUserScreenWithoutTheMarkerGetsNoTap() async {
+        let screen = FakeScreen(delays: Array(repeating: .milliseconds(20), count: 5))
+        screen.marker = false
+        let result = await screen.run(trials: 5, markerTimeout: .milliseconds(300))
+        #expect(screen.downs == 0 && screen.ups == 0)
+        #expect(!result.testScreenOpened)
+        #expect(result.trials == 0 && result.misses == 0)
+    }
+
+    /// R56: the marker on three frames in a row and the settle time since DELAY: then the taps.
+    @Test func markerAndSettleTimeGetTaps() async {
+        let screen = FakeScreen(delays: Array(repeating: .milliseconds(20), count: 2))
+        let started = ContinuousClock.now
+        let result = await screen.run(trials: 2, settle: .milliseconds(300))
+        #expect(result.testScreenOpened)
+        #expect(result.trials == 2 && result.misses == 0)
+        #expect(screen.downs == 2)
+        #expect(screen.downTimes.allSatisfy { $0 - started >= .milliseconds(300) })
+    }
+
+    /// A marker that never holds for three frames in a row is not the test screen.
+    @Test func flickeringMarkerGetsNoTap() async {
+        let screen = FakeScreen(delays: [.milliseconds(20)])
+        screen.flicker = true
+        let result = await screen.run(trials: 1, markerTimeout: .milliseconds(300))
+        #expect(screen.downs == 0)
+        #expect(!result.testScreenOpened)
+    }
+
+    /// The frames stop (the session ended): the probe returns at once, having tapped nothing.
     @Test func endOfFramesEndsTheRun() async {
         let screen = FakeScreen(delays: [.milliseconds(10)])
         screen.frames.continuation.finish()
         let started = ContinuousClock.now
-        let result = await screen.probe(trials: 50).run()
-        #expect(result.trials <= 1)
+        let result = await screen.run(trials: 50)
+        #expect(result.trials == 0)
+        #expect(screen.downs == 0)
         #expect(ContinuousClock.now - started < .seconds(1))
     }
 

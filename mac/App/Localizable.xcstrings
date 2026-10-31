@@ -2883,6 +2883,17 @@
           }
         }
       }
+    },
+    "The test screen didn't open on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The test screen didn't open on the phone."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

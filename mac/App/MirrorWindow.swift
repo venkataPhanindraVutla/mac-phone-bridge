@@ -381,7 +381,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     private func updateQualityMenu() {
-        for item in qualityMenu.items {
+        for item in qualityMenu.items where !item.isSeparatorItem {
             switch item.tag {
             case Self.autoTag:
                 item.state = model.autoQuality ? .on : .off
@@ -428,7 +428,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private func showDelay(_ result: DelayResult) {
         let alert = NSAlert()
         alert.messageText = MirrorCopy.delayTitle
-        alert.informativeText = MirrorCopy.delayRoundTrip(result) + "\n" + MirrorCopy.delayFrameRate(result)
+        alert.informativeText = MirrorCopy.delayMessage(result)
         if let window, window.isVisible {
             alert.beginSheetModal(for: window)
         } else {
