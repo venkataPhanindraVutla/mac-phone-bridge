@@ -241,13 +241,13 @@ public final class AudioOutput: @unchecked Sendable {
     /// the notification's own); the restart runs on `queue`.
     fileprivate func configurationChanged() {
         let playback: (any AudioPlayback)? = lock.withLock {
-            guard !stopped, let playback else { return nil }
+            guard !stopped, let current = self.playback else { return nil }
             restarts += 1
             generation += 1
             scheduledFrames = 0
             // What was scheduled is gone; like at the start, play again once the target is queued.
             policy = JitterPolicy()
-            return playback
+            return current
         }
         guard let playback else { return }
         queue.async { [weak self] in self?.restartOnQueue(playback) }

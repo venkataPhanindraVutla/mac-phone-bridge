@@ -54,9 +54,10 @@ android {
     }
 }
 
-configurations.configureEach {
+configurations.matching { !it.name.contains("lint", ignoreCase = true) }.configureEach {
     // Upstream's sources are pure Java. AGP 9's built-in Kotlin would add kotlin-stdlib (upstream's
     // own release asset carries it), which the server never uses; leaving it out keeps the jar small.
+    // Not from lint's own classpath: lint runs on Kotlin and fails without it (EnumEntriesKt).
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
 }
 
