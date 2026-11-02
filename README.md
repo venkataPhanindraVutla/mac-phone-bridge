@@ -2,6 +2,8 @@
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
+Website: https://venkataphanindravutla.github.io/mac-phone-bridge/
+
 > **Status: milestone 0.5 is code-complete and waiting for checks on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone), 0.2 (notifications, one-time codes, contacts, calls) and 0.3 (clipboard, files, screenshots, photos, browsing your phone's files), 0.4 added control and context (a music controller, Do Not Disturb and Focus sync, auto-lock when you walk away, the phone as a trackpad and presentation remote), and 0.5 adds Full mode: the phone's screen in a Mac window, controlled with the Mac's mouse and keyboard. Everything that depends on a real phone or Mac is **unverified** until the owner checks in the results file are done. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md), [0.4 results](docs/milestones/0.4-results.md), [0.5 results](docs/milestones/0.5-results.md).
 
 ### What's in 0.5
