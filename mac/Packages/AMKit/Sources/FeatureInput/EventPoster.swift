@@ -85,8 +85,9 @@ public final class CGEventPoster: EventPoster {
         let generation = scrollGeneration
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(ScrollPhases.gap))
-            guard let self, generation == self.scrollGeneration,
-                  self.phases.endDue(at: ProcessInfo.processInfo.systemUptime) else { return }
+            // The generation says no scroll came since: the gesture always ends here. (A clock check
+            // could disagree with the sleep's own clock and leave it hanging.)
+            guard let self, generation == self.scrollGeneration else { return }
             self.phases.end()
             self.postScroll(pixelsX: 0, pixelsY: 0, phase: ScrollPhases.endedValue)
         }
