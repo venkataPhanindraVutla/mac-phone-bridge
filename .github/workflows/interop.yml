@@ -2,11 +2,16 @@ name: interop
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   interop:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode 16.4
+        # macos-15 images carry several Xcodes; pin one so Swift/SDK changes are deliberate.
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

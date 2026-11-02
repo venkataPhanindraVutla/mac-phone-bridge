@@ -2,11 +2,16 @@ name: mac
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   mac:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode 16.4
+        # macos-15 images carry several Xcodes; pin one so Swift/SDK changes are deliberate.
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
       - name: Install xcodegen
         run: brew install xcodegen
       - name: Install protoc 4.36.2
@@ -24,17 +29,8 @@ jobs:
       - name: Swift tests
         run: swift test --package-path mac/Packages/AMKit
       - name: Generate Xcode project
-        run: |
-          if [ -f mac/project.yml ]; then
-            xcodegen --spec mac/project.yml --project mac
-          else
-            echo "mac/project.yml not present yet (added by Task 8); skipping"
-          fi
+        run: xcodegen --spec mac/project.yml --project mac
       - name: Build app
         run: |
-          if [ -f mac/project.yml ]; then
-            xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
-              -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
-          else
-            echo "mac app not present yet; skipping"
-          fi
+          xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
+            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
