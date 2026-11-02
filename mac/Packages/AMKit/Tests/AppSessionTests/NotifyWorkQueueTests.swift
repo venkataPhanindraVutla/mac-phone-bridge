@@ -113,6 +113,10 @@ private final class Rig {
     /// P1 connected, with a notification, a loaded contacts store and a missed call shown.
     func connectP1() async {
         queue.handle(.connected(phone("P1"), shared: everything))
+        // The store opens once the phone says it shares contacts.
+        var shared = AMFeatureAvailability()
+        shared.enabled = true
+        queue.handle(message: envelope(.contactsAvailability, .contacts, shared))
         queue.handle(message: contactsBatch())
         queue.handle(message: posted("k1"))
         var missed = AMMissedCall(); missed.number = "+15551234567"; missed.atMs = 1000
