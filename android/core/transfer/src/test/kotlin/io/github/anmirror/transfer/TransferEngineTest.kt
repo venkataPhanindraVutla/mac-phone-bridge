@@ -437,7 +437,9 @@ class TransferEngineTest {
         assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.status("m1").error)
         awaitUntil(5_000, "aborted") { sink.aborted.get() }
         assertTrue(h.streams.single().closed.get())
-        assertEquals(TransferState.FAILED, h.status(q).state)
+        // The send worker may already have picked the queued send up: then it ends on that
+        // worker's thread, not inside onDisconnected().
+        h.awaitState(q, TransferState.FAILED)
         assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.status(q).error)
         Thread.sleep(50)
         // Nothing but the queued send's own offer (if it got out first) was sent after the disconnect.
