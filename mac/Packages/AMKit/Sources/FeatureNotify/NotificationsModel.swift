@@ -14,6 +14,8 @@ public final class NotificationsModel {
 
     public private(set) var authorized: Bool?
     public private(set) var phoneAvailability: AMFeatureAvailability?
+    /// Bumped whenever an app is first seen (or renamed), so Settings can reload its list.
+    public private(set) var seenAppsVersion = 0
 
     @ObservationIgnored private let presenter: NotificationPresenter
     @ObservationIgnored private let icons: IconCache
@@ -175,7 +177,12 @@ public final class NotificationsModel {
     public func settings(for phoneID: String) -> NotifySettings { load(phoneID) }
 
     public func update(_ settings: NotifySettings, phoneID: String) async {
-        save(phoneID, settings)
+        // Apps seen since the caller loaded its copy must survive.
+        var merged = load(phoneID)
+        merged.enabled = settings.enabled
+        merged.mutedPackages = settings.mutedPackages
+        merged.seenApps.merge(settings.seenApps) { current, _ in current }
+        save(phoneID, merged)
         if phoneID == self.phoneID { await sendFilter(phoneID: phoneID) }
     }
 
@@ -208,19 +215,34 @@ public final class NotificationsModel {
         if settings.seenApps[package] != name {
             settings.seenApps[package] = name
             save(phoneID, settings)
+            seenAppsVersion += 1
         }
+    }
+
+    /// Drops direction marks and bidi embeddings/isolates and turns no-break spaces into spaces: dialers
+    /// wrap numbers in them.
+    static func withoutFormatting(_ title: String) -> String {
+        var out = String.UnicodeScalarView()
+        for s in title.unicodeScalars {
+            switch s.value {
+            case 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069: continue
+            case 0x00A0: out.append(" ")
+            default: out.append(s)
+            }
+        }
+        return String(out)
     }
 
     /// At least 7 digits once `+ ( ) - .` and spaces are stripped, and nothing else.
     static func looksLikePhoneNumber(_ title: String) -> Bool {
-        let stripped = title.filter { !"+().- ".contains($0) }
+        let stripped = withoutFormatting(title).filter { !"+().- ".contains($0) }
         return stripped.count >= 7 && stripped.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     private func makeContent(_ n: AMPhoneNotification, phoneID: String) -> UNNotificationContent {
         let appName = n.appName.isEmpty ? n.package : n.appName
         var title = n.title
-        if Self.looksLikePhoneNumber(title), let name = nameFor(title), !name.isEmpty { title = name }
+        if Self.looksLikePhoneNumber(title), let name = nameFor(Self.withoutFormatting(title)), !name.isEmpty { title = name }
 
         let content = UNMutableNotificationContent()
         if title.isEmpty {

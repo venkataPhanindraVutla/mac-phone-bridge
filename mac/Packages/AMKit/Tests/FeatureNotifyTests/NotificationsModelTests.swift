@@ -167,6 +167,39 @@ private func info(_ phone: String = "P1", key: String = "k1", code: String? = ni
 }
 
 @MainActor
+@Test func wrappedNumberTitleIsEnrichedFromContacts() async {
+    let h = Harness(); await h.connect()
+    h.contacts["+1 (555) 010-2030"] = "Ann Lee"
+    // Bidi isolates and a no-break space around the number, as some dialers wrap it.
+    await h.model.posted(note(title: "\u{2066}+1\u{00A0}(555) 010-2030\u{2069}"))
+    #expect(h.presenter.delivered.last?.content.title == "Ann Lee")
+}
+
+@MainActor
+@Test func updateKeepsAppsSeenSinceTheCallerLoaded() async {
+    let h = Harness(); await h.connect()
+    await h.model.posted(note(package: "com.a", app: "A"))
+    let stale = h.model.settings(for: "P1")           // what Settings holds
+    await h.model.posted(note(key: "k2", package: "com.b", app: "B"))
+    var edited = stale
+    edited.mutedPackages = ["com.a"]
+    await h.model.update(edited, phoneID: "P1")
+    #expect(h.stored["P1"]?.seenApps == ["com.a": "A", "com.b": "B"])
+    #expect(h.stored["P1"]?.mutedPackages == ["com.a"])
+}
+
+@MainActor
+@Test func seenAppsChangeIsObservable() async {
+    let h = Harness(); await h.connect()
+    let before = h.model.seenAppsVersion
+    await h.model.posted(note(package: "com.a", app: "A"))
+    #expect(h.model.seenAppsVersion != before)
+    let after = h.model.seenAppsVersion
+    await h.model.posted(note(key: "k2", package: "com.a", app: "A"))   // nothing new
+    #expect(h.model.seenAppsVersion == after)
+}
+
+@MainActor
 @Test func replyActionIsTextInput() async {
     let h = Harness(); await h.connect()
     await h.model.posted(note(actions: [action(2, "Reply", reply: true, hint: "Message Ann")]))
