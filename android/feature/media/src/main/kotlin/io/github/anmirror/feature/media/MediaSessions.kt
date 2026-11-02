@@ -136,6 +136,8 @@ class AndroidMediaSessions(
             onChange = null
             if (!watching) return
             watching = false
+            listVersion++ // a start() still reading its list must not apply it after this stop
+
             manager?.removeOnActiveSessionsChangedListener(activeListener)
             app.contentResolver.unregisterContentObserver(volumeObserver)
             sessions.also { sessions = emptyList() }
@@ -228,12 +230,7 @@ class AndroidMediaSessions(
     /** `position + (now - lastPositionUpdateTime) * speed` while playing, kept within `0..duration`. */
     private fun positionOf(state: PlaybackState?, playing: Boolean, durationMs: Long): Long {
         if (state == null || state.position < 0) return 0
-        var position = state.position
-        if (playing && state.lastPositionUpdateTime > 0) {
-            position += ((clock() - state.lastPositionUpdateTime) * state.playbackSpeed).toLong()
-        }
-        position = position.coerceAtLeast(0)
-        return if (durationMs > 0) position.coerceAtMost(durationMs) else position
+        return extrapolatedPosition(state.position, if (playing) state.lastPositionUpdateTime else 0, state.playbackSpeed, clock(), durationMs)
     }
 
     private class Volume(val remote: Boolean, val current: Int, val max: Int, val fixed: Boolean)
@@ -307,4 +304,15 @@ class AndroidMediaSessions(
             false
         }
     }
+}
+
+/**
+ * `position + (now - updatedAt) * speed`, kept within `0..duration`; [updatedAt] <= 0 means no
+ * extrapolation. A speed of 0 while playing counts as 1, like everywhere else (StateThrottle, the Mac).
+ */
+internal fun extrapolatedPosition(position: Long, updatedAt: Long, speed: Float, now: Long, durationMs: Long): Long {
+    var p = position
+    if (updatedAt > 0) p += ((now - updatedAt) * (if (speed == 0f) 1f else speed)).toLong()
+    p = p.coerceAtLeast(0)
+    return if (durationMs > 0) p.coerceAtMost(durationMs) else p
 }
