@@ -56,8 +56,8 @@ public final class ContactsSession {
     public func connected(phoneID: String) async {
         connectedPhoneID = phoneID
         phoneEnabled = nil
-        guard enabled else { return }
-        await openStore(phoneID: phoneID)
+        // The store opens on the phone's first `contacts.availability` with enabled = true, so a
+        // phone that does not share never makes this Mac create (then wipe) a key at every connect.
     }
 
     public func disconnected() {
@@ -83,8 +83,8 @@ public final class ContactsSession {
             if !a.enabled {
                 // The phone stopped sharing (switch off or permission gone): nothing of it stays here.
                 wipe(phoneID: phoneID)
-            } else if before == false, enabled {
-                // Sharing came back: start again from nothing.
+            } else if before != true, enabled {
+                // Sharing is on (first heard, or back): load the store and ask for what it lacks.
                 await openStore(phoneID: phoneID)
             }
         default:
@@ -96,8 +96,8 @@ public final class ContactsSession {
     public func toggled(on: Bool) async {
         enabled = on
         if on {
-            // Not while the phone says it does not share: it would not answer.
-            if let phoneID = connectedPhoneID, phoneEnabled != false { await openStore(phoneID: phoneID) }
+            // Only once the phone has said it shares: otherwise it would not answer.
+            if let phoneID = connectedPhoneID, phoneEnabled == true { await openStore(phoneID: phoneID) }
         } else {
             unload(wiping: true)
             for id in pairedPhoneIDs() { remove(id) }

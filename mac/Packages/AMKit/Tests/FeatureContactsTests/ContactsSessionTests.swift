@@ -38,12 +38,14 @@ private final class Rig {
     var paired = ["P1", "P2"]
     var syncs: [Int64] = []
     var removed: [String] = []
+    var opens = 0
     var session: ContactsSession!
 
     init() {
         session = ContactsSession(
             enabled: true,
             open: { [unowned self] id in
+                self.opens += 1
                 let key = self.keys[id] ?? SymmetricKey(size: .bits256)
                 self.keys[id] = key
                 return ContactsStore(file: EncryptedFile(url: self.url(id), key: key))
@@ -65,6 +67,7 @@ private final class Rig {
 @MainActor @Test func phoneSharingOffWipesStore() async {
     let r = Rig(); defer { r.cleanUp() }
     await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(true))
     await r.session.message(fullBatch())
     #expect(r.session.name(forNumber: "9876543210") == "Ann Lee")
     #expect(r.exists("P1"))
@@ -88,6 +91,7 @@ private final class Rig {
 @MainActor @Test func permissionLossAlsoWipesStore() async {
     let r = Rig(); defer { r.cleanUp() }
     await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(true))
     await r.session.message(fullBatch())
     await r.session.message(availability(false, .needsPermission))
     #expect(r.session.store == nil)
@@ -97,6 +101,7 @@ private final class Rig {
 @MainActor @Test func forgettingAnotherPhoneKeepsLoadedStore() async {
     let r = Rig(); defer { r.cleanUp() }
     await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(true))
     await r.session.message(fullBatch())
     r.session.forget(phoneID: "P2")
     #expect(r.removed == ["P2"])
@@ -112,6 +117,7 @@ private final class Rig {
 @MainActor @Test func switchOffWipesEveryPairedPhone() async {
     let r = Rig(); defer { r.cleanUp() }
     await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(true))
     await r.session.message(fullBatch())
     await r.session.toggled(on: false)
     #expect(r.session.store == nil)
@@ -125,6 +131,7 @@ private final class Rig {
 @MainActor @Test func switchOnWaitsWhileThePhoneDoesNotShare() async {
     let r = Rig(); defer { r.cleanUp() }
     await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(true))
     await r.session.toggled(on: false)
     await r.session.message(availability(false))   // heard while this Mac's switch is off
     await r.session.toggled(on: true)
@@ -133,4 +140,27 @@ private final class Rig {
     await r.session.message(availability(true))
     #expect(r.session.storePhoneID == "P1")
     #expect(r.syncs == [0, 0])
+}
+
+@MainActor @Test func connectOpensNothingUntilThePhoneSaysItShares() async {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.session.connected(phoneID: "P1")
+    #expect(r.opens == 0)
+    #expect(r.syncs.isEmpty)
+    await r.session.message(availability(true))
+    #expect(r.opens == 1)
+    #expect(r.syncs == [0])
+    await r.session.message(availability(true))     // the same news again changes nothing
+    #expect(r.opens == 1)
+    #expect(r.syncs == [0])
+}
+
+@MainActor @Test func connectWithSharingOffNeverCreatesAKey() async {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.session.connected(phoneID: "P1")
+    await r.session.message(availability(false))
+    #expect(r.opens == 0)
+    #expect(r.keys.isEmpty)
+    #expect(r.session.store == nil)
+    #expect(r.syncs.isEmpty)
 }
