@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- BRAND: rename here. The product name lives in `const BRAND` in main.js (fills every [data-brand] element)
-     and in the <title>, og:title, og:site_name, twitter:title and application-name literals below. -->
+     and in the <title>, og:title, og:site_name, twitter:title and application-name literals below, and in 404.html. -->
 <title>Mac Phone Bridge: your Android phone, part of your Mac</title>
 <meta name="description" content="An open-source pair of native apps, for macOS and Android, that brings notifications, calls, files, the clipboard and the phone's own screen to your Mac. No account, no cloud, no telemetry.">
 <meta name="application-name" content="Mac Phone Bridge">
-<meta name="theme-color" content="#07090d">
-<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="light">
 <link rel="canonical" href="https://venkataphanindravutla.github.io/mac-phone-bridge/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Mac Phone Bridge">
@@ -19,560 +19,684 @@
 <meta property="og:image" content="https://venkataphanindravutla.github.io/mac-phone-bridge/og-image.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="A Mac desktop showing an Android phone's notification, status menu and mirrored screen.">
+<meta property="og:image:alt" content="An Android phone and a MacBook, with the phone's screen open in a Mac window.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Mac Phone Bridge: your Android phone, part of your Mac">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400&amp;family=Sora:wght@400;600&amp;display=swap">
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..900&amp;family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400&amp;display=swap">
 <link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
 <script src="main.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
 <svg class="sprite" aria-hidden="true" focusable="false">
-  <symbol id="logo" viewBox="0 0 32 32"><rect x="4.5" y="8.5" width="8" height="15" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="17.5" y="8.5" width="11" height="9" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M21 22.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.5 15.5h5" stroke="var(--volt)" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="logo" viewBox="0 0 32 32"><rect x="4.5" y="8.5" width="8" height="15" rx="2.2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="17.5" y="8.5" width="11" height="9" rx="1.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 22.5h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12.5 15.5h5" stroke="#ff5b14" stroke-width="3"/></symbol>
+  <symbol id="app-icon" viewBox="0 0 32 32"><rect width="32" height="32" rx="7.5" fill="#ff5b14"/><rect x="5.5" y="9" width="7.5" height="14" rx="2" fill="none" stroke="#000" stroke-width="2"/><rect x="17.5" y="9" width="10" height="8.5" rx="1.5" fill="none" stroke="#000" stroke-width="2"/><path d="M20.5 22.5h4M13 15.5h4.5" stroke="#000" stroke-width="2" stroke-linecap="round"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></symbol>
-  <symbol id="i-code" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M8 12h.01M12 12h.01M16 12h.01" stroke-width="2.6"/></symbol>
-  <symbol id="i-call" viewBox="0 0 24 24"><path d="M5 4h3l1.5 4-2 1.5a11 11 0 0 0 5 5l1.5-2 4 1.5v3a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z"/></symbol>
-  <symbol id="i-contact" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
-  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M9 3.5h6v3H9zM7.5 5H5.5v15.5h13V5h-2M9 12h6M9 15.5h4"/></symbol>
-  <symbol id="i-files" viewBox="0 0 24 24"><path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM9 13.5h6M13 11.5l2 2-2 2"/></symbol>
-  <symbol id="i-shot" viewBox="0 0 24 24"><path d="M4 9V5h4M16 5h4v4M20 15v4h-4M8 19H4v-4"/><circle cx="12" cy="12" r="2.5"/></symbol>
-  <symbol id="i-photos" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M4 16l5-5 4 4 2-2 5 5M15.5 9.5h.01" /></symbol>
-  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 17.5V6l10-2v11.5"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="16.5" cy="15.5" r="2.5"/></symbol>
-  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
-  <symbol id="i-ring" viewBox="0 0 24 24"><rect x="8" y="3.5" width="8" height="17" rx="1.6"/><path d="M4.5 9a6 6 0 0 0 0 6M19.5 9a6 6 0 0 1 0 6M11 17.5h2"/></symbol>
-  <symbol id="i-bars" viewBox="0 0 24 24"><path d="M5 19v-3M9.5 19v-6M14 19v-9M18.5 19V5"/></symbol>
-  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="10" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
-  <symbol id="i-pointer" viewBox="0 0 24 24"><path d="M6 4l12 7-5.5 1.5L10 18z"/></symbol>
-  <symbol id="i-screen" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 20.5h6M10 7.5h4v7h-4z"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
   <symbol id="i-git" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M18 10.2c0 4-6 3-10.5 6.3"/></symbol>
-  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v4h4M10 12h5M10 15.5h5"/></symbol>
-  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
-  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z" fill="currentColor"/></symbol>
-  <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 6v12l8-6zM13 6v12l8-6z" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M19 6v12l-8-6zM11 6v12l-8-6z" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-back" viewBox="0 0 24 24"><path d="M16 5.5L7 12l9 6.5z"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M10.5 18.5h3"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-tri" viewBox="0 0 24 24"><path d="M16 5.5L7 12l9 6.5z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></symbol>
   <symbol id="i-recents" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
   <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4h-4"/></symbol>
-  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
-  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v7.5M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 6l6 6-6 6M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-mute" viewBox="0 0 24 24"><path d="M9 5.5a3 3 0 0 1 6 0V11a3 3 0 0 1-6 0zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16"/></symbol>
+  <symbol id="i-keypad" viewBox="0 0 24 24"><path d="M7 6h.01M12 6h.01M17 6h.01M7 11h.01M12 11h.01M17 11h.01M7 16h.01M12 16h.01M17 16h.01M12 20h.01" stroke-width="3"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
   <symbol id="i-hangup" viewBox="0 0 24 24"><path d="M3 13.5c5-4.5 13-4.5 18 0l-2 2.5-3.2-1.2v-2.6a12 12 0 0 0-7.6 0v2.6L5 16z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-answer" viewBox="0 0 24 24"><path d="M5 4h3l1.5 4-2 1.5a11 11 0 0 0 5 5l1.5-2 4 1.5v3a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2.5h8.5L19 7v14.5H6z" fill="currentColor" stroke="none"/><path d="M14.5 2.5V7H19" stroke="rgba(0,0,0,.35)"/></symbol>
-  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 4l14 8.2-6.3 1.6L9.5 20z" fill="#fff" stroke="#111" stroke-width="1.2"/></symbol>
+  <symbol id="i-pdf" viewBox="0 0 40 48"><path d="M2 2h25l11 11v33H2z" fill="#fff" stroke="#000" stroke-width="2.5" stroke-linejoin="round"/><path d="M27 2v11h11" fill="none" stroke="#000" stroke-width="2.5" stroke-linejoin="round"/><rect x="2" y="28" width="26" height="11" fill="#ff5b14"/><path d="M6 31.5h3.2a1.6 1.6 0 0 1 0 3.2H6v-3.2m0 3.2V36.5M13 31.5h2.2a2.5 2.5 0 0 1 0 5H13zM21 36.5v-5h3.6M21 34h2.8" fill="none" stroke="#000" stroke-width="1.4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 48 40"><path d="M2 6a3 3 0 0 1 3-3h13l4 5h21a3 3 0 0 1 3 3v24a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3z" fill="#5aa3f0"/><path d="M2 13h44v22a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3z" fill="#74b6f7"/><path d="M24 18v12M19 25l5 5 5-5" fill="none" stroke="#2f6db8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="qr" viewBox="-2 -2 33 33"><rect x="-2" y="-2" width="33" height="33" fill="#fff"/><path fill="#000" d="M0 0h7v1h-7zM8 0h2v1h-2zM11 0h1v1h-1zM13 0h2v1h-2zM16 0h5v1h-5zM22 0h7v1h-7zM0 1h1v1h-1zM6 1h1v1h-1zM9 1h2v1h-2zM14 1h1v1h-1zM16 1h1v1h-1zM18 1h3v1h-3zM22 1h1v1h-1zM28 1h1v1h-1zM0 2h1v1h-1zM2 2h3v1h-3zM6 2h1v1h-1zM8 2h1v1h-1zM10 2h1v1h-1zM13 2h1v1h-1zM15 2h3v1h-3zM19 2h2v1h-2zM22 2h1v1h-1zM24 2h3v1h-3zM28 2h1v1h-1zM0 3h1v1h-1zM2 3h3v1h-3zM6 3h1v1h-1zM9 3h2v1h-2zM13 3h1v1h-1zM18 3h1v1h-1zM20 3h1v1h-1zM22 3h1v1h-1zM24 3h3v1h-3zM28 3h1v1h-1zM0 4h1v1h-1zM2 4h3v1h-3zM6 4h1v1h-1zM8 4h1v1h-1zM10 4h1v1h-1zM12 4h1v1h-1zM17 4h1v1h-1zM22 4h1v1h-1zM24 4h3v1h-3zM28 4h1v1h-1zM0 5h1v1h-1zM6 5h1v1h-1zM8 5h1v1h-1zM11 5h1v1h-1zM13 5h1v1h-1zM18 5h2v1h-2zM22 5h1v1h-1zM28 5h1v1h-1zM0 6h7v1h-7zM8 6h1v1h-1zM10 6h1v1h-1zM12 6h1v1h-1zM14 6h1v1h-1zM16 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM22 6h7v1h-7zM8 7h5v1h-5zM14 7h3v1h-3zM18 7h2v1h-2zM3 8h4v1h-4zM9 8h4v1h-4zM15 8h4v1h-4zM25 8h1v1h-1zM1 9h3v1h-3zM5 9h1v1h-1zM7 9h10v1h-10zM19 9h5v1h-5zM26 9h1v1h-1zM28 9h1v1h-1zM0 10h3v1h-3zM4 10h3v1h-3zM9 10h1v1h-1zM11 10h1v1h-1zM16 10h3v1h-3zM22 10h2v1h-2zM1 11h1v1h-1zM3 11h3v1h-3zM7 11h2v1h-2zM11 11h1v1h-1zM15 11h5v1h-5zM23 11h1v1h-1zM26 11h1v1h-1zM2 12h2v1h-2zM5 12h2v1h-2zM9 12h2v1h-2zM13 12h3v1h-3zM18 12h1v1h-1zM22 12h1v1h-1zM24 12h2v1h-2zM1 13h1v1h-1zM4 13h2v1h-2zM7 13h2v1h-2zM10 13h3v1h-3zM14 13h2v1h-2zM18 13h1v1h-1zM23 13h4v1h-4zM28 13h1v1h-1zM0 14h1v1h-1zM3 14h1v1h-1zM6 14h1v1h-1zM8 14h1v1h-1zM10 14h2v1h-2zM17 14h1v1h-1zM22 14h1v1h-1zM24 14h1v1h-1zM0 15h1v1h-1zM4 15h2v1h-2zM7 15h4v1h-4zM14 15h1v1h-1zM17 15h1v1h-1zM20 15h1v1h-1zM22 15h1v1h-1zM26 15h2v1h-2zM0 16h3v1h-3zM4 16h1v1h-1zM6 16h4v1h-4zM12 16h1v1h-1zM16 16h3v1h-3zM20 16h3v1h-3zM25 16h2v1h-2zM1 17h2v1h-2zM4 17h2v1h-2zM10 17h1v1h-1zM12 17h1v1h-1zM14 17h2v1h-2zM18 17h2v1h-2zM21 17h7v1h-7zM0 18h1v1h-1zM2 18h6v1h-6zM10 18h2v1h-2zM13 18h1v1h-1zM15 18h1v1h-1zM18 18h6v1h-6zM27 18h1v1h-1zM2 19h4v1h-4zM7 19h1v1h-1zM9 19h3v1h-3zM15 19h4v1h-4zM22 19h5v1h-5zM1 20h1v1h-1zM3 20h6v1h-6zM10 20h1v1h-1zM12 20h7v1h-7zM20 20h1v1h-1zM22 20h3v1h-3zM10 21h2v1h-2zM13 21h1v1h-1zM16 21h1v1h-1zM18 21h1v1h-1zM22 21h1v1h-1zM27 21h1v1h-1zM0 22h7v1h-7zM16 22h10v1h-10zM0 23h1v1h-1zM6 23h1v1h-1zM11 23h1v1h-1zM17 23h1v1h-1zM19 23h3v1h-3zM23 23h1v1h-1zM27 23h2v1h-2zM0 24h1v1h-1zM2 24h3v1h-3zM6 24h1v1h-1zM12 24h3v1h-3zM16 24h1v1h-1zM18 24h3v1h-3zM24 24h1v1h-1zM26 24h3v1h-3zM0 25h1v1h-1zM2 25h3v1h-3zM6 25h1v1h-1zM9 25h1v1h-1zM12 25h2v1h-2zM16 25h3v1h-3zM20 25h1v1h-1zM22 25h1v1h-1zM25 25h1v1h-1zM0 26h1v1h-1zM2 26h3v1h-3zM6 26h1v1h-1zM9 26h1v1h-1zM12 26h2v1h-2zM15 26h5v1h-5zM21 26h1v1h-1zM24 26h1v1h-1zM28 26h1v1h-1zM0 27h1v1h-1zM6 27h1v1h-1zM8 27h2v1h-2zM12 27h5v1h-5zM18 27h1v1h-1zM20 27h2v1h-2zM23 27h2v1h-2zM0 28h7v1h-7zM12 28h1v1h-1zM14 28h1v1h-1zM17 28h2v1h-2zM20 28h4v1h-4zM26 28h1v1h-1zM28 28h1v1h-1z"/></symbol>
+  <!-- Fictional demo photos, drawn as flat SVG -->
+  <symbol id="photo-ferry" viewBox="0 0 120 120"><rect width="120" height="120" fill="#f6b48f"/><rect y="0" width="120" height="44" fill="#f39a6b"/><circle cx="84" cy="54" r="20" fill="#ffe1a6"/><rect y="66" width="120" height="54" fill="#2b3f8f"/><path d="M0 74h120M0 84h120M0 96h120" stroke="#4b63b8" stroke-width="3"/><path d="M22 66l6-12h40l8 12z" fill="#111"/><rect x="36" y="44" width="22" height="10" fill="#111"/><rect x="44" y="34" width="5" height="10" fill="#ff5b14"/></symbol>
+  <symbol id="photo-dumplings" viewBox="0 0 120 120"><rect width="120" height="120" fill="#1d2a24"/><circle cx="60" cy="62" r="46" fill="#e9e3d3"/><circle cx="60" cy="62" r="38" fill="#f5f1e6"/><path d="M34 64c6-14 22-14 26 0zM58 52c6-14 22-14 26 0zM48 80c6-14 22-14 26 0z" fill="#f2d7a4" stroke="#c99a5a" stroke-width="2"/><path d="M8 18l40 22M14 10l40 22" stroke="#7b4a26" stroke-width="4" stroke-linecap="round"/></symbol>
+  <symbol id="photo-cliffs" viewBox="0 0 120 120"><rect width="120" height="120" fill="#bfe3f2"/><path d="M0 120V64l26-20 18 10 22-24 24 30 30-14v74z" fill="#3f6b3a"/><path d="M0 120V90l40-12 30 10 50-8v40z" fill="#264a2c"/><circle cx="26" cy="24" r="10" fill="#fff6c9"/></symbol>
 </svg>
 
-<header class="top">
-  <div class="wrap top-in">
-    <a class="mark" href="#top">
-      <svg class="mark-logo" aria-hidden="true"><use href="#logo"/></svg>
-      <span data-brand>Mac Phone Bridge</span>
-    </a>
-    <nav class="nav" aria-label="Sections">
-      <a href="#features">Features</a>
-      <a href="#full-mode">Full mode</a>
-      <a href="#how">How it works</a>
-      <a href="#status">Status</a>
-      <a href="#faq">FAQ</a>
-    </nav>
-    <a class="btn btn-ghost btn-sm" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge">
-      <svg class="ico" aria-hidden="true"><use href="#i-git"/></svg>GitHub
-    </a>
-  </div>
+<header class="top" id="top">
+  <a class="brand" href="#main" aria-label="Mac Phone Bridge, back to the top"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span data-brand>Mac Phone Bridge</span></a>
+  <nav class="nav" aria-label="Sections">
+    <a href="#try">Try it</a>
+    <a href="#features">Features</a>
+    <a href="#how">Privacy</a>
+    <a href="#status">Status</a>
+    <a href="#faq">FAQ</a>
+  </nav>
+  <a class="top-git" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge"><svg class="ico" aria-hidden="true"><use href="#i-git"/></svg><span>GitHub</span></a>
 </header>
 
 <main id="main">
-  <!-- Hero -->
-  <section class="hero" id="top" aria-labelledby="hero-title">
-    <div class="wrap hero-copy">
-      <p class="badge"><span class="badge-dot" aria-hidden="true"></span>Beta — public release coming soon</p>
-      <h1 id="hero-title">Your Android phone, part of your Mac.</h1>
-      <div class="hero-side">
-      <p class="lede">
-        <span data-brand>Mac Phone Bridge</span> is a pair of native apps, one for your Mac and one for your phone.
-        Notifications, calls, files, the clipboard and the phone's own screen come to your Mac, straight over your own network.
-        No account, no cloud.
-      </p>
-      <div class="ctas">
-        <a class="btn btn-primary" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge">
-          <svg class="ico" aria-hidden="true"><use href="#i-git"/></svg>View on GitHub
-        </a>
-        <a class="btn btn-ghost" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/tree/main/docs">
-          <svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg>Read the docs
-        </a>
-        <a class="btn btn-ghost" href="#build">
-          <svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>Build from source
-        </a>
+
+<!-- ===================================================================== STORY -->
+<section class="story" id="story" aria-labelledby="story-h">
+  <div class="story-pin">
+    <div class="story-bg" aria-hidden="true">
+      <i class="bg" data-bg="0"></i><i class="bg" data-bg="1"></i><i class="bg" data-bg="2"></i><i class="bg" data-bg="3"></i><i class="bg" data-bg="4"></i><i class="bg" data-bg="5"></i>
+    </div>
+
+    <div class="story-copy">
+      <div class="stage-copy" data-stage="0">
+        <h1 class="kin display" id="story-h">Your Android phone, part of your Mac.</h1>
+        <p class="lede"><span data-brand>Mac Phone Bridge</span> is a pair of native apps, one for your Mac and one for your phone. Notifications, calls, files, the clipboard and the phone's own screen come to your Mac, straight over your own network.</p>
+        <div class="cta-row">
+          <a class="btn btn-ink" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge"><svg class="ico" aria-hidden="true"><use href="#i-git"/></svg>View on GitHub</a>
+          <a class="btn btn-line" href="#build">Build from source</a>
+        </div>
+        <p class="status-note">Not released yet. It's in private beta, so there's no download.</p>
       </div>
-      <ul class="facts mono" aria-label="Key facts">
-        <li>Apache-2.0</li>
-        <li>macOS 14+</li>
-        <li>Android 10+</li>
-        <li>No account</li>
-      </ul>
+      <div class="stage-copy" data-stage="1">
+        <h2 class="kin display">Pair once. Check the code.</h2>
+        <p class="lede">The Mac shows a QR code. Scan it with the phone, then confirm the same 6-digit code shows on both screens. No account, no cloud.</p>
+      </div>
+      <div class="stage-copy" data-stage="2">
+        <h2 class="kin display">Notifications land on your Mac.</h2>
+        <p class="lede">As real Mac notifications, with their buttons and inline reply. When one holds a sign-in code, the Mac offers Copy code.</p>
+      </div>
+      <div class="stage-copy" data-stage="3">
+        <h2 class="kin display">Files cross over.</h2>
+        <p class="lede">Share to Send to Mac on the phone, or drop files on the Phone window on the Mac. Files from the phone land in Downloads.</p>
+      </div>
+      <div class="stage-copy" data-stage="4">
+        <h2 class="kin display">Answer calls at your desk.</h2>
+        <p class="lede">See who's calling, then answer, decline, mute or hang up from the Mac. The call's audio stays on your phone.</p>
+      </div>
+      <div class="stage-copy" data-stage="5">
+        <h2 class="kin display">The whole phone, in a Mac window.</h2>
+        <p class="lede">Full mode shows the phone's screen with its sound. Click to tap, scroll to scroll, type with the Mac's keyboard. Android 11 and later, after a one-time setup.</p>
       </div>
     </div>
 
-    <div class="wrap demo">
-      <div class="tabs" role="tablist" aria-label="Show a feature in the preview">
-        <button class="tab" role="tab" id="tab-notifications" aria-controls="demo-panel" aria-selected="true" data-state="notifications"><span>Notifications</span><i class="tab-bar" aria-hidden="true"></i></button>
-        <button class="tab" role="tab" id="tab-calls" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-state="calls"><span>Calls</span><i class="tab-bar" aria-hidden="true"></i></button>
-        <button class="tab" role="tab" id="tab-files" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-state="files"><span>Files</span><i class="tab-bar" aria-hidden="true"></i></button>
-        <button class="tab" role="tab" id="tab-mirroring" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-state="mirroring"><span>Mirroring</span><i class="tab-bar" aria-hidden="true"></i></button>
-      </div>
+    <ol class="story-steps" aria-hidden="true">
+      <li data-step="0"><span>Hello</span></li><li data-step="1"><span>Pair</span></li><li data-step="2"><span>Notify</span></li><li data-step="3"><span>Files</span></li><li data-step="4"><span>Calls</span></li><li data-step="5"><span>Full mode</span></li>
+    </ol>
+    <a class="story-skip" href="#try">Skip the story</a>
 
-      <div id="demo-panel" role="tabpanel" aria-labelledby="tab-notifications">
-        <figure class="stage-wrap">
-          <div class="stage" data-state="notifications" aria-hidden="true">
-            <div class="desk">
-              <div class="wall"><i></i><i></i></div>
-              <div class="bgwin"><div class="win-bar"><span class="tl"><i></i><i></i><i></i></span><b>Trip notes</b></div><div class="lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+    <div class="scene-wrap">
+      <div class="scene" role="img" aria-label="Illustration: an Android phone beside a MacBook. They pair with a QR code and a matching 6-digit code, a chat notification moves from the phone to the Mac, a PDF moves across to the Mac's Downloads, a call from Mum is answered on the Mac, and the phone's screen opens in a Mac window.">
+        <div class="rig">
+          <!-- ============ MacBook ============ -->
+          <div class="mac-pos"><div class="mac-move"><div class="mac">
+            <div class="lid">
+              <i class="lid-back"></i><i class="lid-edge e1"></i><i class="lid-edge e2"></i><i class="lid-edge e3"></i>
+              <div class="lid-front">
+                <div class="mscreen">
+                  <div class="wall" aria-hidden="true"><i class="wall-sun"></i><i class="wall-band"></i></div>
 
-              <div class="menubar">
-                <b>Finder</b><span>File</span><span>Edit</span><span>View</span><span class="mb-x">Go</span><span class="mb-x">Window</span>
-                <span class="mb-r">
-                  <span class="mb-me"><svg><use href="#logo"/></svg></span>
-                  <svg class="mb-ic"><use href="#i-wifi"/></svg>
-                  <span class="mb-batt"><i></i></span>
-                  <span class="mb-x">Tue</span><span>10:24</span>
-                </span>
-              </div>
-
-              <!-- Notifications: status menu + banners -->
-              <div class="dd s-notifications">
-                <div class="dd-head">
-                  <div><b>Asha's phone</b><span class="ok">Connected</span></div>
-                </div>
-                <div class="dd-stats">
-                  <div><span class="batt"><i style="width:82%"></i></span><b>82%</b><small>Charging</small></div>
-                  <div><span class="bars"><i></i><i></i><i></i><i class="off"></i></span><b>LTE</b><small>Signal</small></div>
-                  <div><svg><use href="#i-wifi"/></svg><b>Wi-Fi</b><small>Home</small></div>
-                </div>
-                <div class="dd-np">
-                  <span class="art"></span>
-                  <span class="np-t"><b>Night Ferry</b><small>Low Tide Club</small></span>
-                  <svg><use href="#i-prev"/></svg><svg><use href="#i-play"/></svg><svg><use href="#i-next"/></svg>
-                </div>
-                <ul class="dd-menu">
-                  <li>Show Phone Screen</li>
-                  <li>Send File to Phone…</li>
-                  <li>Ring Phone</li>
-                  <li class="sep">Settings…</li>
-                </ul>
-              </div>
-
-              <div class="banners s-notifications">
-                <div class="note n1">
-                  <span class="app a-chat"></span>
-                  <div class="note-b">
-                    <div class="note-h"><b>Chat</b><small>now</small></div>
-                    <b>Priya</b>
-                    <p>Are we still on for 7?</p>
+                  <div class="mx-bar" data-screen="mac-menu-bar">
+                    <b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Go</span><span class="hide-s">Window</span>
+                    <span class="mx-bar-r"><span class="mx-status"><svg aria-hidden="true"><use href="#i-phone"/></svg>82%&#x26A1;&#xFE0E;</span><svg aria-hidden="true"><use href="#i-wifi"/></svg><span>Tue 10:24</span></span>
                   </div>
-                  <div class="note-a"><span class="act">Reply</span><span class="act">Mark as read</span></div>
-                </div>
-                <div class="note n2">
-                  <span class="app a-bank"></span>
-                  <div class="note-b">
-                    <div class="note-h"><b>Bank</b><small>now</small></div>
-                    <b>Sign-in code</b>
-                    <p>Your code is <span class="otp">482 913</span>. It expires in 10 minutes.</p>
+
+                  <!-- Pairing window: QR, then the code, then paired -->
+                  <div class="mx-win mx-pair view" data-view="m-pair">
+                    <div class="mx-tb"><i></i><i></i><i></i><span>Pair a phone</span></div>
+                    <div class="mx-pair-body view" data-view="m-qr" data-screen="mac-pairing-qr">
+                      <svg class="mx-qr" aria-hidden="true"><use href="#qr"/></svg>
+                      <p>Scan this with the <span data-brand>Mac Phone Bridge</span> app on your phone</p>
+                      <p class="sec">Expires in 4:52</p>
+                      <span class="mx-btn">Cancel</span>
+                    </div>
+                    <div class="mx-pair-body view" data-view="m-code" data-screen="mac-pairing-code">
+                      <p>Does your phone show this code?</p>
+                      <p class="mx-code">315274</p>
+                      <div class="mx-row"><span class="mx-btn">Cancel</span><span class="mx-btn mx-btn-def">Confirm</span></div>
+                    </div>
+                    <div class="mx-pair-body view final" data-view="m-paired" data-screen="mac-pairing-done">
+                      <span class="mx-okc"><svg aria-hidden="true"><use href="#i-check"/></svg></span>
+                      <p><b>Paired with Asha's phone</b></p>
+                      <span class="mx-btn mx-btn-def">Done</span>
+                    </div>
                   </div>
-                  <div class="note-a"><span class="act act-hi"><span class="cc">Copy code</span><span class="cd">Copied</span></span></div>
-                </div>
-              </div>
 
-              <!-- Calls -->
-              <div class="call s-calls">
-                <span class="avatar">M</span>
-                <div class="call-t">
-                  <b>Mum</b>
-                  <small class="ring-txt">Incoming call, Asha's phone</small>
-                  <small class="live-txt">On call <span class="mono">00:07</span></small>
-                </div>
-                <div class="call-a ring-a">
-                  <span class="cb cb-red"><svg><use href="#i-hangup"/></svg></span>
-                  <span class="cb cb-green"><svg><use href="#i-answer"/></svg></span>
-                </div>
-                <div class="call-a live-a">
-                  <span class="cb cb-grey"><svg><use href="#i-mute"/></svg></span>
-                  <span class="cb cb-red"><svg><use href="#i-hangup"/></svg></span>
-                </div>
-              </div>
-              <div class="note solo s-calls">
-                <span class="app a-phone"></span>
-                <div class="note-b">
-                  <div class="note-h"><b>Phone</b><small>2m ago</small></div>
-                  <b>Missed call</b>
-                  <p>Dentist, Mobile</p>
-                </div>
-              </div>
+                  <!-- Mac notification banners -->
+                  <div class="mx-notes" data-screen="mac-notifications">
+                    <div class="mx-note view" data-view="m-note1">
+                      <svg class="mx-note-ic" aria-hidden="true"><use href="#app-icon"/></svg>
+                      <div><p class="t"><b>Priya</b><span>now</span></p><p class="s">Chat</p><p>Are we still on for 7?</p></div>
+                      <div class="mx-note-acts"><span>Reply</span><span>Mark as read</span></div>
+                    </div>
+                    <div class="mx-note view final" data-view="m-note2">
+                      <svg class="mx-note-ic" aria-hidden="true"><use href="#app-icon"/></svg>
+                      <div><p class="t"><b>Kestrel Bank</b><span>now</span></p><p class="s">Messages</p><p>Your sign-in code is 482913. It expires in 10 minutes.</p></div>
+                      <div class="mx-note-acts"><span class="hl">Copy code</span></div>
+                    </div>
+                  </div>
 
-              <!-- Files -->
-              <div class="win fwin s-files">
-                <div class="win-bar"><span class="tl"><i></i><i></i><i></i></span><b>Asha's phone</b></div>
-                <div class="seg"><span class="on">Files</span><span>Photos</span><span>Now Playing</span></div>
-                <ul class="rows">
-                  <li><svg class="fo"><use href="#i-folder"/></svg>DCIM<small>1,204 items</small></li>
-                  <li><svg class="fo"><use href="#i-folder"/></svg>Documents<small>38 items</small></li>
-                  <li class="hl"><svg class="fo"><use href="#i-folder"/></svg>Download<small>112 items</small></li>
-                  <li><svg class="fo"><use href="#i-folder"/></svg>Music<small>406 items</small></li>
-                  <li><svg class="fi"><use href="#i-file"/></svg>boarding-pass.pdf<small>212 KB</small></li>
-                </ul>
-                <div class="xfer">
-                  <div class="xfer-t"><span>Sending trip-video.mov</span><span class="mono">1.2 GB</span></div>
-                  <span class="prog"><i></i></span>
-                </div>
-              </div>
-              <div class="ghost s-files"><svg class="gf"><use href="#i-file"/></svg><span>trip-video.mov</span><span class="plus">+</span><svg class="cur"><use href="#i-arrow"/></svg></div>
-              <div class="note solo s-files">
-                <span class="app a-shot"></span>
-                <div class="note-b">
-                  <div class="note-h"><b><span data-brand>Mac Phone Bridge</span></b><small>now</small></div>
-                  <b>Screenshot from Asha's phone</b>
-                  <p>Saved to Desktop</p>
-                </div>
-              </div>
-              <div class="dicon s-files"><span class="thumb"></span><small>Screenshot 10.24.png</small></div>
+                  <!-- Status menu (transfer lines, call lines) -->
+                  <div class="mx-menu view" data-view="m-menu" data-screen="mac-menu">
+                    <p class="dim">Asha's phone</p>
+                    <p class="dim">Connected</p>
+                    <p>Ring phone</p>
+                    <p>Show Phone Window</p>
+                    <p>Show Phone Screen</p>
+                    <p>Send File to Phone…</p>
+                    <p>Send Clipboard to Phone</p>
+                    <p class="mx-xfer view" data-view="m-xfer-a">Receiving boarding-pass.pdf · 64%</p>
+                    <p class="mx-xfer view" data-view="m-xfer-b"><b>Received boarding-pass.pdf</b></p>
+                    <p class="mx-callline view" data-view="m-callline"><b>On a call with Mum · <span class="m-timer">00:07</span></b></p>
+                    <p class="mx-callline view" data-view="m-callline">Mute</p>
+                    <p class="mx-callline view" data-view="m-callline">Hang up</p>
+                    <p class="dim">Battery 82%, charging · Wi-Fi · Signal 3 of 4</p>
+                    <hr>
+                    <p>Pair a phone…</p>
+                    <p>Forget Asha's phone…</p>
+                    <hr>
+                    <p>Settings…<kbd>⌘,</kbd></p>
+                    <p>Quit<kbd>⌘Q</kbd></p>
+                  </div>
 
-              <!-- Mirroring -->
-              <div class="win mwin s-mirroring">
-                <div class="win-bar"><span class="tl"><i></i><i></i><i></i></span><b>Asha's phone</b></div>
-                <div class="mtools">
-                  <svg><use href="#i-back"/></svg><svg><use href="#i-home"/></svg><svg><use href="#i-recents"/></svg>
-                  <i></i><svg><use href="#i-rotate"/></svg><svg><use href="#i-vol"/></svg><svg><use href="#i-power"/></svg>
+                  <!-- Incoming call panel (IncomingCallPanel) -->
+                  <div class="mx-call view" data-view="m-call" data-screen="mac-call-panel">
+                    <p class="n">Mum</p>
+                    <p class="num">+44 7700 900123</p>
+                    <div class="mx-row"><span class="mx-pbtn green">Answer</span><span class="mx-pbtn red">Decline</span></div>
+                  </div>
+
+                  <!-- Full mode window (MirrorWindow) -->
+                  <div class="mx-win mx-mirror view final" data-view="m-mirror" data-screen="mac-mirror-window">
+                    <div class="mx-tb"><i></i><i></i><i></i><span>Asha's phone</span></div>
+                    <div class="mx-tools" aria-hidden="true">
+                      <svg><use href="#i-tri"/></svg><svg><use href="#i-home"/></svg><svg><use href="#i-recents"/></svg><svg><use href="#i-rotate"/></svg><svg><use href="#i-chev"/></svg>
+                    </div>
+                    <div class="mx-mirror-screen">
+                      <div class="ax ax-chat mirror-chat">
+                        <div class="ax-chat-top"><svg aria-hidden="true"><use href="#i-back"/></svg><span class="av">P</span><b>Priya</b></div>
+                        <div class="ax-msgs">
+                          <p class="in">Running a bit late, start without me?</p>
+                          <p class="out">No rush, see you there</p>
+                          <p class="in">Ordering the dumplings now</p>
+                          <p class="out typed-target"><span class="typed" data-text="Perfect, get extra for me">Perfect, get extra for me</span></p>
+                        </div>
+                        <div class="ax-compose"><span>Message</span><i><svg aria-hidden="true"><use href="#i-send"/></svg></i></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <svg class="mx-cursor view" data-view="m-cursor" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 3l14 8.2-6.3 1.6L9.5 19z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
                 </div>
-                <div class="phone">
-                  <div class="p-status"><span>10:24</span><span class="p-ic"><i></i><i></i></span></div>
-                  <div class="p-head"><svg><use href="#i-back"/></svg><span class="p-av">P</span><b>Priya</b></div>
-                  <div class="p-chat">
-                    <p class="in">Are we still on for 7?</p>
-                    <p class="out">Yes! Booked a table by the window</p>
+                <i class="notch"></i>
+                <i class="glare"></i>
+              </div>
+            </div>
+            <div class="base">
+              <div class="base-top"><i class="keys"></i><i class="pad"></i></div>
+              <i class="base-lip"></i>
+            </div>
+          </div></div></div>
+
+          <!-- ============ Phone ============ -->
+          <div class="phone-pos"><div class="phone-move"><div class="phone">
+            <i class="ph-l l1"></i><i class="ph-l l2"></i><i class="ph-l l3"></i><i class="ph-l l4"></i><i class="ph-l l5"></i>
+            <i class="ph-key k1"></i><i class="ph-key k2"></i>
+            <div class="ph-front">
+              <div class="pscreen">
+                <div class="ax-status" aria-hidden="true"><span>10:24</span><span class="r"><svg><use href="#i-wifi"/></svg>82%</span></div>
+
+                <div class="ax ax-pad view" data-view="p-onboard" data-screen="android-onboarding">
+                  <p class="ax-h">Use your phone from your Mac</p>
+                  <p class="ax-b"><span data-brand>Mac Phone Bridge</span> connects this phone to your Mac over your Wi-Fi.</p>
+                  <p class="ax-b">Nothing leaves the two devices. There is no cloud, no account and no tracking.</p>
+                  <span class="ax-btn">Pair with your Mac</span>
+                </div>
+
+                <div class="ax ax-scan view" data-view="p-scan" data-screen="android-scan">
+                  <div class="ax-cam"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><svg class="ax-cam-qr" aria-hidden="true"><use href="#qr"/></svg><i class="ax-scanline"></i></div>
+                  <p class="ax-cap">Point your camera at the code on your Mac</p>
+                </div>
+
+                <div class="ax ax-pad view" data-view="p-code" data-screen="android-confirm-code">
+                  <p class="ax-h">Does your Mac show this code?</p>
+                  <p class="ax-code">315 274</p>
+                  <p class="ax-b">Confirm only if the code on your Mac is the same.</p>
+                  <div class="ax-row"><span class="ax-btn ax-btn-o">Cancel</span><span class="ax-btn">Confirm</span></div>
+                </div>
+
+                <div class="ax ax-pad ax-home view" data-view="p-home" data-screen="android-home">
+                  <p class="ax-l">Your Mac</p>
+                  <p class="ax-h">Asha's MacBook Air</p>
+                  <p class="ax-b">Connected to Asha's MacBook Air</p>
+                  <p class="ax-sw">Show notifications on your Mac<i class="on"></i></p>
+                  <p class="ax-sw">Control media from your Mac<i class="on"></i></p>
+                  <p class="ax-sw">Sync Do Not Disturb with your Mac<i></i></p>
+                  <p class="ax-sw">Allow your Mac to show this screen<i class="on"></i></p>
+                  <p class="ax-sw">Calls on your Mac<i class="on"></i></p>
+                  <p class="ax-sw">Share clipboard with your Mac<i class="on"></i></p>
+                </div>
+
+                <div class="ax ax-share view" data-view="p-share" data-screen="android-share-sheet">
+                  <div class="ax-sheet">
+                    <i class="grab"></i>
+                    <p class="ax-sheet-h">Sharing 1 file</p>
+                    <div class="ax-sheet-file"><svg aria-hidden="true"><use href="#i-pdf"/></svg><span>boarding-pass.pdf<br><small>212 KB</small></span></div>
+                    <div class="ax-targets">
+                      <span class="tg tg-mac"><svg aria-hidden="true"><use href="#app-icon"/></svg>Send to Mac</span>
+                      <span class="tg"><i style="background:#3a7d44"></i>Messages</span>
+                      <span class="tg"><i style="background:#c2410c"></i>Mail</span>
+                      <span class="tg"><i style="background:#2563eb"></i>Files</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="ax ax-chat view final" data-view="p-chat" data-screen="android-chat">
+                  <div class="ax-chat-top"><svg aria-hidden="true"><use href="#i-back"/></svg><span class="av">P</span><b>Priya</b></div>
+                  <div class="ax-msgs">
                     <p class="in">Running a bit late, start without me?</p>
+                    <p class="out">No rush, see you there</p>
+                    <p class="in">Ordering the dumplings now</p>
+                    <p class="out">Perfect, get extra for me</p>
                   </div>
-                  <div class="p-input"><span class="typed" data-text="No rush, see you there 🙂">No rush, see you there 🙂</span><i class="caret"></i><span class="send"></span></div>
-                  <div class="p-nav"><i></i></div>
+                  <div class="ax-compose"><span>Message</span><i><svg aria-hidden="true"><use href="#i-send"/></svg></i></div>
                 </div>
+
+                <div class="ax ax-callin view" data-view="p-callin" data-screen="android-call-incoming">
+                  <p class="ax-call-l">Incoming call</p>
+                  <span class="ax-call-av">M</span>
+                  <p class="ax-call-n">Mum</p>
+                  <p class="ax-call-l">Mobile +44 7700 900123</p>
+                  <div class="ax-call-btns"><span class="dec"><svg aria-hidden="true"><use href="#i-hangup"/></svg></span><span class="ans"><svg aria-hidden="true"><use href="#i-answer"/></svg></span></div>
+                </div>
+
+                <div class="ax ax-callin ax-callon view" data-view="p-callon" data-screen="android-call-ongoing">
+                  <p class="ax-call-l">Mum</p>
+                  <p class="ax-call-n"><span class="m-timer">00:07</span></p>
+                  <div class="ax-call-grid"><span><svg aria-hidden="true"><use href="#i-mute"/></svg>Mute</span><span><svg aria-hidden="true"><use href="#i-keypad"/></svg>Keypad</span><span><svg aria-hidden="true"><use href="#i-speaker"/></svg>Speaker</span></div>
+                  <div class="ax-call-btns one"><span class="dec"><svg aria-hidden="true"><use href="#i-hangup"/></svg></span></div>
+                </div>
+
+                <div class="ax-heads view" data-view="p-heads" data-screen="android-heads-up">
+                  <p class="t"><svg aria-hidden="true"><use href="#i-bell"/></svg>Chat • now</p>
+                  <p><b>Priya</b></p>
+                  <p>Are we still on for 7?</p>
+                </div>
+                <i class="ax-nav" aria-hidden="true"></i>
               </div>
-              <div class="kbd s-mirroring"><span class="mono">Typing with the Mac's keyboard</span></div>
+              <i class="punch"></i>
+              <i class="glare"></i>
+            </div>
+          </div></div></div>
+        </div>
+
+        <!-- Things that travel between the devices -->
+        <div class="flyers" aria-hidden="true">
+          <div class="fly fly-note"><p class="t"><svg><use href="#i-bell"/></svg>Chat • now</p><p><b>Priya</b></p><p>Are we still on for 7?</p></div>
+          <div class="fly fly-file"><svg><use href="#i-pdf"/></svg></div>
+          <div class="fly-path"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="fly fly-beam"><i class="g g1"></i><i class="g g2"></i><i class="g g3"></i><div class="beam-face"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== PLAYGROUND -->
+<section class="block block-paper play" id="try" aria-labelledby="try-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <header class="sec-head">
+      <h2 class="kin display" id="try-h">Go on, use it.</h2>
+      <p class="lede">This part of the page behaves like the apps. Drag a photo to the Mac, type a reply, take the call, copy the code, ring the phone.</p>
+    </header>
+
+    <div class="pg" id="pg">
+      <!-- The Mac side -->
+      <div class="pg-mac" role="group" aria-label="The Mac, recreated">
+        <div class="pg-mac-screen" data-screen="mac-playground-desktop">
+          <div class="wall" aria-hidden="true"><i class="wall-sun"></i><i class="wall-band"></i></div>
+          <div class="mx-bar pg-bar">
+            <b>Finder</b><span>File</span><span class="hide-s">Edit</span><span class="hide-s">View</span>
+            <span class="mx-bar-r">
+              <button class="mx-status pg-status" type="button" aria-expanded="false" aria-controls="pg-menu" aria-label="Phone menu: Asha's phone, battery 82 percent, charging"><svg aria-hidden="true"><use href="#i-phone"/></svg>82%&#x26A1;&#xFE0E;</button>
+              <span class="hide-s">Tue 10:24</span>
+            </span>
+          </div>
+
+          <div class="mx-menu pg-menu" id="pg-menu" hidden data-screen="mac-menu">
+            <p class="dim">Asha's phone</p>
+            <p class="dim">Connected</p>
+            <button type="button" class="pg-ring" data-act="ring">Ring phone</button>
+            <p class="dim">Show Phone Window</p>
+            <p class="dim">Show Phone Screen</p>
+            <p class="dim pg-callmenu" hidden><b>On a call with Mum · <span class="pg-timer">00:00</span></b></p>
+            <p class="dim">Battery 82%, charging · Wi-Fi · Signal 3 of 4</p>
+            <hr>
+            <p class="dim">Settings…<kbd>⌘,</kbd></p>
+          </div>
+
+          <div class="pg-notes">
+            <div class="mx-note pg-code" data-screen="mac-notification-code">
+              <svg class="mx-note-ic" aria-hidden="true"><use href="#app-icon"/></svg>
+              <div><p class="t"><b>Kestrel Bank</b><span>now</span></p><p class="s">Messages</p><p>Your sign-in code is 482913. It expires in 10 minutes.</p></div>
+              <div class="mx-note-acts"><button type="button" class="hl" data-act="copy" data-code="482913">Copy code</button></div>
+            </div>
+            <div class="mx-call pg-call" data-screen="mac-call-panel" role="group" aria-label="Incoming call from Mum" hidden>
+              <p class="n">Mum</p>
+              <p class="num">+44 7700 900123</p>
+              <div class="mx-row"><button type="button" class="mx-pbtn green" data-act="answer">Answer</button><button type="button" class="mx-pbtn red" data-act="decline">Decline</button></div>
+            </div>
+            <div class="mx-call pg-oncall" role="group" aria-label="Call in progress" hidden>
+              <p class="n">On a call with Mum · <span class="pg-timer">00:00</span></p>
+              <div class="mx-row"><button type="button" class="mx-pbtn" data-act="mute" aria-pressed="false">Mute</button><button type="button" class="mx-pbtn red" data-act="hangup">Hang up</button></div>
             </div>
           </div>
-          <figcaption class="cap">Phone notifications arrive as Mac notifications, with Reply and Copy code. The menu bar shows the phone's battery, signal and Wi-Fi.</figcaption>
-        </figure>
+
+          <div class="mx-win pg-mirror" data-screen="mac-mirror-window">
+            <div class="mx-tb"><i></i><i></i><i></i><span>Asha's phone</span></div>
+            <div class="mx-tools" aria-hidden="true"><svg><use href="#i-tri"/></svg><svg><use href="#i-home"/></svg><svg><use href="#i-recents"/></svg><svg><use href="#i-rotate"/></svg></div>
+            <div class="pg-mirror-body">
+              <div class="ax-msgs pg-msgs-mirror" aria-hidden="true"></div>
+              <form class="pg-compose" autocomplete="off">
+                <label class="vh" for="pg-input">Type a message to Priya with the Mac's keyboard</label>
+                <input id="pg-input" type="text" maxlength="60" placeholder="Type here with the Mac's keyboard" enterkeyhint="send">
+                <button type="submit" aria-label="Send"><svg aria-hidden="true"><use href="#i-send"/></svg></button>
+              </form>
+            </div>
+          </div>
+
+          <div class="pg-drop" data-screen="mac-downloads" aria-label="Downloads on the Mac">
+            <svg class="pg-drop-ic" aria-hidden="true"><use href="#i-folder"/></svg>
+            <div><p><b>Downloads</b></p><p class="pg-drop-hint">Drop a photo here</p></div>
+            <ul class="pg-drop-list" aria-label="Received files"></ul>
+          </div>
+        </div>
       </div>
-      <p class="mock-note">An illustration, not a screenshot. Real screenshots come after the beta.</p>
+
+      <!-- The phone side -->
+      <div class="pg-phone-wrap">
+        <div class="pg-phone" role="group" aria-label="The phone, recreated">
+          <div class="pscreen pg-pscreen" data-screen="android-playground-chat">
+            <div class="ax-status" aria-hidden="true"><span>10:24</span><span class="r"><svg><use href="#i-wifi"/></svg>82%</span></div>
+            <div class="ax ax-chat">
+              <div class="ax-chat-top"><svg aria-hidden="true"><use href="#i-back"/></svg><span class="av">P</span><b>Priya</b></div>
+              <div class="ax-msgs pg-msgs" aria-live="off">
+                <p class="in">Photos from Sunday</p>
+                <div class="in pg-photos">
+                  <button type="button" class="pg-photo" data-name="IMG_2041.jpg" data-photo="photo-ferry" aria-label="Photo of a ferry at sunset. Drag it to the Mac, or press to send it to the Mac."><svg aria-hidden="true"><use href="#photo-ferry"/></svg></button>
+                  <button type="button" class="pg-photo" data-name="IMG_2047.jpg" data-photo="photo-dumplings" aria-label="Photo of a plate of dumplings. Drag it to the Mac, or press to send it to the Mac."><svg aria-hidden="true"><use href="#photo-dumplings"/></svg></button>
+                  <button type="button" class="pg-photo" data-name="IMG_2052.jpg" data-photo="photo-cliffs" aria-label="Photo of green cliffs. Drag it to the Mac, or press to send it to the Mac."><svg aria-hidden="true"><use href="#photo-cliffs"/></svg></button>
+                </div>
+                <p class="out">These are great</p>
+              </div>
+              <div class="ax-compose pg-pcompose"><span class="pg-ptext">Message</span><i><svg aria-hidden="true"><use href="#i-send"/></svg></i></div>
+              <p class="pg-kbd-pill" hidden>Typing with the Mac's keyboard</p>
+            </div>
+
+            <div class="ax ax-callin pg-pcall" data-screen="android-call-incoming" hidden>
+              <p class="ax-call-l">Incoming call</p>
+              <span class="ax-call-av">M</span>
+              <p class="ax-call-n">Mum</p>
+              <p class="ax-call-l">Mobile +44 7700 900123</p>
+              <div class="ax-call-btns"><button type="button" class="dec" data-act="decline" aria-label="Decline on the phone"><svg aria-hidden="true"><use href="#i-hangup"/></svg></button><button type="button" class="ans" data-act="answer" aria-label="Answer on the phone"><svg aria-hidden="true"><use href="#i-answer"/></svg></button></div>
+            </div>
+            <div class="ax ax-callin ax-callon pg-pon" data-screen="android-call-ongoing" hidden>
+              <p class="ax-call-l">Mum</p>
+              <p class="ax-call-n"><span class="pg-timer">00:00</span></p>
+              <div class="ax-call-grid"><span><svg aria-hidden="true"><use href="#i-mute"/></svg>Mute</span><span><svg aria-hidden="true"><use href="#i-keypad"/></svg>Keypad</span><span><svg aria-hidden="true"><use href="#i-speaker"/></svg>Speaker</span></div>
+              <div class="ax-call-btns one"><button type="button" class="dec" data-act="hangup" aria-label="Hang up on the phone"><svg aria-hidden="true"><use href="#i-hangup"/></svg></button></div>
+            </div>
+
+            <div class="ax-heads pg-find" data-screen="android-find-my-phone" hidden>
+              <p class="t"><svg aria-hidden="true"><use href="#i-bell"/></svg>Find my phone • now</p>
+              <p><b>Your Mac is ringing this phone</b></p>
+              <p>Tap to stop.</p>
+              <button type="button" class="ax-heads-btn" data-act="stopring">Stop</button>
+            </div>
+            <i class="ax-nav" aria-hidden="true"></i>
+          </div>
+          <i class="punch"></i>
+        </div>
+        <p class="pg-note">On a real phone, a photo goes across with Send to Mac in the share sheet.</p>
+      </div>
+
+      <div class="pg-meta">
+        <button type="button" class="btn btn-line pg-again" data-act="callagain" hidden>Call again</button>
+      </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- Features -->
-  <section class="sec" id="features" aria-labelledby="features-title">
-    <div class="wrap">
-      <div class="sec-head">
-        <h2 id="features-title">Everything your phone does, on the Mac you're already using</h2>
-        <p>Every feature below is built and in testing. None of them needs developer settings on the phone, except Full mode.</p>
-      </div>
+<!-- ===================================================================== FEATURES -->
+<section class="block block-orange feat" id="features" aria-labelledby="features-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <h2 class="kin display" id="features-h">Everything your phone does, on the Mac you're already using.</h2>
+    <p class="lede narrow">Every feature below is built and in testing. None of them needs developer settings on the phone, except Full mode.</p>
 
-      <div class="bento">
-        <article class="group g-notes reveal" aria-labelledby="g1">
-          <h3 id="g1">On your Mac, as it happens</h3>
-          <ul class="feats">
-            <li><svg class="fic" aria-hidden="true"><use href="#i-bell"/></svg><div><h4>Notifications with actions</h4><p>Phone notifications show up as real Mac notifications, with their buttons and inline reply. Pick which apps come through. Dismiss one on either device and it's gone on both.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-code"/></svg><div><h4>One-time codes</h4><p>When a notification holds a sign-in code, the Mac offers "Copy code". It reads the notification text only, never your SMS.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-call"/></svg><div><h4>Calls</h4><p>See who's calling, then answer, decline, mute or hang up from the Mac. The call's audio stays on your phone.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-contact"/></svg><div><h4>Caller ID</h4><p>Your contacts sync to an encrypted store inside the Mac app, used for caller names. One switch turns it off and wipes it.</p></div></li>
-          </ul>
-        </article>
+    <div class="feat-group">
+      <h3 class="feat-h">On your Mac, as it happens</h3>
+      <dl class="feat-list">
+        <div><dt>Notifications with actions</dt><dd>Phone notifications show up as real Mac notifications, with their buttons and inline reply. Pick which apps come through. Dismiss one on either device and it's gone on both.</dd></div>
+        <div><dt>One-time codes</dt><dd>When a notification holds a sign-in code, the Mac offers Copy code. It reads the notification text only, never your SMS.</dd></div>
+        <div><dt>Calls</dt><dd>See who's calling, then answer, decline, mute or hang up from the Mac. The call's audio stays on your phone.</dd></div>
+        <div><dt>Caller ID</dt><dd>Your contacts sync to an encrypted store inside the Mac app, used for caller names. One switch turns it off and wipes it.</dd></div>
+      </dl>
+    </div>
 
-        <article class="group g-share reveal" aria-labelledby="g2">
-          <h3 id="g2">Moving things across</h3>
-          <ul class="feats">
-            <li><svg class="fic" aria-hidden="true"><use href="#i-clip"/></svg><div><h4>Shared clipboard</h4><p>Copy text on the Mac and paste it on the phone. From the phone, send it with a Quick Settings tile or the share sheet, or automatically in Full mode. Text a password manager marks as secret is not sent.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-files"/></svg><div><h4>Files both ways</h4><p>Drag and drop onto the Phone window, use the Mac's Share menu, or "Send to Mac" from the phone's share sheet. Browse, download and upload the phone's files from the Mac.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-shot"/></svg><div><h4>Instant screenshots</h4><p>Take a screenshot on the phone and it lands on the Mac, on the Desktop, in Downloads or on the clipboard.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-photos"/></svg><div><h4>Recent photos</h4><p>The newest photos and videos as thumbnails on the Mac. Drag them out into any app.</p></div></li>
-          </ul>
-        </article>
+    <div class="feat-group">
+      <h3 class="feat-h">Moving things across</h3>
+      <dl class="feat-list">
+        <div><dt>Shared clipboard</dt><dd>Copy text on the Mac and paste it on the phone. From the phone, send it with a Quick Settings tile or the share sheet, or automatically in Full mode. Text a password manager marks as secret is not sent.</dd></div>
+        <div><dt>Files both ways</dt><dd>Drag and drop onto the Phone window, use the Mac's Share menu, or Send to Mac from the phone's share sheet. Browse, download and upload the phone's files from the Mac.</dd></div>
+        <div><dt>Instant screenshots</dt><dd>Take a screenshot on the phone and it lands on the Mac, on the Desktop, in Downloads or on the clipboard.</dd></div>
+        <div><dt>Recent photos</dt><dd>The newest photos and videos as thumbnails on the Mac. Drag them out into any app.</dd></div>
+      </dl>
+    </div>
 
-        <article class="group g-ctrl reveal" aria-labelledby="g3">
-          <h3 id="g3">Control and context</h3>
-          <ul class="feats feats-2">
-            <li><svg class="fic" aria-hidden="true"><use href="#i-music"/></svg><div><h4>Music controller</h4><p>Track, artist and artwork from the phone, with play, pause, skip and volume on the Mac.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-moon"/></svg><div><h4>Do Not Disturb and Focus</h4><p>A Focus on the Mac turns on Do Not Disturb on the phone, and the other way round with two Shortcuts you make once.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-ring"/></svg><div><h4>Find my phone</h4><p>Ring it at full volume from the Mac, even when it's on silent.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-bars"/></svg><div><h4>Phone status in the menu bar</h4><p>Battery and charging, signal, Wi-Fi or mobile data, and whether it's connected.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-lock"/></svg><div><h4>Auto-lock when you walk away</h4><p>Opt-in. The Mac locks when your phone's Bluetooth signal stays away. It never unlocks the Mac.</p></div></li>
-            <li><svg class="fic" aria-hidden="true"><use href="#i-pointer"/></svg><div><h4>Trackpad and presentation remote</h4><p>Move the Mac's pointer, click and scroll from the phone, or change slides with a laser dot.</p></div></li>
-          </ul>
-        </article>
+    <div class="feat-group">
+      <h3 class="feat-h">Control and context</h3>
+      <dl class="feat-list">
+        <div><dt>Music controller</dt><dd>Track, artist and artwork from the phone, with play, pause, skip and volume on the Mac.</dd></div>
+        <div><dt>Do Not Disturb and Focus</dt><dd>A Focus on the Mac turns on Do Not Disturb on the phone, and the other way round with two Shortcuts you make once.</dd></div>
+        <div><dt>Find my phone</dt><dd>Ring it at full volume from the Mac, even when it's on silent.</dd></div>
+        <div><dt>Phone status in the menu bar</dt><dd>Battery and charging, signal, Wi-Fi or mobile data, and whether it's connected.</dd></div>
+        <div><dt>Auto-lock when you walk away</dt><dd>Opt-in. The Mac locks when your phone's Bluetooth signal stays away. It never unlocks the Mac.</dd></div>
+        <div><dt>Trackpad and presentation remote</dt><dd>Move the Mac's pointer, click and scroll from the phone, or change slides with a laser dot.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== FULL MODE -->
+<section class="block block-ink full" id="full-mode" aria-labelledby="full-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <p class="kicker">Full mode, Android 11 and later</p>
+    <h2 class="kin display" id="full-h">The whole phone, in a Mac window.</h2>
+    <p class="lede narrow">Full mode shows the phone's screen in a resizable Mac window, with its sound, and hands control to your Mac. Click to tap, scroll to scroll, drag to swipe. Type into WhatsApp or any other app with the Mac's keyboard, emoji and other languages included.</p>
+
+    <dl class="figs">
+      <div><dt>&lt;80<small>ms</small></dt><dd>delay target on 5&nbsp;GHz Wi&#8209;Fi</dd></div>
+      <div><dt>60<small>fps</small></dt><dd>frame-rate target, up to about 1080p</dd></div>
+      <div><dt>0</dt><dd>listening network ports opened on the phone</dd></div>
+    </dl>
+    <p class="fine">The delay and frame-rate figures are targets, measured on testers' phones during the beta. On a weaker link the picture quality drops rather than the delay rising.</p>
+
+    <div class="full-cols">
+      <ul class="ticks">
+        <li>Back, Home, Recents, Rotate and volume in the window's toolbar</li>
+        <li>Turn the phone's screen off while you work from the Mac</li>
+        <li>Drop files on the window to send them to the phone</li>
+        <li>The phone's clipboard reaches the Mac automatically</li>
+      </ul>
+      <div class="setup">
+        <h3>One-time setup</h3>
+        <p>Full mode needs Developer options and Wireless debugging on the phone, once. The phone app walks you through it. Turn Wireless debugging off and Full mode is off. Apps that block screenshots, such as some banking and video apps, show black.</p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- Full mode -->
-  <section class="sec spot" id="full-mode" aria-labelledby="full-title">
-    <div class="wrap spot-in">
-      <div class="spot-copy">
-        <p class="kicker mono">Full mode, Android 11 and later</p>
-        <h2 id="full-title">The whole phone, in a Mac window</h2>
-        <p>Full mode shows the phone's screen in a resizable Mac window, with its sound, and hands control to your Mac. Click to tap, scroll to scroll, drag to swipe. Type into WhatsApp or any other app with the Mac's keyboard, emoji and other languages included.</p>
-        <dl class="stats">
-          <div><dt class="mono">&lt; 80 ms</dt><dd>delay target on 5&nbsp;GHz Wi-Fi</dd></div>
-          <div><dt class="mono">60 fps</dt><dd>frame-rate target, up to about 1080p</dd></div>
-          <div><dt class="mono">0</dt><dd>listening network ports opened on the phone</dd></div>
+<!-- ===================================================================== HOW + PRIVACY -->
+<section class="block block-blue how" id="how" aria-labelledby="how-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <h2 class="kin display" id="how-h">Phone to Mac, and nothing in between.</h2>
+    <p class="lede narrow">The two apps find each other on your local network and talk directly. There is no server, so there is nothing to sign in to.</p>
+
+    <figure class="link-fig">
+      <svg class="link-svg" viewBox="0 0 640 160" role="img" aria-labelledby="link-t">
+        <title id="link-t">Your phone and your Mac connect directly over the local network using mutual TLS 1.3. No cloud server sits between them.</title>
+        <g fill="none" stroke="currentColor" stroke-width="3">
+          <rect x="20" y="22" width="62" height="116" rx="12"/>
+          <rect x="488" y="26" width="132" height="86" rx="8"/><path d="M470 128h168"/>
+          <path class="link-line" d="M96 80H474" stroke-dasharray="2 10" stroke-linecap="round" stroke-width="5"/>
+        </g>
+        <rect class="link-pulse" x="96" y="74" width="40" height="12" fill="#ff5b14"/>
+        <g class="link-cloud" transform="translate(286 10)"><path d="M14 38a12 12 0 0 1-1.5-24A16 16 0 0 1 44 16a10.5 10.5 0 0 1-1.3 22z" fill="none" stroke="currentColor" stroke-width="3"/><path d="M8 2l48 46" stroke="#ff5b14" stroke-width="4"/></g>
+        <text x="51" y="156" text-anchor="middle" fill="currentColor" font-size="14">Your phone</text>
+        <text x="554" y="156" text-anchor="middle" fill="currentColor" font-size="14">Your Mac</text>
+        <text x="285" y="112" text-anchor="middle" fill="currentColor" font-size="15" font-weight="700">Mutual TLS 1.3</text>
+      </svg>
+    </figure>
+
+    <ol class="steps">
+      <li><h3>Pair once</h3><p>The Mac shows a QR code. Scan it with the phone, then confirm that the same 6-digit code shows on both screens.</p></li>
+      <li><h3>Connect directly</h3><p>From then on they find each other on the same network and connect with mutual TLS 1.3, using certificates pinned at pairing. An unpaired device can't connect.</p></li>
+      <li><h3>Stay on your devices</h3><p>Nothing is relayed through a server. Remove the pairing from either side whenever you like.</p></li>
+    </ol>
+
+    <h3 class="priv-h">Private by design</h3>
+    <ul class="priv">
+      <li><b class="slide">No account.</b> <span>Nothing to sign up for, nothing to sign in to.</span></li>
+      <li><b class="slide">No cloud.</b> <span>Your data stays on your two devices.</span></li>
+      <li><b class="slide">No telemetry.</b> <span>No analytics. If crash reporting is ever added, it will be opt-in.</span></li>
+      <li><b class="slide">Never reads SMS.</b> <span>The Android app asks for no SMS permission.</span></li>
+      <li><b class="slide">Encrypted at rest.</b> <span>Synced contacts are stored encrypted on the Mac, and wiped when you turn caller ID off or unpair.</span></li>
+      <li><b class="slide">Open source.</b> <span>Every line is on GitHub under Apache-2.0, for anyone to read.</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ===================================================================== REQUIREMENTS + BUILD -->
+<section class="block block-paper req" id="requirements" aria-labelledby="req-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <h2 class="kin display" id="req-h">What you need.</h2>
+    <p class="lede narrow">One Mac and one Android phone on the same network. A 5&nbsp;GHz Wi-Fi network gives Full mode its best picture.</p>
+    <div class="req-cols">
+      <div class="req-col">
+        <h3>Mac</h3>
+        <dl>
+          <div><dt>System</dt><dd>macOS 14 Sonoma or later</dd></div>
+          <div><dt>Chip</dt><dd>Apple silicon. Intel builds, but is untested.</dd></div>
+          <div><dt>Permissions</dt><dd>Accessibility, only if you use the trackpad or remote</dd></div>
         </dl>
-        <p class="fine">The delay and frame-rate figures are targets, measured on testers' phones during the beta. On a weaker link the picture quality drops rather than the delay rising.</p>
-        <ul class="ticks">
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>Back, Home, Recents, Rotate and volume in the window's toolbar</li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>Turn the phone's screen off while you work from the Mac</li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>Drop files on the window to send them to the phone</li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>The phone's clipboard reaches the Mac automatically</li>
-        </ul>
-        <div class="setup">
-          <h3>One-time setup</h3>
-          <p>Full mode needs Developer options and Wireless debugging on the phone, once. The phone app walks you through it. Turn Wireless debugging off and Full mode is off. Apps that block screenshots, such as some banking and video apps, show black.</p>
-        </div>
       </div>
-
-      <div class="spot-vis reveal" aria-hidden="true">
-        <div class="win mwin big">
-          <div class="win-bar"><span class="tl"><i></i><i></i><i></i></span><b>Asha's phone</b></div>
-          <div class="mtools">
-            <svg><use href="#i-back"/></svg><svg><use href="#i-home"/></svg><svg><use href="#i-recents"/></svg>
-            <i></i><svg><use href="#i-rotate"/></svg><svg><use href="#i-vol"/></svg><svg><use href="#i-power"/></svg>
-          </div>
-          <div class="phone">
-            <div class="p-status"><span>10:24</span><span class="p-ic"><i></i><i></i></span></div>
-            <div class="p-head"><svg><use href="#i-back"/></svg><span class="p-av">P</span><b>Priya</b></div>
-            <div class="p-chat">
-              <p class="in">Running a bit late, start without me?</p>
-              <p class="out">No rush, see you there 🙂</p>
-              <p class="in">Ordering the dumplings now</p>
-              <p class="out">Perfect</p>
-            </div>
-            <div class="p-input"><span class="typed-static">Message</span><span class="send"></span></div>
-            <div class="p-nav"><i></i></div>
-          </div>
-        </div>
-        <div class="callouts mono">
-          <span class="co co-1">Mac keyboard and mouse</span>
-          <span class="co co-2">Phone audio on the Mac</span>
-          <span class="co co-3">Resizable window</span>
-        </div>
+      <div class="req-col">
+        <h3>Android phone</h3>
+        <dl>
+          <div><dt>Everything except Full mode</dt><dd>Android 10 or later</dd></div>
+          <div><dt>Full mode</dt><dd>Android 11 or later</dd></div>
+          <div><dt>Setup</dt><dd>Install the app and scan a QR code. Each permission is asked for when you first use the feature.</dd></div>
+        </dl>
       </div>
     </div>
-  </section>
 
-  <!-- How it works -->
-  <section class="sec" id="how" aria-labelledby="how-title">
-    <div class="wrap">
-      <div class="sec-head">
-        <h2 id="how-title">Phone to Mac, and nothing in between</h2>
-        <p>The two apps find each other on your local network and talk directly. There is no server, so there is nothing to sign in to.</p>
-      </div>
-
-      <figure class="flow reveal" aria-labelledby="flow-cap">
-        <div class="node">
-          <svg class="node-ic" aria-hidden="true" viewBox="0 0 48 48"><rect x="14" y="4" width="20" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 39h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <b>Your phone</b>
-          <small class="mono">Kotlin app, Android 10+</small>
-        </div>
-        <div class="link">
-          <div class="nocloud">
-            <svg aria-hidden="true" viewBox="0 0 24 24"><use href="#i-cloud"/><path d="M3 3l18 18" /></svg>
-            <span>No cloud relay</span>
-          </div>
-          <div class="lanes" aria-hidden="true"><i class="lane l-a"></i><i class="lane l-b"></i></div>
-          <div class="lockchip"><svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg><span class="mono">Mutual TLS 1.3</span></div>
-          <div class="lane-labels mono"><span>Phone to Mac: notifications, files, the screen</span><span>Mac to phone: replies, clicks, keystrokes</span></div>
-        </div>
-        <div class="node">
-          <svg class="node-ic" aria-hidden="true" viewBox="0 0 48 48"><rect x="4" y="8" width="40" height="26" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M18 41h12M24 34v7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <b>Your Mac</b>
-          <small class="mono">Swift app, macOS 14+</small>
-        </div>
-        <figcaption id="flow-cap" class="sr">Your phone and your Mac connect directly over the local network using mutual TLS 1.3. No cloud server sits between them.</figcaption>
-      </figure>
-
-      <ol class="steps">
-        <li class="reveal"><span class="num mono">1</span><h3>Pair once</h3><p>The Mac shows a QR code. Scan it with the phone, then confirm that the same 6-digit code shows on both screens.</p></li>
-        <li class="reveal"><span class="num mono">2</span><h3>Connect directly</h3><p>From then on they find each other on the same network and connect with mutual TLS 1.3, using certificates pinned at pairing. An unpaired device can't connect.</p></li>
-        <li class="reveal"><span class="num mono">3</span><h3>Stay on your devices</h3><p>Nothing is relayed through a server. Remove the pairing from either side whenever you like.</p></li>
-      </ol>
-
-      <div class="privacy reveal" id="privacy" aria-labelledby="privacy-title">
-        <h3 id="privacy-title">Private by design</h3>
-        <ul class="ticks ticks-grid">
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>No account.</b> Nothing to sign up for, nothing to sign in to.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>No cloud.</b> Your data stays on your two devices.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>No telemetry.</b> No analytics. If crash reporting is ever added, it will be opt-in.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>Never reads SMS.</b> The Android app asks for no SMS permission.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>Encrypted at rest.</b> Synced contacts are stored encrypted on the Mac, and wiped when you turn caller ID off or unpair.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><b>Open source.</b> Every line is on GitHub under Apache-2.0, for anyone to read.</span></li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <!-- Requirements + build -->
-  <section class="sec" id="requirements" aria-labelledby="req-title">
-    <div class="wrap">
-      <div class="sec-head">
-        <h2 id="req-title">What you need</h2>
-        <p>One Mac and one Android phone on the same network. A 5&nbsp;GHz Wi-Fi network gives Full mode its best picture.</p>
-      </div>
-      <div class="req">
-        <div class="req-card reveal">
-          <h3>Mac</h3>
-          <dl class="spec">
-            <div><dt>System</dt><dd class="mono">macOS 14 Sonoma or later</dd></div>
-            <div><dt>Chip</dt><dd class="mono">Apple silicon (Intel builds, untested)</dd></div>
-            <div><dt>Permissions</dt><dd>Accessibility, only if you use the trackpad or remote</dd></div>
-          </dl>
-        </div>
-        <div class="req-card reveal">
-          <h3>Android phone</h3>
-          <dl class="spec">
-            <div><dt>Everything except Full mode</dt><dd class="mono">Android 10 or later</dd></div>
-            <div><dt>Full mode</dt><dd class="mono">Android 11 or later</dd></div>
-            <div><dt>Setup</dt><dd>Install the app and scan a QR code. Each permission is asked for when you first use the feature.</dd></div>
-          </dl>
-        </div>
-        <div class="req-card build reveal" id="build">
-          <h3>Build from source</h3>
-          <p>There's no download yet. To try it today, build both apps on a Mac.</p>
-          <div class="code">
-            <div class="code-bar"><span>Terminal, on your Mac</span><button class="copy" type="button" data-copy="build-cmd"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
-            <pre><code id="build-cmd">git clone https://github.com/venkataPhanindraVutla/mac-phone-bridge.git
+    <div class="build" id="build">
+      <h3 class="kin display-s">Build from source</h3>
+      <p>There's no download yet. To try it today, build both apps on a Mac.</p>
+      <div class="term">
+        <div class="term-bar"><span>Terminal, on your Mac</span><button class="copy" type="button" data-copy="clone-cmd"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+        <pre id="clone-cmd"><code>git clone https://github.com/venkataPhanindraVutla/mac-phone-bridge.git
 cd mac-phone-bridge
 # then follow "Build it" in README.md</code></pre>
-          </div>
-          <p class="small">You'll need Xcode, xcodegen, protoc, JDK 21 and the Android SDK. <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge#build-it">The README's "Build it" section</a> has the exact versions and commands.</p>
-        </div>
       </div>
+      <p class="fine">You'll need Xcode, xcodegen, protoc, JDK 21 and the Android SDK. The README's <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge#build-it">Build it section</a> has the exact versions and commands.</p>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- Status -->
-  <section class="sec" id="status" aria-labelledby="status-title">
-    <div class="wrap">
-      <div class="sec-head">
-        <h2 id="status-title">Where it's at</h2>
-        <p>Not released yet. All five milestones are built and being tested in a private beta, with testers on several phone models. The public release follows the beta.</p>
-      </div>
-      <ol class="road">
-        <li class="done reveal">
-          <span class="v mono">0.1–0.5</span>
-          <div>
-            <h3>Built, in testing</h3>
-            <p>Pairing and the secure connection, phone status, find my phone. Notifications, one-time codes, contacts and calls. Clipboard, files, screenshots and photos. Music, Focus sync, auto-lock, trackpad and remote. Full mode.</p>
-          </div>
-        </li>
-        <li class="now reveal">
-          <span class="v mono">Beta</span>
-          <div>
-            <h3>Private beta, now</h3>
-            <p>Hardening across phone makers and Android versions, battery use under 4% a day when idle, VoiceOver and TalkBack, and a security review.</p>
-          </div>
-        </li>
-        <li class="reveal">
-          <span class="v mono">1.0</span>
-          <div>
-            <h3>Public release</h3>
-            <p>The Mac app and the Android app on GitHub Releases, and the Android app on F-Droid.</p>
-          </div>
-        </li>
-        <li class="reveal">
-          <span class="v mono">2.0</span>
-          <div>
-            <h3>Later</h3>
-            <p>The phone as your Mac's webcam and microphone, and a one-click hotspot.</p>
-          </div>
-        </li>
-      </ol>
-      <p class="road-links">
-        <a class="btn btn-ghost btn-sm" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases"><svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg>Watch releases on GitHub</a>
-        <a class="btn btn-ghost btn-sm" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/docs/ROADMAP.md"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg>Read the roadmap</a>
-      </p>
-    </div>
-  </section>
+<!-- ===================================================================== STATUS -->
+<section class="block block-orange status" id="status" aria-labelledby="status-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <h2 class="kin display" id="status-h">Where it's at.</h2>
+    <p class="lede narrow">Not released yet. All five milestones are built and being tested in a private beta, with testers on several phone models. The public release follows the beta.</p>
 
-  <!-- FAQ -->
-  <section class="sec" id="faq" aria-labelledby="faq-title">
-    <div class="wrap faq-wrap">
-      <div class="sec-head">
-        <h2 id="faq-title">Questions</h2>
-        <p>Something missing? <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/issues">Ask on GitHub issues</a>.</p>
-      </div>
-      <div class="faq">
-        <details>
-          <summary>Is it free?</summary>
-          <p>Yes. It's free and open source under the Apache-2.0 licence. There's nothing to buy and no paid tier.</p>
-        </details>
-        <details>
-          <summary>Do I need an account?</summary>
-          <p>No. There is no account and no server. You pair your phone and your Mac once with a QR code, and they talk to each other directly.</p>
-        </details>
-        <details>
-          <summary>Which phones does it work with?</summary>
-          <p>Android 10 or later for everything except Full mode, which needs Android 11 or later. The beta has testers on several phone models, and the test plan covers Pixel, Samsung, Xiaomi, OnePlus and Motorola phones. Some makers add an extra developer switch for Full mode; the phone app tells you when yours does.</p>
-        </details>
-        <details>
-          <summary>Does it read my messages?</summary>
-          <p>It never asks for SMS permission, so it can't read your text messages. It shows the notifications you allow, from the apps you choose, and one-time codes are found in that notification text only.</p>
-        </details>
-        <details>
-          <summary>Why isn't it on the Play Store or the App Store yet?</summary>
-          <p>It isn't released yet. The plan for 1.0 is GitHub Releases for both apps and F-Droid for the Android app, with Google Play later. The Mac app won't be on the Mac App Store: controlling the pointer and keyboard doesn't fit the App Store's sandbox, so it will be downloaded directly.</p>
-        </details>
-        <details>
-          <summary>Is it safe?</summary>
-          <p>Pairing uses a QR code and a 6-digit code you confirm on both devices. After that, every connection is mutual TLS 1.3 with certificates pinned at pairing, so an unpaired device can't connect. Nothing leaves your local network. Full mode's helper runs only while the Mac shows the phone's screen and accepts commands only from your paired Mac. The code is open for anyone to review.</p>
-        </details>
-        <details>
-          <summary>Does it work when my phone and Mac are on different networks?</summary>
-          <p>Not in version 1. Both need to be on the same local network.</p>
-        </details>
-      </div>
+    <ol class="road">
+      <li class="road-done">
+        <p class="road-v">0.1–0.5</p>
+        <h3>Built, in testing</h3>
+        <p>Pairing and the secure connection, phone status, find my phone. Notifications, one-time codes, contacts and calls. Clipboard, files, screenshots and photos. Music, Focus sync, auto-lock, trackpad and remote. Full mode.</p>
+      </li>
+      <li class="road-now">
+        <p class="road-v">Beta</p>
+        <h3>Private beta, now</h3>
+        <p>Hardening across phone makers and Android versions, battery use under 4% a day when idle, VoiceOver and TalkBack, and a security review.</p>
+      </li>
+      <li>
+        <p class="road-v">1.0</p>
+        <h3>Public release</h3>
+        <p>The Mac app and the Android app on GitHub Releases, and the Android app on F-Droid.</p>
+      </li>
+      <li>
+        <p class="road-v">2.0</p>
+        <h3>Later</h3>
+        <p>The phone as your Mac's webcam and microphone, and a one-click hotspot.</p>
+      </li>
+    </ol>
+    <div class="cta-row">
+      <a class="btn btn-ink" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases">Watch releases on GitHub</a>
+      <a class="btn btn-line" href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/docs/ROADMAP.md">Read the roadmap</a>
     </div>
-  </section>
+  </div>
+</section>
+
+<!-- ===================================================================== FAQ -->
+<section class="block block-paper faq" id="faq" aria-labelledby="faq-h">
+  <div class="shutter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap">
+    <h2 class="kin display" id="faq-h">Questions.</h2>
+    <p class="lede narrow">Something missing? Ask on <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/issues">GitHub issues</a>.</p>
+    <div class="qa">
+      <details><summary>Is it free?</summary><p>Yes. It's free and open source under the Apache-2.0 licence. There's nothing to buy and no paid tier.</p></details>
+      <details><summary>Do I need an account?</summary><p>No. There is no account and no server. You pair your phone and your Mac once with a QR code, and they talk to each other directly.</p></details>
+      <details><summary>Which phones does it work with?</summary><p>Android 10 or later for everything except Full mode, which needs Android 11 or later. The beta has testers on several phone models, and the test plan covers Pixel, Samsung, Xiaomi, OnePlus and Motorola phones. Some makers add an extra developer switch for Full mode; the phone app tells you when yours does.</p></details>
+      <details><summary>Does it read my messages?</summary><p>It never asks for SMS permission, so it can't read your text messages. It shows the notifications you allow, from the apps you choose, and one-time codes are found in that notification text only.</p></details>
+      <details><summary>Why isn't it on the Play Store or the App Store yet?</summary><p>It isn't released yet. The plan for 1.0 is GitHub Releases for both apps and F-Droid for the Android app, with Google Play later. The Mac app won't be on the Mac App Store: controlling the pointer and keyboard doesn't fit the App Store's sandbox, so it will be downloaded directly.</p></details>
+      <details><summary>Is it safe?</summary><p>Pairing uses a QR code and a 6-digit code you confirm on both devices. After that, every connection is mutual TLS 1.3 with certificates pinned at pairing, so an unpaired device can't connect. Nothing leaves your local network. Full mode's helper runs only while the Mac shows the phone's screen and accepts commands only from your paired Mac. The code is open for anyone to review.</p></details>
+      <details><summary>Does it work when my phone and Mac are on different networks?</summary><p>Not in version 1. Both need to be on the same local network.</p></details>
+      <details><summary>Are the screens on this page real?</summary><p>They're drawn for this page from the apps' real layouts and wording, with made-up names and messages.</p></details>
+    </div>
+  </div>
+</section>
 </main>
 
 <footer class="foot">
-  <div class="wrap foot-in">
-    <div class="foot-brand">
-      <a class="mark" href="#top">
-        <svg class="mark-logo" aria-hidden="true"><use href="#logo"/></svg>
-        <span data-brand>Mac Phone Bridge</span>
-      </a>
+  <div class="wrap">
+    <p class="foot-mark" aria-hidden="true"><span data-brand>Mac Phone Bridge</span></p>
+    <div class="foot-cols">
       <p>Free and open source under the <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/LICENSE">Apache-2.0 licence</a>.</p>
-    </div>
-    <nav class="foot-nav" aria-label="Project links">
-      <div>
+      <nav aria-label="Project">
         <h2>Project</h2>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge">Source on GitHub</a>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/issues">Report an issue</a>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases">Releases</a>
-      </div>
-      <div>
+      </nav>
+      <nav aria-label="Docs">
         <h2>Docs</h2>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/docs/PRD.md">Product requirements</a>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/docs/ARCHITECTURE.md">Architecture</a>
         <a href="https://github.com/venkataPhanindraVutla/mac-phone-bridge/blob/main/docs/ROADMAP.md">Roadmap</a>
-      </div>
-    </nav>
-    <p class="legal">Not affiliated with Apple or Google. Mac and macOS are trademarks of Apple Inc. Android is a trademark of Google LLC.</p>
+      </nav>
+    </div>
+    <p class="fine">Not affiliated with Apple or Google. Mac and macOS are trademarks of Apple Inc. Android is a trademark of Google LLC.</p>
   </div>
 </footer>
+
+<div class="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
+<div class="grain" aria-hidden="true"></div>
 </body>
 </html>
