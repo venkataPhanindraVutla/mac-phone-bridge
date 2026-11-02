@@ -16,8 +16,14 @@ class RingControllerTest {
         val volumeSets = mutableListOf<Int>()
         override fun volume() = vol
         override fun maxVolume() = max
-        override fun setVolume(v: Int) { vol = v; volumeSets += v }
-        override fun startLoop() { looping = true; startCalls++ }
+        var failStart = false
+        /** setVolume throws once this many calls have been made. */
+        var failVolumeAfter = Int.MAX_VALUE
+        override fun setVolume(v: Int) {
+            if (volumeSets.size >= failVolumeAfter) throw IllegalStateException("volume")
+            vol = v; volumeSets += v
+        }
+        override fun startLoop() { if (failStart) throw IllegalStateException("loop"); looping = true; startCalls++ }
         override fun stopLoop() { looping = false }
     }
 
@@ -76,6 +82,17 @@ class RingControllerTest {
         assertEquals(2, r.audio.vol)
         assertEquals(INTERRUPTION_FILTER_NONE, r.dnd.current)
         assertFalse(r.audio.looping)
+        assertEquals(1, r.notifier.cancelled)
+        assertFalse(r.controller.ringing.value)
+        assertEquals(false, r.states.last().ringing)
+    }
+
+    @Test
+    fun aRestoreThatThrowsInTheStartFailureStillCancelsAndReports() {
+        val r = Rig(vol = 2)
+        r.audio.failStart = true
+        r.audio.failVolumeAfter = 1 // the first volume change (to max) works, the restore does not
+        r.controller.start() // must not throw
         assertEquals(1, r.notifier.cancelled)
         assertFalse(r.controller.ringing.value)
         assertEquals(false, r.states.last().ringing)

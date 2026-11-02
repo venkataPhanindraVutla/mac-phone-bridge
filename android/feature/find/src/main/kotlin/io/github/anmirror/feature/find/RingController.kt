@@ -62,7 +62,7 @@ class RingController(
             } catch (e: Exception) {
                 // Half-started: put everything back and report not ringing.
                 runCatching { audio.stopLoop() }
-                restore()
+                runCatching { restore() }
                 runCatching { notifier.cancel() }
                 maySilent = false
                 _ringing.value = false
