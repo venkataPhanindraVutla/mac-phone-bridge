@@ -64,6 +64,9 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored private let destination: @MainActor (AMTransferOffer) -> IncomingDestination
     @ObservationIgnored private let freeBytes: (URL) -> Int64?
     @ObservationIgnored private let timing: TransferTiming
+    /// The clock idle time is measured on, against `acceptTimeout` and `stallTimeout` (internal,
+    /// so tests can move it; read on the byte loops' threads too).
+    @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
     /// Where the paths of live part files are kept (`openPartsKey`), so a crash or a force quit
@@ -231,7 +234,7 @@ public final class TransferEngine: SessionFeature {
             offer.modifiedMs = source.modifiedMs
             let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: .file,
                                     state: .queued, targeted: target != nil)
-            jobs.append(Job(item: item, offer: offer, source: url))
+            jobs.append(Job(item: item, offer: offer, source: url, now: now))
         }
         publish()
         pump()
@@ -409,7 +412,7 @@ public final class TransferEngine: SessionFeature {
         }
         let item = TransferItem(id: o.transferID, direction: .receive, name: FileNameSanitizer.sanitize(o.name),
                                 size: o.size, kind: o.kind, state: .queued, requested: o.requestID != 0)
-        let job = Job(item: item, offer: o, source: nil)
+        let job = Job(item: item, offer: o, source: nil, now: now)
         jobs.append(job)
         // A receive is live: requests wait behind it without counting down.
         pauseDeadlines()
@@ -937,10 +940,16 @@ private final class SessionCounter {
 /// When bytes last moved; written by the byte loops, read by the watchdog.
 private final class Meter: @unchecked Sendable {
     private let lock = NSLock()
-    private var last = ContinuousClock.now
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private var last: ContinuousClock.Instant
 
-    func touch() { lock.withLock { last = .now } }
-    var idle: Duration { lock.withLock { ContinuousClock.now - last } }
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant) {
+        self.now = now
+        last = now()
+    }
+
+    func touch() { lock.withLock { last = now() } }
+    var idle: Duration { lock.withLock { now() - last } }
 }
 
 /// One transfer that has not ended.
@@ -964,13 +973,14 @@ private final class Job {
     var watchdog: Task<Void, Never>?
     /// How long the watchdog lets the transfer go without moving bytes.
     var limit: Duration = .seconds(30)
-    let meter = Meter()
+    let meter: Meter
     var started: ContinuousClock.Instant?
 
-    init(item: TransferItem, offer: AMTransferOffer, source: URL?) {
+    init(item: TransferItem, offer: AMTransferOffer, source: URL?, now: @escaping @Sendable () -> ContinuousClock.Instant) {
         self.item = item
         self.offer = offer
         self.source = source
+        meter = Meter(now: now)
     }
 
     /// The folder a received file is written in.

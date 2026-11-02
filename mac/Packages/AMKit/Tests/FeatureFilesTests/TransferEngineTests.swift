@@ -24,6 +24,16 @@ extension TransferTiming {
                                      progressInterval: .zero, freeMargin: 64 << 20)
 }
 
+/// A `ContinuousClock` reading that moves only when the test moves it.
+final class ManualNow: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = ContinuousClock.now
+
+    var now: ContinuousClock.Instant { lock.withLock { value } }
+
+    func advance(by d: Duration) { lock.withLock { value += d } }
+}
+
 /// Holds the engine's sends until opened.
 @MainActor
 final class Gate {
@@ -645,13 +655,23 @@ final class Rig {
     let r = Rig(timing: TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .milliseconds(300),
                                        progressInterval: .zero, freeMargin: 0))
     defer { r.cleanUp() }
+    // Idle time runs on this clock, which only the test moves: however late a busy runner lets the
+    // phone link after the accept, nothing times out before the test says so.
+    let clock = ManualNow()
+    r.engine.now = { clock.now }
     await r.connect()
     let phone = try await r.startReceive(r.offer("t1", size: 10_000))
-    // Taken before the bytes move: the limit counts from the last byte, which comes later.
-    let start = ContinuousClock.now
+    // The limit counts from the last byte, which comes later than the link.
+    clock.advance(by: .milliseconds(200))
     try await phone.send(randomBytes(1000))
+    try await until("the bytes are in") { r.item("t1")?.done == 1000 }
+    // Just short of the limit the transfer goes on (the watchdog looks every 60 ms)...
+    clock.advance(by: .milliseconds(299))
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(r.item("t1")?.state == .active)
+    // ... and at the limit it fails.
+    clock.advance(by: .milliseconds(1))
     try await until("timed out") { r.item("t1")?.state == .failed(.timedOut) }
-    #expect(ContinuousClock.now - start >= .milliseconds(250))
     try await until("files.failed") { r.sent.of(.filesFailed, AMTransferFailed.self).map(\.reason) == [.timedOut] }
     #expect(r.files().isEmpty)
     #expect(try await phone.receive(maximum: 10) == nil)
@@ -661,6 +681,7 @@ final class Rig {
     let id = try #require(r.engine.send(files: [try r.write(a, as: "a.bin")]).first)
     try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
     await r.accept(id)
+    clock.advance(by: .milliseconds(300))
     try await until("still timed out") { r.item(id)?.state == .failed(.timedOut) }
 }
 
