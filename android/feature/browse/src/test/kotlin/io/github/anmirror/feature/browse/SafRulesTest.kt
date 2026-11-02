@@ -158,6 +158,29 @@ class DocPathsTest {
         assertNull(paths.find(listOf("a", "b")))
     }
 
+    @Test fun renameReportsTheNewIdWhenTheProviderGivesOne() {
+        assertEquals("new", idAfterRename("new", "old", "x.txt") { error("not asked") })
+    }
+
+    @Test fun aNullRenameIsASuccessOnlyIfTheDocumentNowHasTheName() {
+        // Some providers return null for "ID unchanged"; on others null is a refusal.
+        assertEquals("old", idAfterRename(null, "old", "x.txt") { "x.txt" })
+        assertNull(idAfterRename(null, "old", "x.txt") { ".p.part" })
+        assertNull(idAfterRename(null, "old", "x.txt") { null })
+    }
+
+    @Test fun securityExceptionOnACachedIdIsLookedUpAgain() {
+        val revoked = DocPaths<Pair<String, String>>(
+            rootId = "root",
+            children = p::children,
+            query = { id -> if (id == "1") throw SecurityException(id) else p.query(id) },
+            idOf = { it.first },
+            nameOf = { it.second },
+        )
+        revoked.remember("a", "1")
+        assertEquals("2", revoked.find(listOf("a", "b"))?.first)
+    }
+
     @Test fun staleIdThatThrowsIsLookedUpAgain() {
         val throwing = DocPaths<Pair<String, String>>(
             rootId = "root",
