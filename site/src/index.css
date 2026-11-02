@@ -6,16 +6,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Palette: a desk at dusk. Teal is the phone's side of the bridge, iris the Mac's.
-   They meet only where the two devices connect. */
+/* Palette: jet black, hot pink and chartreuse, used flat. Chartreuse is the phone's side
+   and the main action colour; pink is the Mac's side. */
 @theme {
-  --color-night: #090d18;
-  --color-deep: #0f1526;
-  --color-line: #1f2842;
-  --color-mist: #e8ebf3;
-  --color-haze: #98a1b8;
-  --color-teal: #6fe3c1;
-  --color-iris: #a99bff;
+  --color-night: #0b0b0b;
+  --color-deep: #141414;
+  --color-line: #262626;
+  --color-mist: #f2f2f2;
+  --color-haze: #9a9a9a;
+  --color-lime: #d4ff3f;
+  --color-pink: #ff2dab;
 
   --font-display: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
@@ -47,20 +47,20 @@
 /* shadcn tokens, mapped onto the palette so any added component fits. */
 :root {
   --radius: 0.75rem;
-  --background: #090d18;
-  --foreground: #e8ebf3;
-  --primary: #e8ebf3;
-  --primary-foreground: #090d18;
-  --secondary: #0f1526;
-  --secondary-foreground: #e8ebf3;
-  --muted: #0f1526;
-  --muted-foreground: #98a1b8;
-  --accent: #161e35;
-  --accent-foreground: #e8ebf3;
+  --background: #0b0b0b;
+  --foreground: #f2f2f2;
+  --primary: #f2f2f2;
+  --primary-foreground: #0b0b0b;
+  --secondary: #141414;
+  --secondary-foreground: #f2f2f2;
+  --muted: #141414;
+  --muted-foreground: #9a9a9a;
+  --accent: #1c1c1c;
+  --accent-foreground: #f2f2f2;
   --destructive: #ff7a7a;
-  --border: #1f2842;
-  --input: #1f2842;
-  --ring: #a99bff;
+  --border: #262626;
+  --input: #262626;
+  --ring: #ff2dab;
   color-scheme: dark;
 }
 
@@ -79,12 +79,12 @@
     text-rendering: optimizeLegibility;
   }
   :focus-visible {
-    outline: 2px solid var(--color-iris);
+    outline: 2px solid var(--color-pink);
     outline-offset: 3px;
     border-radius: 6px;
   }
   ::selection {
-    background: color-mix(in oklab, var(--color-iris) 45%, transparent);
+    background: color-mix(in oklab, var(--color-pink) 45%, transparent);
   }
   @media (prefers-reduced-motion: reduce) {
     html {

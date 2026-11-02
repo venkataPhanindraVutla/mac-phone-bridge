@@ -51,7 +51,7 @@ function Terminal() {
     }
   }
   return (
-    <figure ref={ref} className="relative overflow-hidden rounded-2xl bg-[#060912] shadow-[0_30px_80px_-30px_rgba(111,227,193,0.25)] ring-1 ring-line">
+    <figure ref={ref} className="relative overflow-hidden rounded-2xl bg-[#070707] ring-1 ring-line">
       <figcaption className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[0.85rem] text-haze">
         <span className="flex items-center gap-3">
           <span className="flex gap-1.5" aria-hidden="true">
@@ -70,7 +70,7 @@ function Terminal() {
         <code aria-hidden="true">
           {lines.map((line, i) => (
             <span key={i} className={cn("block", line.startsWith("#") ? "text-haze/70" : "text-mist")}>
-              {!line.startsWith("#") && <span className="text-teal select-none">$ </span>}
+              {!line.startsWith("#") && <span className="text-lime select-none">$ </span>}
               {line}
               {i === lines.length - 1 && <span className="ml-0.5 inline-block h-[1.1em] w-[0.55em] translate-y-[0.2em] animate-pulse bg-mist/70" />}
             </span>
@@ -145,7 +145,7 @@ export function Setup() {
             <p className="mt-4 text-haze">There's no download yet. To try it now, build both apps on a Mac.</p>
             <p className="mt-3 text-[0.95rem] text-haze">
               You'll need Xcode, xcodegen, protoc, JDK 21 and the Android SDK. The README's{" "}
-              <a className="text-mist underline decoration-line underline-offset-4 hover:decoration-iris" href={`${REPO}#build-it`}>
+              <a className="text-mist underline decoration-line underline-offset-4 hover:decoration-pink" href={`${REPO}#build-it`}>
                 Build it
               </a>{" "}
               section has the exact versions and commands.
@@ -163,20 +163,20 @@ function Chip({ icon, children, state }: { icon: ReactNode; children: ReactNode;
     <li
       className={cn(
         "flex items-center gap-3 rounded-xl px-4 py-3 text-[0.95rem] ring-1",
-        state === "done" && "bg-teal/[0.06] ring-teal/20",
-        state === "now" && "bg-iris/[0.07] ring-iris/25",
+        state === "done" && "bg-lime/[0.06] ring-lime/20",
+        state === "now" && "bg-pink/[0.07] ring-pink/25",
         state === "next" && "bg-white/[0.02] text-haze ring-line",
       )}
     >
-      <span className={cn("shrink-0", state === "done" ? "text-teal" : state === "now" ? "text-iris" : "text-haze")} aria-hidden="true">
+      <span className={cn("shrink-0", state === "done" ? "text-lime" : state === "now" ? "text-pink" : "text-haze")} aria-hidden="true">
         {icon}
       </span>
       <span className="flex-1">{children}</span>
-      {state === "done" && <IconCheck size={16} className="text-teal" aria-label="Built" />}
+      {state === "done" && <IconCheck size={16} className="text-lime" aria-label="Built" />}
       {state === "now" && (
         <span className="relative flex h-2.5 w-2.5" aria-label="In progress">
-          <span className="absolute inset-0 animate-ping rounded-full bg-iris/60" />
-          <span className="relative h-2.5 w-2.5 rounded-full bg-iris" />
+          <span className="absolute inset-0 animate-ping rounded-full bg-pink/60" />
+          <span className="relative h-2.5 w-2.5 rounded-full bg-pink" />
         </span>
       )}
     </li>
@@ -261,7 +261,7 @@ export function Status() {
           <Timeline data={timeline} />
         </div>
         <div className="mt-4 flex flex-wrap gap-3 md:pl-20">
-          <a href={`${REPO}/releases`} className="inline-flex h-11 items-center gap-2 rounded-full bg-mist px-5 font-medium text-night hover:bg-white">
+          <a href={`${REPO}/releases`} className="inline-flex h-11 items-center gap-2 rounded-full bg-lime px-5 font-semibold text-night hover:bg-[#e2ff7a]">
             <IconBrandGithub size={18} aria-hidden="true" />
             Watch releases on GitHub
           </a>
@@ -303,7 +303,7 @@ function Question({ q, a, open, onToggle, id }: { q: string; a: string; open: bo
       <h3>
         <button type="button" aria-expanded={open} aria-controls={id} onClick={onToggle} className="flex w-full items-center justify-between gap-6 px-5 py-5 text-left text-[1.06rem] font-medium">
           {q}
-          <motion.span animate={{ rotate: open ? 45 : 0 }} transition={{ type: "spring", stiffness: 400, damping: 28 }} className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full ring-1", open ? "bg-iris text-night ring-iris" : "text-haze ring-line")}>
+          <motion.span animate={{ rotate: open ? 45 : 0 }} transition={{ type: "spring", stiffness: 400, damping: 28 }} className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full ring-1", open ? "bg-pink text-night ring-pink" : "text-haze ring-line")}>
             <IconPlus size={16} aria-hidden="true" />
           </motion.span>
         </button>
@@ -329,7 +329,7 @@ export function Faq() {
             Questions.
           </h2>
           <div className="mt-8 rounded-[1.4rem] bg-deep p-6 ring-1 ring-line">
-            <IconMessageCircleQuestion size={24} className="text-iris" aria-hidden="true" />
+            <IconMessageCircleQuestion size={24} className="text-pink" aria-hidden="true" />
             <p className="mt-3 font-medium">Something missing?</p>
             <p className="mt-1 text-[0.95rem] text-haze">Ask on GitHub. Questions and bug reports both go there.</p>
             <a href={`${REPO}/issues`} className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-white/[0.06] px-4 text-[0.92rem] font-medium ring-1 ring-white/10 ring-inset hover:bg-white/10">
@@ -351,7 +351,6 @@ export function Faq() {
 export function Footer() {
   return (
     <footer className="relative overflow-hidden border-t border-line pt-16 pb-10">
-      <div aria-hidden="true" className="pointer-events-none absolute -bottom-40 left-1/2 h-80 w-[min(60rem,120vw)] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(169,155,255,0.18),transparent)] blur-2xl" />
       <div className="wrap relative">
         <div className="grid gap-10 md:grid-cols-[minmax(0,6fr)_minmax(0,3fr)_minmax(0,3fr)]">
           <div>
@@ -361,12 +360,12 @@ export function Footer() {
             </p>
             <p className="mt-4 max-w-[26rem] text-[0.95rem] text-haze">
               Your Android phone, part of your Mac. Free and open source under the{" "}
-              <a className="text-mist underline decoration-line underline-offset-4 hover:decoration-iris" href={docs("LICENSE")}>
+              <a className="text-mist underline decoration-line underline-offset-4 hover:decoration-pink" href={docs("LICENSE")}>
                 Apache-2.0 licence
               </a>
               .
             </p>
-            <a href={REPO} className="mt-6 inline-flex h-11 items-center gap-2 rounded-full bg-mist px-5 font-medium text-night hover:bg-white">
+            <a href={REPO} className="mt-6 inline-flex h-11 items-center gap-2 rounded-full bg-lime px-5 font-semibold text-night hover:bg-[#e2ff7a]">
               <IconBrandGithub size={18} aria-hidden="true" />
               Star it on GitHub
             </a>

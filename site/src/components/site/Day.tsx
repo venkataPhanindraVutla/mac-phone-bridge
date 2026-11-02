@@ -71,14 +71,14 @@ function Step({ moment, index, active, onActive, inlineScene }: { moment: Moment
       <p
         className={cn(
           "font-display text-[clamp(3rem,7vw,5.5rem)] leading-none font-medium tracking-[-0.04em] tabular-nums transition-colors duration-500",
-          active || inlineScene ? "text-teal" : "text-line",
+          active || inlineScene ? "text-lime" : "text-line",
         )}
       >
         <time>{moment.time}</time>
       </p>
       <h3 className={cn("display mt-5 text-[clamp(1.7rem,3vw,2.4rem)] transition-opacity duration-500", active || inlineScene ? "opacity-100" : "opacity-40")}>{moment.title}</h3>
       <p className={cn("mt-4 max-w-[34rem] text-haze transition-opacity duration-500", active || inlineScene ? "opacity-100" : "opacity-40")}>{moment.body}</p>
-      <p className="mt-4 text-[0.95rem] text-iris">{moment.try}</p>
+      <p className="mt-4 text-[0.95rem] text-pink">{moment.try}</p>
       {inlineScene && <div className="mt-8">{moment.scene()}</div>}
     </div>
   )

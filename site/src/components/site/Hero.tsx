@@ -17,11 +17,6 @@ export function Hero() {
 
   return (
     <section ref={ref} id="top" aria-labelledby="hero-h" className="relative overflow-x-clip">
-      {/* Light behind the laptop: teal from the phone's side, iris from the Mac's. */}
-      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[120vh]">
-        <div className="absolute top-[38vh] left-1/2 h-[46rem] w-[min(70rem,140vw)] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(169,155,255,0.28),transparent)] blur-2xl" />
-        <div className="absolute top-[52vh] left-[38%] h-[26rem] w-[min(40rem,90vw)] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(111,227,193,0.18),transparent)] blur-2xl" />
-      </div>
 
       <motion.div style={reduce ? undefined : { opacity: fade, y: lift }} className="wrap relative z-10 pt-28 text-center sm:pt-36">
         <h1 id="hero-h" className="display mx-auto max-w-[13ch] text-[clamp(2.75rem,8.4vw,6.5rem)]">
@@ -49,7 +44,7 @@ export function Hero() {
           <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
             <a
               href={REPO}
-              className="inline-flex h-12 items-center gap-2 rounded-full bg-mist px-6 font-medium text-night transition-[transform,background-color] hover:bg-white active:scale-[0.98]"
+              className="inline-flex h-12 items-center gap-2 rounded-full bg-lime px-6 font-semibold text-night transition-[transform,background-color] hover:bg-[#e2ff7a] active:scale-[0.98]"
             >
               <IconBrandGithub size={20} stroke={1.8} aria-hidden="true" />
               View on GitHub

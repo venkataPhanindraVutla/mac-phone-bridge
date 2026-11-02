@@ -4,12 +4,12 @@ import { AppIcon, Avatar, ChatScreen, MenuBar, Photo, TrafficLights, Wallpaper }
 
 export function MacScreen() {
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#151b45] font-sans select-none" aria-hidden="true">
+    <div className="relative h-full w-full overflow-hidden bg-[#0b0b0b] font-sans select-none" aria-hidden="true">
       <Wallpaper />
       <MenuBar />
 
       {/* The phone, in a Mac window */}
-      <div className="absolute top-[34px] left-[46px] w-[150px] overflow-hidden rounded-[9px] bg-[#1e2033]/90 shadow-[0_18px_40px_-10px_rgba(0,0,0,0.6)] ring-1 ring-white/15 backdrop-blur">
+      <div className="absolute top-[34px] left-[46px] w-[150px] overflow-hidden rounded-[9px] bg-[#161616]/90 shadow-[0_18px_40px_-10px_rgba(0,0,0,0.6)] ring-1 ring-white/15 backdrop-blur">
         <div className="flex items-center justify-between px-[7px] py-[5px] text-[6.5px] text-white/80">
           <TrafficLights />
           <span className="font-medium">Asha's phone</span>
@@ -26,7 +26,7 @@ export function MacScreen() {
       </div>
 
       {/* Phone notification, shown by macOS */}
-      <div className="hero-notif absolute top-[22px] right-[10px] w-[176px] rounded-[10px] bg-[#2a2d45]/80 p-[7px] text-white shadow-[0_10px_30px_-8px_rgba(0,0,0,0.6)] ring-1 ring-white/15 backdrop-blur-xl">
+      <div className="hero-notif absolute top-[22px] right-[10px] w-[176px] rounded-[10px] bg-[#1c1c1c]/80 p-[7px] text-white shadow-[0_10px_30px_-8px_rgba(0,0,0,0.6)] ring-1 ring-white/15 backdrop-blur-xl">
         <div className="flex gap-[6px]">
           <Avatar letter="P" className="h-[20px] w-[20px] text-[8px]" />
           <div className="min-w-0 flex-1 leading-tight">
@@ -63,8 +63,8 @@ export function MacScreen() {
       {/* Dock */}
       <div className="absolute inset-x-0 bottom-[6px] flex justify-center">
         <div className="flex items-end gap-[5px] rounded-[9px] bg-white/15 px-[6px] py-[4px] ring-1 ring-white/15 backdrop-blur-md">
-          {["#5aa3f0", "#ff9f43", "#34c759", "#af52de", "#ff375f"].map((c) => (
-            <span key={c} className="h-[18px] w-[18px] rounded-[5px]" style={{ background: `linear-gradient(160deg, ${c}, color-mix(in oklab, ${c} 60%, black))` }} />
+          {["#f2f2f2", "#d4ff3f", "#3a3a3a", "#9a9a9a", "#2a2a2a"].map((c) => (
+            <span key={c} className="h-[18px] w-[18px] rounded-[5px]" style={{ background: c }} />
           ))}
           <span className="mx-[1px] h-[16px] w-px bg-white/25" />
           <span className="relative">

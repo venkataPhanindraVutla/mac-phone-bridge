@@ -26,7 +26,7 @@ export function Stage({ children, className }: { children: ReactNode; className?
   return (
     <div
       className={cn(
-        "relative isolate aspect-[4/4.3] w-full overflow-hidden rounded-[1.4rem] bg-[#151b45] shadow-[0_40px_120px_-40px_rgba(169,155,255,0.35)] ring-1 ring-white/10 sm:aspect-[5/4]",
+        "relative isolate aspect-[4/4.3] w-full overflow-hidden rounded-[1.4rem] bg-[#0b0b0b] shadow-[0_30px_80px_-30px_rgba(0,0,0,0.9)] ring-1 ring-white/10 sm:aspect-[5/4]",
         className,
       )}
     >
@@ -41,7 +41,7 @@ export function Stage({ children, className }: { children: ReactNode; className?
 
 function Glass({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn("rounded-2xl bg-[#262a44]/75 text-white shadow-[0_18px_50px_-14px_rgba(0,0,0,0.65)] ring-1 ring-white/15 backdrop-blur-xl", className)}>
+    <div className={cn("rounded-2xl bg-[#1c1c1c]/75 text-white shadow-[0_18px_50px_-14px_rgba(0,0,0,0.65)] ring-1 ring-white/15 backdrop-blur-xl", className)}>
       {children}
     </div>
   )
@@ -70,7 +70,7 @@ export function MessageScene() {
                 <motion.p
                   initial={{ opacity: 0, y: 8, scale: 0.96 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#5b4fd6] px-[0.8em] py-[0.5em] text-white"
+                  className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#ff2dab] px-[0.8em] py-[0.5em] text-[#0b0b0b]"
                 >
                   {sent}
                 </motion.p>
@@ -94,7 +94,7 @@ export function MessageScene() {
           </div>
           <AnimatePresence mode="wait" initial={false}>
             {sent ? (
-              <motion.p key="sent" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-3 flex items-center gap-1.5 text-[0.82rem] text-teal">
+              <motion.p key="sent" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-3 flex items-center gap-1.5 text-[0.82rem] text-lime">
                 <IconCheck size={16} aria-hidden="true" /> Sent from Asha's phone
               </motion.p>
             ) : (
@@ -110,7 +110,7 @@ export function MessageScene() {
                   autoComplete="off"
                   className="h-9 min-w-0 flex-1 rounded-lg bg-white/10 px-3 text-[0.88rem] text-white placeholder:text-white/45 focus:bg-white/15 focus:outline-none"
                 />
-                <button type="submit" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-iris text-night transition-transform active:scale-95" aria-label="Send reply">
+                <button type="submit" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-pink text-night transition-transform active:scale-95" aria-label="Send reply">
                   <IconSend2 size={17} aria-hidden="true" />
                 </button>
               </motion.form>
@@ -150,7 +150,7 @@ export function CodeScene() {
           <p className="font-display text-[1.15rem] font-semibold">Enter your sign-in code</p>
           <div className="mt-4 grid grid-cols-6 gap-1.5 sm:gap-2">
             {code.split("").map((d, i) => (
-              <span key={i} className={cn("grid aspect-[4/5] place-items-center rounded-lg text-[1.25rem] font-semibold ring-1", copied ? "bg-white ring-[#5b4fd6]/40" : "bg-white/60 ring-black/10")}>
+              <span key={i} className={cn("grid aspect-[4/5] place-items-center rounded-lg text-[1.25rem] font-semibold ring-1", copied ? "bg-white ring-[#ff2dab]/40" : "bg-white/60 ring-black/10")}>
                 <AnimatePresence>
                   {copied && (
                     <motion.span initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 + i * 0.05 }}>
@@ -166,7 +166,7 @@ export function CodeScene() {
       <div className="absolute top-[5%] right-[4%] w-[min(22rem,88%)]">
         <Glass className="p-3.5">
           <div className="flex gap-3">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#3a7bd5] to-[#1f3f8f] text-sm font-bold">K</span>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-pink text-sm font-bold text-night">K</span>
             <div className="min-w-0 flex-1 leading-snug">
               <div className="flex items-baseline justify-between text-[0.9rem]">
                 <span className="font-semibold">Kestrel Bank</span>
@@ -210,7 +210,7 @@ export function CallScene() {
       <div className="absolute inset-0 grid place-items-center px-[6%]">
         <Glass className="w-[min(21rem,100%)] p-5 text-center">
           <div className="relative mx-auto h-16 w-16">
-            {state === "ringing" && <span className="absolute inset-0 animate-ping rounded-full bg-teal/30" aria-hidden="true" />}
+            {state === "ringing" && <span className="absolute inset-0 animate-ping rounded-full bg-lime/30" aria-hidden="true" />}
             <Avatar letter="P" className="relative h-16 w-16 text-2xl" />
           </div>
           <p className="mt-3 font-display text-xl font-semibold">Priya</p>
@@ -272,14 +272,14 @@ export function PhotosScene() {
     <Stage>
       <LayoutGroup>
         <PhoneFrame className="absolute bottom-[5%] left-[6%] h-[78%] w-[40%] sm:w-[32%]">
-          <div className="flex h-full flex-col bg-[#f4f1fa] px-[8%] pt-[18%] text-[#1c1b22]">
+          <div className="flex h-full flex-col bg-[#f2f2f2] px-[8%] pt-[18%] text-[#1c1b22]">
             <p className="text-[0.85rem] font-semibold">Share 3 photos</p>
             <div className="mt-3 grid grid-cols-3 gap-1">
               {photos.map((p) =>
                 sent ? (
                   <span key={p.kind} className="aspect-square rounded-md bg-black/5" />
                 ) : (
-                  <motion.div key={p.kind} layoutId={`photo-${p.kind}`} transition={spring} className="overflow-hidden rounded-md ring-2 ring-[#5b4fd6]">
+                  <motion.div key={p.kind} layoutId={`photo-${p.kind}`} transition={spring} className="overflow-hidden rounded-md ring-2 ring-[#ff2dab]">
                     <Photo kind={p.kind} className="block aspect-square w-full" />
                   </motion.div>
                 ),
@@ -288,7 +288,7 @@ export function PhotosScene() {
             <button
               type="button"
               onClick={() => setSent((s) => !s)}
-              className="mt-4 flex items-center justify-center gap-1.5 rounded-full bg-[#5b4fd6] py-2 text-[0.8rem] font-medium text-white transition-transform active:scale-95"
+              className="mt-4 flex items-center justify-center gap-1.5 rounded-full bg-[#ff2dab] py-2 text-[0.8rem] font-medium text-[#0b0b0b] transition-transform active:scale-95"
             >
               {sent ? <IconArrowBackUp size={15} aria-hidden="true" /> : <IconSend2 size={15} aria-hidden="true" />}
               {sent ? "Undo" : "Send to Mac"}
@@ -334,7 +334,7 @@ export function FullModeScene() {
   return (
     <Stage>
       <div className="absolute inset-0 flex items-center justify-center gap-[4%] px-[5%] pb-[3%]">
-        <div className="flex h-[92%] flex-col overflow-hidden rounded-xl bg-[#1e2033]/90 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.7)] ring-1 ring-white/15 backdrop-blur" style={{ aspectRatio: "9 / 17" }}>
+        <div className="flex h-[92%] flex-col overflow-hidden rounded-xl bg-[#161616]/90 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.7)] ring-1 ring-white/15 backdrop-blur" style={{ aspectRatio: "9 / 17" }}>
           <div className="flex items-center justify-between px-3 py-2 text-[0.72rem] text-white/80">
             <TrafficLights />
             <span className="font-medium">Asha's phone</span>
@@ -343,7 +343,7 @@ export function FullModeScene() {
           <div className="mx-2 flex-1 overflow-hidden rounded-[0.9rem] text-[clamp(8px,1.35vw,11px)]" onClick={() => input.current?.focus()}>
             <ChatScreen
               extra={msgs.map((m, i) => (
-                <motion.p key={`${i}-${m}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#5b4fd6] px-[0.8em] py-[0.5em] text-white">
+                <motion.p key={`${i}-${m}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#ff2dab] px-[0.8em] py-[0.5em] text-[#0b0b0b]">
                   {m}
                 </motion.p>
               ))}
@@ -381,7 +381,7 @@ export function FullModeScene() {
                 autoComplete="off"
                 className="h-9 min-w-0 flex-1 rounded-lg bg-white/10 px-3 text-[0.88rem] text-white placeholder:text-white/45 focus:bg-white/15 focus:outline-none"
               />
-              <button type="submit" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-iris text-night" aria-label="Send to the phone">
+              <button type="submit" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-pink text-night" aria-label="Send to the phone">
                 <IconSend2 size={17} aria-hidden="true" />
               </button>
             </div>

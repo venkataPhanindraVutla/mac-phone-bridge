@@ -57,11 +57,11 @@ function Tile({ title, text, children, className, desktop }: { title: string; te
 
 /* Notifications: a live feed, with per-app filters you can switch. */
 const feed = [
-  { app: "Messages", who: "Priya", text: "Running a bit late, start without me?", tint: "from-[#ffb38a] to-[#e2729a]" },
-  { app: "Calendar", who: "Design review", text: "In 10 minutes, Room 4", tint: "from-[#ff8a80] to-[#d84a5c]" },
-  { app: "Deliveries", who: "Your order is out", text: "Arriving between 2 and 3 pm", tint: "from-[#ffd36b] to-[#e59a2f]" },
-  { app: "Messages", who: "Dev", text: "Pushed the fix, can you check?", tint: "from-[#9be7c4] to-[#3fa98a]" },
-  { app: "Calendar", who: "Gym", text: "Tomorrow at 7:00", tint: "from-[#ff8a80] to-[#d84a5c]" },
+  { app: "Messages", who: "Priya", text: "Running a bit late, start without me?", tint: "bg-lime" },
+  { app: "Calendar", who: "Design review", text: "In 10 minutes, Room 4", tint: "bg-pink" },
+  { app: "Deliveries", who: "Your order is out", text: "Arriving between 2 and 3 pm", tint: "bg-[#f2f2f2]" },
+  { app: "Messages", who: "Dev", text: "Pushed the fix, can you check?", tint: "bg-lime" },
+  { app: "Calendar", who: "Gym", text: "Tomorrow at 7:00", tint: "bg-pink" },
 ]
 
 function NotificationsDemo() {
@@ -83,10 +83,10 @@ function NotificationsDemo() {
               animate={{ opacity: 1 - i * 0.28, y: i * 70, scale: 1 - i * 0.04 }}
               exit={{ opacity: 0, y: 230, scale: 0.9 }}
               transition={{ type: "spring", stiffness: 260, damping: 30 }}
-              className="absolute inset-x-0 top-0 flex gap-3 rounded-2xl bg-[#232945]/90 p-3.5 ring-1 ring-white/10 backdrop-blur"
+              className="absolute inset-x-0 top-0 flex gap-3 rounded-2xl bg-[#1c1c1c]/90 p-3.5 ring-1 ring-white/10 backdrop-blur"
               style={{ zIndex: 10 - i }}
             >
-              <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-sm font-semibold text-[#21122b]", item.tint)}>{item.who[0]}</span>
+              <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl text-sm font-semibold text-night", item.tint)}>{item.who[0]}</span>
               <div className="min-w-0 flex-1 leading-snug">
                 <div className="flex justify-between gap-2 text-[0.88rem]">
                   <span className="truncate font-semibold">{item.who}</span>
@@ -110,7 +110,7 @@ function NotificationsDemo() {
               onClick={() => setMuted((m) => (on ? [...m, app] : m.filter((a) => a !== app)))}
               className={cn(
                 "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[0.82rem] ring-1 transition-colors ring-inset",
-                on ? "bg-[#0f1526]/80 text-teal ring-teal/40 backdrop-blur" : "bg-[#0f1526]/60 text-haze ring-white/15 backdrop-blur hover:text-mist",
+                on ? "bg-[#141414]/80 text-lime ring-lime/40 backdrop-blur" : "bg-[#141414]/60 text-haze ring-white/15 backdrop-blur hover:text-mist",
               )}
             >
               {on ? <IconCheck size={14} aria-hidden="true" /> : <IconBellOff size={14} aria-hidden="true" />}
@@ -126,7 +126,7 @@ function NotificationsDemo() {
 function CodeDemo() {
   const [copied, setCopied] = useState(false)
   return (
-    <div className="w-full max-w-[17rem] rounded-2xl bg-[#232945]/90 p-4 ring-1 ring-white/10">
+    <div className="w-full max-w-[17rem] rounded-2xl bg-[#1c1c1c]/90 p-4 ring-1 ring-white/10">
       <p className="text-[0.82rem] text-white/55">Kestrel Bank</p>
       <p className="mt-1 text-[0.9rem] text-white/85">
         Your code is{" "}
@@ -134,7 +134,7 @@ function CodeDemo() {
           482913
           <motion.span
             aria-hidden="true"
-            className="absolute inset-x-[-3px] inset-y-0 -z-0 rounded bg-iris/25"
+            className="absolute inset-x-[-3px] inset-y-0 -z-0 rounded bg-pink/25"
             initial={{ scaleX: 0 }}
             whileInView={{ scaleX: 1 }}
             viewport={{ once: true, amount: 1 }}
@@ -164,9 +164,9 @@ function CallsDemo() {
   const { ref, tick } = useLoop(2600)
   const named = tick % 2 === 1
   return (
-    <div ref={ref} className="flex w-full max-w-[17rem] items-center gap-3 rounded-full bg-[#232945]/90 p-2 pr-2.5 ring-1 ring-white/10">
+    <div ref={ref} className="flex w-full max-w-[17rem] items-center gap-3 rounded-full bg-[#1c1c1c]/90 p-2 pr-2.5 ring-1 ring-white/10">
       <span className="relative">
-        <span className="absolute inset-0 animate-ping rounded-full bg-teal/25" aria-hidden="true" />
+        <span className="absolute inset-0 animate-ping rounded-full bg-lime/25" aria-hidden="true" />
         <Avatar letter={named ? "P" : "#"} className="relative h-10 w-10 text-sm" />
       </span>
       <div className="min-w-0 flex-1">
@@ -192,7 +192,7 @@ function ClipboardDemo() {
   const secret = clip.startsWith("•")
   return (
     <div ref={ref} className="grid w-full max-w-[22rem] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 text-[0.8rem]">
-      <div className="rounded-xl bg-[#232945]/90 p-3 ring-1 ring-white/10">
+      <div className="rounded-xl bg-[#1c1c1c]/90 p-3 ring-1 ring-white/10">
         <p className="text-white/45">Mac</p>
         <AnimatePresence mode="wait">
           <motion.p key={clip} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-1 truncate text-white/90">
@@ -200,10 +200,10 @@ function ClipboardDemo() {
           </motion.p>
         </AnimatePresence>
       </div>
-      <motion.span key={tick} initial={{ x: -6, opacity: 0 }} animate={{ x: 4, opacity: 1 }} transition={{ duration: 0.6 }} className={secret ? "text-white/30" : "text-teal"} aria-hidden="true">
+      <motion.span key={tick} initial={{ x: -6, opacity: 0 }} animate={{ x: 4, opacity: 1 }} transition={{ duration: 0.6 }} className={secret ? "text-white/30" : "text-lime"} aria-hidden="true">
         →
       </motion.span>
-      <div className="rounded-xl bg-[#f4f1fa] p-3 text-[#1c1b22]">
+      <div className="rounded-xl bg-[#f2f2f2] p-3 text-[#1c1b22]">
         <p className="text-black/45">Phone</p>
         <AnimatePresence mode="wait">
           <motion.p key={clip} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} exit={{ opacity: 0 }} className={cn("mt-1 truncate", secret && "text-black/45 italic")}>
@@ -220,10 +220,10 @@ function FilesDemo() {
   const { ref, tick } = useLoop(2800)
   return (
     <div ref={ref} className="relative flex w-full max-w-[22rem] items-center justify-between">
-      <div className="grid h-24 w-32 place-items-end rounded-xl bg-[#232945]/90 p-2 ring-1 ring-white/10">
+      <div className="grid h-24 w-32 place-items-end rounded-xl bg-[#1c1c1c]/90 p-2 ring-1 ring-white/10">
         <span className="h-1 w-full rounded-full bg-white/10" />
       </div>
-      <div className="grid h-28 w-16 place-items-center rounded-[1rem] bg-[#f4f1fa] ring-4 ring-[#101014]">
+      <div className="grid h-28 w-16 place-items-center rounded-[1rem] bg-[#f2f2f2] ring-4 ring-[#101014]">
         <motion.span key={tick} initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 1.3 }} className="text-[#d6453d]">
           <IconFileTypePdf size={26} stroke={1.5} aria-hidden="true" />
         </motion.span>
@@ -252,7 +252,7 @@ function ScreenshotsDemo() {
         <Photo kind={(["cliffs", "ferry", "dumplings"] as const)[tick % 3]} className="h-full w-full" />
         <motion.span key={tick} className="absolute inset-0 bg-white" initial={{ opacity: 0.9 }} animate={{ opacity: 0 }} transition={{ duration: 0.5 }} aria-hidden="true" />
       </div>
-      <div className="relative h-24 w-36 rounded-xl bg-[#232945]/90 ring-1 ring-white/10">
+      <div className="relative h-24 w-36 rounded-xl bg-[#1c1c1c]/90 ring-1 ring-white/10">
         <motion.div
           key={tick}
           className="absolute right-2 bottom-2 h-12 w-7 overflow-hidden rounded-md ring-2 ring-white/80"
@@ -269,9 +269,9 @@ function ScreenshotsDemo() {
 }
 
 const tracks = [
-  { title: "Northern Lights", artist: "Lumen Park", art: "from-[#5b4fd6] to-[#6fe3c1]" },
-  { title: "Paper Boats", artist: "The Quiet Hours", art: "from-[#f2a07b] to-[#e2729a]" },
-  { title: "Slow Tide", artist: "Mira Vale", art: "from-[#2b3f8f] to-[#8fb8ff]" },
+  { title: "Northern Lights", artist: "Lumen Park", art: "bg-lime" },
+  { title: "Paper Boats", artist: "The Quiet Hours", art: "bg-pink" },
+  { title: "Slow Tide", artist: "Mira Vale", art: "bg-[#f2f2f2]" },
 ]
 function MusicDemo() {
   const [i, setI] = useState(0)
@@ -279,8 +279,8 @@ function MusicDemo() {
   const reduce = useReducedMotion()
   const t = tracks[i]
   return (
-    <div className="flex w-full max-w-[17rem] items-center gap-3 rounded-2xl bg-[#232945]/90 p-3 ring-1 ring-white/10">
-      <motion.span key={t.title} initial={{ rotate: -8, scale: 0.9 }} animate={{ rotate: 0, scale: 1 }} className={cn("h-14 w-14 shrink-0 rounded-lg bg-gradient-to-br", t.art)} aria-hidden="true" />
+    <div className="flex w-full max-w-[17rem] items-center gap-3 rounded-2xl bg-[#1c1c1c]/90 p-3 ring-1 ring-white/10">
+      <motion.span key={t.title} initial={{ rotate: -8, scale: 0.9 }} animate={{ rotate: 0, scale: 1 }} className={cn("h-14 w-14 shrink-0 rounded-lg", t.art)} aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-[0.9rem] font-semibold">{t.title}</p>
         <p className="truncate text-[0.78rem] text-white/55">{t.artist}</p>
@@ -308,12 +308,12 @@ function MusicDemo() {
 
 function Switch({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) {
   return (
-    <button type="button" role="switch" aria-checked={on} onClick={onClick} className="flex w-full items-center justify-between gap-3 rounded-xl bg-[#232945]/90 px-3.5 py-2.5 text-[0.86rem] ring-1 ring-white/10">
+    <button type="button" role="switch" aria-checked={on} onClick={onClick} className="flex w-full items-center justify-between gap-3 rounded-xl bg-[#1c1c1c]/90 px-3.5 py-2.5 text-[0.86rem] ring-1 ring-white/10">
       <span className="flex items-center gap-2">
-        <IconMoon size={16} className={on ? "text-iris" : "text-white/40"} aria-hidden="true" />
+        <IconMoon size={16} className={on ? "text-pink" : "text-white/40"} aria-hidden="true" />
         {label}
       </span>
-      <span className={cn("flex h-6 w-10 items-center rounded-full p-0.5 transition-colors", on ? "bg-iris" : "bg-white/15")}>
+      <span className={cn("flex h-6 w-10 items-center rounded-full p-0.5 transition-colors", on ? "bg-pink" : "bg-white/15")}>
         <motion.span layout transition={{ type: "spring", stiffness: 500, damping: 32 }} className={cn("h-5 w-5 rounded-full bg-white", on && "ml-auto")} />
       </span>
     </button>
@@ -341,7 +341,7 @@ function FindDemo() {
       <div className="relative grid h-20 w-20 place-items-center">
         {ringing &&
           [0, 0.4, 0.8].map((d) => (
-            <motion.span key={d} className="absolute inset-0 rounded-full ring-2 ring-teal/50" initial={{ scale: 0.6, opacity: 0.9 }} animate={{ scale: 1.6, opacity: 0 }} transition={{ duration: 1.2, delay: d, repeat: Infinity }} aria-hidden="true" />
+            <motion.span key={d} className="absolute inset-0 rounded-full ring-2 ring-lime/50" initial={{ scale: 0.6, opacity: 0.9 }} animate={{ scale: 1.6, opacity: 0 }} transition={{ duration: 1.2, delay: d, repeat: Infinity }} aria-hidden="true" />
           ))}
         <motion.span animate={ringing ? { rotate: [0, -12, 12, -12, 12, 0] } : { rotate: 0 }} transition={{ duration: 0.5, repeat: ringing ? Infinity : 0, repeatDelay: 0.3 }}>
           <IconDeviceMobile size={44} stroke={1.4} className="text-mist" aria-hidden="true" />
@@ -364,10 +364,10 @@ function StatusDemo() {
         <IconWifi size={13} aria-hidden="true" />
         <span>Tue 10:24</span>
       </div>
-      <div className="ml-auto w-[13.5rem] rounded-b-xl rounded-tl-xl bg-[#232945]/95 p-3 text-[0.82rem] ring-1 ring-white/10">
+      <div className="ml-auto w-[13.5rem] rounded-b-xl rounded-tl-xl bg-[#1c1c1c]/95 p-3 text-[0.82rem] ring-1 ring-white/10">
         <p className="font-semibold">Asha's phone</p>
         <ul className="mt-2 space-y-1.5 text-white/75">
-          <li className="flex items-center gap-2"><IconBattery3 size={15} className="text-teal" aria-hidden="true" />82%, charging <IconBolt size={12} className="text-teal" aria-hidden="true" /></li>
+          <li className="flex items-center gap-2"><IconBattery3 size={15} className="text-lime" aria-hidden="true" />82%, charging <IconBolt size={12} className="text-lime" aria-hidden="true" /></li>
           <li className="flex items-center gap-2"><IconAntennaBars4 size={15} aria-hidden="true" />Strong signal, 5G</li>
           <li className="flex items-center gap-2"><IconWifi size={15} aria-hidden="true" />On Home Wi-Fi</li>
         </ul>
@@ -383,7 +383,7 @@ function LockDemo() {
   return (
     <div className="w-full max-w-[17rem]">
       <div className="flex items-center justify-between text-mist">
-        <span className={cn("grid h-12 w-12 place-items-center rounded-xl ring-1 transition-colors", locked ? "bg-iris/15 ring-iris/40 text-iris" : "bg-white/5 ring-white/10")}>
+        <span className={cn("grid h-12 w-12 place-items-center rounded-xl ring-1 transition-colors", locked ? "bg-pink/15 ring-pink/40 text-pink" : "bg-white/5 ring-white/10")}>
           {locked ? <IconLock size={22} aria-hidden="true" /> : <IconLockOpen size={22} aria-hidden="true" />}
         </span>
         <span className="text-[0.8rem] text-haze" aria-live="polite">{locked ? "Mac locked" : "Phone nearby"}</span>
@@ -391,7 +391,7 @@ function LockDemo() {
       <label className="mt-4 block text-[0.78rem] text-haze" htmlFor="lock-distance">
         Walk away with your phone
       </label>
-      <input id="lock-distance" type="range" min={0} max={100} value={d} onChange={(e) => setD(Number(e.target.value))} className="mt-2 w-full accent-[#a99bff]" />
+      <input id="lock-distance" type="range" min={0} max={100} value={d} onChange={(e) => setD(Number(e.target.value))} className="mt-2 w-full accent-[#ff2dab]" />
     </div>
   )
 }
@@ -406,7 +406,7 @@ function TrackpadDemo() {
   }
   return (
     <div className="flex w-full max-w-[18rem] items-center gap-4">
-      <div className="relative h-24 flex-1 overflow-hidden rounded-xl bg-[#232945]/90 ring-1 ring-white/10" aria-hidden="true">
+      <div className="relative h-24 flex-1 overflow-hidden rounded-xl bg-[#1c1c1c]/90 ring-1 ring-white/10" aria-hidden="true">
         <svg viewBox="0 0 24 24" className="absolute h-4 w-4 -translate-x-[2px] -translate-y-[2px] text-white drop-shadow transition-[left,top] duration-75" style={{ left: `${p.x}%`, top: `${p.y}%` }} fill="currentColor">
           <path d="M5 3l14 8-6 1.5L10 19z" stroke="#000" strokeWidth="1" />
         </svg>
@@ -414,7 +414,7 @@ function TrackpadDemo() {
       <div
         ref={pad}
         onPointerMove={move}
-        className="h-28 w-16 touch-none rounded-[1rem] bg-[#f4f1fa] ring-4 ring-[#101014]"
+        className="h-28 w-16 touch-none rounded-[1rem] bg-[#f2f2f2] ring-4 ring-[#101014]"
         role="img"
         aria-label="Phone used as a trackpad. Move over it to move the Mac's pointer."
       >

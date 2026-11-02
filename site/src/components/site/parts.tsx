@@ -1,84 +1,40 @@
 // Drawn pieces of the two apps, shared by the hero laptop and the day story. Names and
 // messages are made up; the layouts and wording follow the real apps.
-import { useId, type ReactNode } from "react"
+import { type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
 export function LogoMark({ className }: { className?: string }) {
-  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "")
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true" className={className}>
       <rect x="4.5" y="8.5" width="8" height="15" rx="2.2" fill="none" stroke="currentColor" strokeWidth="2" />
       <rect x="17.5" y="8.5" width="11" height="9" rx="1.6" fill="none" stroke="currentColor" strokeWidth="2" />
       <path d="M21 22.5h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M12.5 15.5h5" stroke={`url(#mark-bridge${uid})`} strokeWidth="3" />
-      <defs>
-        <linearGradient id={`mark-bridge${uid}`} x1="12.5" x2="17.5" y1="0" y2="0" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#6fe3c1" />
-          <stop offset="1" stopColor="#a99bff" />
-        </linearGradient>
-      </defs>
+      <path d="M12.5 15.5h5" stroke="#d4ff3f" strokeWidth="3" />
     </svg>
   )
 }
 
 export function AppIcon({ className }: { className?: string }) {
-  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "")
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true" className={className}>
-      <defs>
-        <linearGradient id={`app-bg${uid}`} x1="0" x2="32" y1="0" y2="32" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#2a2f63" />
-          <stop offset="1" stopColor="#141a33" />
-        </linearGradient>
-        <linearGradient id={`app-bridge${uid}`} x1="13" x2="17.5" y1="0" y2="0" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#6fe3c1" />
-          <stop offset="1" stopColor="#a99bff" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="7.5" fill={`url(#app-bg${uid})`} />
-      <rect x="5.5" y="9" width="7.5" height="14" rx="2" fill="none" stroke="#e8ebf3" strokeWidth="1.8" />
-      <rect x="17.5" y="9" width="10" height="8.5" rx="1.5" fill="none" stroke="#e8ebf3" strokeWidth="1.8" />
-      <path d="M20.5 22.5h4" stroke="#e8ebf3" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M13 15.5h4.5" stroke={`url(#app-bridge${uid})`} strokeWidth="2.4" strokeLinecap="round" />
+      <rect width="32" height="32" rx="7.5" fill="#ff2dab" />
+      <rect x="5.5" y="9" width="7.5" height="14" rx="2" fill="none" stroke="#0b0b0b" strokeWidth="1.8" />
+      <rect x="17.5" y="9" width="10" height="8.5" rx="1.5" fill="none" stroke="#0b0b0b" strokeWidth="1.8" />
+      <path d="M20.5 22.5h4" stroke="#0b0b0b" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M13 15.5h4.5" stroke="#0b0b0b" strokeWidth="2.4" strokeLinecap="round" />
     </svg>
   )
 }
 
-/** A dusk landscape in the spirit of a macOS wallpaper. */
+/** A flat, poster-like desktop picture in the site's colours. */
 export function Wallpaper({ className }: { className?: string }) {
-  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "")
   return (
     <svg viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice" aria-hidden="true" className={cn("absolute inset-0 h-full w-full", className)}>
-      <defs>
-        <linearGradient id={`wp-sky${uid}`} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="#151b45" />
-          <stop offset="0.45" stopColor="#3d3a8a" />
-          <stop offset="0.78" stopColor="#b98bc4" />
-          <stop offset="1" stopColor="#f3c7b4" />
-        </linearGradient>
-        <linearGradient id={`wp-hill1${uid}`} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="#4a3f93" />
-          <stop offset="1" stopColor="#272566" />
-        </linearGradient>
-        <linearGradient id={`wp-hill2${uid}`} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="#24326b" />
-          <stop offset="1" stopColor="#141a3f" />
-        </linearGradient>
-        <linearGradient id={`wp-hill3${uid}`} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="#1b4f5e" />
-          <stop offset="1" stopColor="#0b1428" />
-        </linearGradient>
-        <radialGradient id={`wp-sun${uid}`} cx="0.5" cy="0.5" r="0.5">
-          <stop offset="0" stopColor="#fff1dc" />
-          <stop offset="0.4" stopColor="#ffd9c0" stopOpacity="0.8" />
-          <stop offset="1" stopColor="#ffd9c0" stopOpacity="0" />
-        </radialGradient>
-      </defs>
-      <rect width="400" height="300" fill={`url(#wp-sky${uid})`} />
-      <circle cx="268" cy="168" r="70" fill={`url(#wp-sun${uid})`} />
-      <path d="M0 190 C70 150 130 160 190 182 S320 150 400 170 V300 H0Z" fill={`url(#wp-hill1${uid})`} />
-      <path d="M0 222 C80 196 150 200 230 222 S350 204 400 214 V300 H0Z" fill={`url(#wp-hill2${uid})`} />
-      <path d="M0 256 C90 236 170 246 250 258 S360 242 400 250 V300 H0Z" fill={`url(#wp-hill3${uid})`} />
+      <rect width="400" height="300" fill="#141414" />
+      <circle cx="285" cy="150" r="92" fill="#ff2dab" />
+      <path d="M0 205 C90 170 170 175 250 200 S360 185 400 192 V300 H0Z" fill="#d4ff3f" />
+      <path d="M0 238 C100 214 190 222 270 238 S370 226 400 230 V300 H0Z" fill="#0b0b0b" />
+      <path d="M40 60h70M40 72h44" stroke="#2a2a2a" strokeWidth="4" strokeLinecap="round" />
     </svg>
   )
 }
@@ -122,7 +78,7 @@ export function TrafficLights() {
 
 export function Avatar({ letter, className }: { letter: string; className?: string }) {
   return (
-    <span className={cn("grid shrink-0 place-items-center rounded-full bg-gradient-to-br from-[#ffb38a] to-[#e2729a] font-semibold text-[#2a1430]", className)}>
+    <span className={cn("grid shrink-0 place-items-center rounded-full bg-lime font-semibold text-night", className)}>
       {letter}
     </span>
   )
@@ -131,7 +87,7 @@ export function Avatar({ letter, className }: { letter: string; className?: stri
 /** An Android chat screen: header, a few bubbles, a compose bar. Sized by its container. */
 export function ChatScreen({ extra, className }: { extra?: ReactNode; className?: string }) {
   return (
-    <div className={cn("flex h-full flex-col bg-[#f4f1fa] text-[#1c1b22]", className)}>
+    <div className={cn("flex h-full flex-col bg-[#f2f2f2] text-[#1c1b22]", className)}>
       <div className="flex items-center justify-between px-[8%] pt-[6%] text-[0.55em] font-medium">
         <span>10:24</span>
         <span>82%</span>
@@ -142,7 +98,7 @@ export function ChatScreen({ extra, className }: { extra?: ReactNode; className?
       </div>
       <div className="flex flex-1 flex-col justify-end gap-[0.45em] px-[6%] pb-[5%] text-[0.72em] leading-snug">
         <p className="max-w-[80%] self-start rounded-[1em] rounded-bl-[0.3em] bg-white px-[0.8em] py-[0.5em] shadow-sm">Running a bit late, start without me?</p>
-        <p className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#5b4fd6] px-[0.8em] py-[0.5em] text-white">No rush, see you there</p>
+        <p className="max-w-[80%] self-end rounded-[1em] rounded-br-[0.3em] bg-[#ff2dab] px-[0.8em] py-[0.5em] text-[#0b0b0b]">No rush, see you there</p>
         <p className="max-w-[80%] self-start rounded-[1em] rounded-bl-[0.3em] bg-white px-[0.8em] py-[0.5em] shadow-sm">Ordering the dumplings now</p>
         {extra}
       </div>

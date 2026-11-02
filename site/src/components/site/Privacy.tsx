@@ -17,26 +17,16 @@ function Bridge() {
   return (
     <div className="relative mx-auto w-full max-w-[44rem]">
       <svg viewBox="0 0 600 290" className="w-full" aria-hidden="true">
-        <defs>
-          <linearGradient id="bridge-line" x1="92" x2="508" y1="0" y2="0" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#6fe3c1" />
-            <stop offset="1" stopColor="#a99bff" />
-          </linearGradient>
-          <filter id="bridge-glow" x="-20%" y="-50%" width="140%" height="200%">
-            <feGaussianBlur stdDeviation="7" />
-          </filter>
-        </defs>
         {/* The route data never takes: up to a server and back. */}
-        <path d="M 92 150 L 300 40 L 508 150" fill="none" stroke="#3a4570" strokeWidth="1.5" strokeDasharray="4 7" />
-        <path d={path} fill="none" stroke="url(#bridge-line)" strokeWidth="12" opacity="0.35" filter="url(#bridge-glow)" />
-        <path d={path} fill="none" stroke="url(#bridge-line)" strokeWidth="2.5" strokeLinecap="round" />
+        <path d="M 92 150 L 300 40 L 508 150" fill="none" stroke="#3a3a3a" strokeWidth="1.5" strokeDasharray="4 7" />
+                <path d={path} fill="none" stroke="#d4ff3f" strokeWidth="3" strokeLinecap="round" />
         {!reduce &&
           [0, 0.9, 1.8].map((delay) => (
             <motion.circle
               key={delay}
               r="4.5"
-              fill="#fff"
-              style={{ offsetPath: `path("${path}")`, filter: "drop-shadow(0 0 6px #fff)" }}
+              fill="#ff2dab"
+              style={{ offsetPath: `path("${path}")` }}
               initial={{ offsetDistance: "0%", opacity: 0 }}
               animate={{ offsetDistance: ["0%", "100%"], opacity: [0, 1, 1, 0] }}
               transition={{ duration: 2.7, delay, repeat: Infinity, ease: "easeInOut" }}
@@ -48,7 +38,7 @@ function Bridge() {
               key="stranger"
               d={strangerPath}
               fill="none"
-              stroke={stranger === "refused" ? "#ff7a7a" : "#98a1b8"}
+              stroke={stranger === "refused" ? "#ff7a7a" : "#9a9a9a"}
               strokeWidth="2"
               strokeDasharray="5 6"
               initial={{ pathLength: 0, opacity: 0 }}
@@ -60,8 +50,8 @@ function Bridge() {
         </AnimatePresence>
       </svg>
 
-      <Node className="top-[51.7%] left-[15.3%]" tone="teal" label="Your phone" icon={<IconDeviceMobile size={28} stroke={1.5} />} />
-      <Node className="top-[51.7%] left-[84.7%]" tone="iris" label="Your Mac" icon={<IconDeviceLaptop size={28} stroke={1.5} />} />
+      <Node className="top-[51.7%] left-[15.3%]" tone="lime" label="Your phone" icon={<IconDeviceMobile size={28} stroke={1.5} />} />
+      <Node className="top-[51.7%] left-[84.7%]" tone="pink" label="Your Mac" icon={<IconDeviceLaptop size={28} stroke={1.5} />} />
       <div className="absolute top-[13.8%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
         <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-night text-haze/70 ring-1 ring-line">
           <IconCloudOff size={21} stroke={1.5} aria-hidden="true" />
@@ -90,10 +80,10 @@ function Bridge() {
   )
 }
 
-function Node({ className, tone, label, icon }: { className: string; tone: "teal" | "iris"; label: string; icon: React.ReactNode }) {
+function Node({ className, tone, label, icon }: { className: string; tone: "lime" | "pink"; label: string; icon: React.ReactNode }) {
   return (
     <div className={cn("absolute -translate-x-1/2 -translate-y-1/2 text-center", className)}>
-      <span className={cn("grid h-14 w-14 place-items-center rounded-2xl bg-deep ring-1 sm:h-16 sm:w-16", tone === "teal" ? "text-teal ring-teal/30" : "text-iris ring-iris/30")} aria-hidden="true">
+      <span className={cn("grid h-14 w-14 place-items-center rounded-2xl bg-deep ring-1 sm:h-16 sm:w-16", tone === "lime" ? "text-lime ring-lime/30" : "text-pink ring-pink/30")} aria-hidden="true">
         {icon}
       </span>
       <p className="mt-2 text-sm whitespace-nowrap text-haze">{label}</p>
@@ -105,12 +95,12 @@ function PairCodes() {
   return (
     <div className="flex items-center justify-center gap-3 py-2" aria-hidden="true">
       {["Mac", "Phone"].map((d, i) => (
-        <div key={d} className={cn("rounded-xl px-3.5 py-2.5 text-center ring-1", i === 0 ? "bg-[#232945] ring-white/10" : "bg-[#f4f1fa] text-[#1c1b22] ring-black/5")}>
+        <div key={d} className={cn("rounded-xl px-3.5 py-2.5 text-center ring-1", i === 0 ? "bg-[#1c1c1c] ring-white/10" : "bg-[#f2f2f2] text-[#1c1b22] ring-black/5")}>
           <p className={cn("text-[0.7rem]", i === 0 ? "text-white/50" : "text-black/45")}>{d}</p>
           <p className="font-display text-[1.15rem] font-semibold tracking-[0.12em] tabular-nums">418 027</p>
         </div>
       ))}
-      <motion.span initial={{ scale: 0 }} whileInView={{ scale: 1 }} viewport={{ once: true }} transition={{ delay: 0.4, type: "spring" }} className="grid h-7 w-7 place-items-center rounded-full bg-teal text-night">
+      <motion.span initial={{ scale: 0 }} whileInView={{ scale: 1 }} viewport={{ once: true }} transition={{ delay: 0.4, type: "spring" }} className="grid h-7 w-7 place-items-center rounded-full bg-lime text-night">
         <IconShieldCheck size={16} />
       </motion.span>
     </div>
@@ -136,7 +126,7 @@ function Struck({ children, delay }: { children: string; delay: number }) {
       {children}
       <motion.span
         aria-hidden="true"
-        className="absolute top-[54%] right-[-0.08em] left-[-0.08em] h-[0.09em] rounded-full bg-gradient-to-r from-teal to-iris"
+        className="absolute top-[54%] right-[-0.08em] left-[-0.08em] h-[0.09em] rounded-full bg-pink"
         initial={{ scaleX: 0 }}
         whileInView={{ scaleX: 1 }}
         viewport={{ once: true, amount: 1 }}
@@ -192,15 +182,15 @@ export function Privacy() {
             </dl>
           </div>
           <div className="grid content-start gap-4">
-            <div className="rounded-[1.4rem] bg-gradient-to-br from-teal/10 to-transparent p-6 ring-1 ring-teal/20">
-              <IconLock size={22} className="text-teal" aria-hidden="true" />
+            <div className="rounded-[1.4rem] bg-lime p-6 text-night">
+              <IconLock size={22} aria-hidden="true" />
               <p className="mt-4 font-display text-[1.25rem] font-semibold tracking-tight">Encrypted at rest</p>
-              <p className="mt-2 text-[0.97rem] leading-relaxed text-haze">Synced contacts are stored encrypted on the Mac, and wiped when you turn caller ID off or unpair.</p>
+              <p className="mt-2 text-[0.97rem] leading-relaxed text-night/75">Synced contacts are stored encrypted on the Mac, and wiped when you turn caller ID off or unpair.</p>
             </div>
-            <div className="rounded-[1.4rem] bg-gradient-to-br from-iris/10 to-transparent p-6 ring-1 ring-iris/20">
-              <IconCode size={22} className="text-iris" aria-hidden="true" />
+            <div className="rounded-[1.4rem] bg-pink p-6 text-night">
+              <IconCode size={22} aria-hidden="true" />
               <p className="mt-4 font-display text-[1.25rem] font-semibold tracking-tight">Open source</p>
-              <p className="mt-2 text-[0.97rem] leading-relaxed text-haze">Every line is on GitHub under Apache-2.0, for anyone to read.</p>
+              <p className="mt-2 text-[0.97rem] leading-relaxed text-night/75">Every line is on GitHub under Apache-2.0, for anyone to read.</p>
             </div>
           </div>
         </div>
