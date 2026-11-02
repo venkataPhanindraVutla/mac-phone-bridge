@@ -67,7 +67,7 @@ private const val USAGE = """usage: phone-sim pair --uri <uri> --identity <p12> 
 common options: [--password <pw>] (default test) [--name <device name>] [--model <device model>] [--liveness]
                 [--ping-interval-ms <n>]
   --status example: 55,true,3,wifi   (network: wifi|cellular|none|other; signal -1..4)
-  --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s)
+  --notify: advertise notify.v1, send one notification after hello, exit 0 on notify.invoke (else 1 after 10 s, or at once if the Mac does not share notify.v1)
   --media: advertise media.v1, send media.availability and a paused session "sim"; a TOGGLE for it flips it; exit 0 after the second TOGGLE
   --send-bytes <n>: advertise files.v1, send n seeded bytes, store what the Mac sends back; exit 0 when both are done
   --mirror-relay <file>: advertise mirror.v1 and play <file> (a scrcpy video stream after its dummy byte) to the Mac
@@ -328,7 +328,9 @@ private suspend fun session(
     if (status != null && "status.v1" in shared) {
         channel.send(Channel.CHANNEL_STATUS, MessageType.STATUS_UPDATE, status)
     }
-    if (notify && "notify.v1" in shared) {
+    // Nothing would ever start the exit timer below: fail at once instead of hanging.
+    if (notify && "notify.v1" !in shared) failed("NOTIFY_NOT_SHARED")
+    if (notify) {
         // Success is the Mac's invoke; give up after 10 s.
         thread(isDaemon = true, name = "phone-sim-notify-timeout") {
             Thread.sleep(10_000)
