@@ -531,7 +531,11 @@ server.onMessage = { envelope in
             invoke.key = n.key
             invoke.actionIndex = 0
             invoke.replyText = "hi"
-            Task { try? await server.send(.notifyInvoke, invoke, channel: .notify) }
+            Task {
+                do { try await server.send(.notifyInvoke, invoke, channel: .notify) } catch {
+                    FileHandle.standardError.write(Data("am-mac-sim: echo-notify send failed: \(error)\n".utf8))
+                }
+            }
         }
     default:
         break
