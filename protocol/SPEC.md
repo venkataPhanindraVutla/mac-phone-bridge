@@ -387,9 +387,13 @@ Channel `NOTIFY`. Messages are listed in section 3.
 
 Channel `CONTACTS`.
 
-- `ContactsSyncRequest.since_ms` is the phone's `CONTACT_LAST_UPDATED_TIMESTAMP` high-water
-  mark, taken from the `sync_ms` of the last batch the Mac received; `0` asks for a full sync.
-- Batches hold at most 200 contacts. A `full = true` sequence replaces the Mac's whole store
+- `ContactsSyncRequest.since_ms` is the `sync_ms` of the last batch the Mac received; `0` asks
+  for a full sync. `sync_ms` is a phone-clock time at or before which every change was already
+  included: the later of the newest `CONTACT_LAST_UPDATED_TIMESTAMP` or deletion time sent and
+  the phone's clock just before it read the address book. The Mac only echoes it back.
+- Android keeps deletions for about 30 days, so a request whose `since_ms` is older than that
+  gets a full sync (`full = true`) instead of the changes.
+- Batches hold at most 200 contacts and about 512 KB. A `full = true` sequence replaces the Mac's whole store
   when the batch with `last = true` arrives; until then the old store stays in use.
 - While connected, the phone pushes `full = false` batches on change, debounced by 5 s.
   `deleted_ids` lists removed contacts.

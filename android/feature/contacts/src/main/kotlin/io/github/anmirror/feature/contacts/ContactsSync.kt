@@ -15,7 +15,9 @@ import kotlinx.coroutines.withContext
 
 /**
  * Sends the address book to the Mac in batches (SPEC 11). Reads it live and keeps only the
- * high-water mark of the last successful sync, in memory. Every entry point runs under one mutex,
+ * mark of the last successful sync, in memory. The mark (`sync_ms`) is the later of the newest
+ * change seen and the phone's clock just before the read, so it tracks when the Mac last synced
+ * even while the address book is idle. Every entry point runs under one mutex,
  * so a sync request and a change push never interleave their batches.
  */
 class ContactsSync(
@@ -33,7 +35,7 @@ class ContactsSync(
     /** The Mac asked for contacts: everything when `since_ms` is 0, else the changes since then. */
     suspend fun onSyncRequest(r: ContactsSyncRequest) = mutex.withLock {
         val since = r.sinceMs
-        // Android forgets deletions after about 30 days; an older mark could miss one for good.
+        // Android forgets deletions after about 30 days; a Mac that last synced longer ago could miss one for good.
         val stale = since < clock() - ContactsContract.DeletedContacts.DAYS_KEPT_MILLISECONDS
         if (since == 0L || stale) full() else incremental(since, ackWhenEmpty = true)
     }
@@ -45,8 +47,9 @@ class ContactsSync(
     }
 
     private suspend fun full() {
+        val readAt = clock() - 1 // before the read: a later change has a later timestamp
         val rows = withContext(io) { source.changedSince(0) }
-        val syncMs = rows.maxOfOrNull { it.updatedMs } ?: 0L
+        val syncMs = maxOf(readAt, rows.maxOfOrNull { it.updatedMs } ?: 0L)
         val chunks = batches(rows).ifEmpty { listOf(emptyList()) }
         for ((i, chunk) in chunks.withIndex()) {
             val batch = ContactsBatch.newBuilder()
@@ -61,9 +64,10 @@ class ContactsSync(
     }
 
     private suspend fun incremental(since: Long, ackWhenEmpty: Boolean) {
+        val readAt = clock() - 1
         val (rows, deleted) = withContext(io) { source.changedSince(since) to source.deletedSince(since) }
         if (rows.isEmpty() && deleted.isEmpty() && !ackWhenEmpty) return
-        val syncMs = maxOf(since, rows.maxOfOrNull { it.updatedMs } ?: 0L, deleted.maxOfOrNull { it.second } ?: 0L)
+        val syncMs = maxOf(since, readAt, rows.maxOfOrNull { it.updatedMs } ?: 0L, deleted.maxOfOrNull { it.second } ?: 0L)
         val upserts = batches(rows)
         val deletes = deleted.map { it.first }.chunked(batchSize)
         val count = maxOf(upserts.size, deletes.size, 1)
@@ -108,7 +112,7 @@ class ContactsSync(
         .build()
 
     private companion object {
-        // One contact is at most ~27 KB serialized, so a batch (cut at MAX_BATCH_BYTES) stays far
+        // One contact is at most ~20 KB serialized, so a batch (cut at MAX_BATCH_BYTES) stays far
         // under the 1 MiB frame limit whatever the address book holds.
         const val MAX_BATCH_BYTES = 512 * 1024
         const val MAX_NAME = 256

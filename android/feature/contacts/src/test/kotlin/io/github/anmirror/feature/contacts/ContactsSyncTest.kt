@@ -39,7 +39,7 @@ class ContactsSyncTest {
     }
 
     @Test fun fullSyncBatchesBy200WithLastFlag() = runTest {
-        val sync = ContactsSync(FakeSource((1..450).map { row(it) }), send, clock = { 1_000L })
+        val sync = ContactsSync(FakeSource((1..450).map { row(it) }), send, clock = { 0L })
         sync.onSyncRequest(request(0))
         assertEquals(listOf(200, 200, 50), sent.map { it.upsertsCount })
         assertTrue(sent.all { it.full })
@@ -49,7 +49,7 @@ class ContactsSyncTest {
     }
 
     @Test fun emptyBookSendsOneEmptyLastBatch() = runTest {
-        ContactsSync(FakeSource(), send, clock = { 1_000L }).onSyncRequest(request(0))
+        ContactsSync(FakeSource(), send, clock = { 0L }).onSyncRequest(request(0))
         assertEquals(1, sent.size)
         assertEquals(0, sent[0].upsertsCount)
         assertTrue(sent[0].full)
@@ -58,7 +58,7 @@ class ContactsSyncTest {
 
     @Test fun incrementalSendsUpsertsAndDeletes() = runTest {
         val source = FakeSource((1..5).map { row(it, updated = it * 10L) }, deleted = listOf("gone" to 35L, "old" to 5L))
-        ContactsSync(source, send, clock = { 1_000L }).onSyncRequest(request(25))
+        ContactsSync(source, send, clock = { 0L }).onSyncRequest(request(25))
         assertEquals(1, sent.size)
         val b = sent[0]
         assertFalse(b.full)
@@ -69,20 +69,20 @@ class ContactsSyncTest {
     }
 
     @Test fun syncMsIsMaxUpdated() = runTest {
-        val sync = ContactsSync(FakeSource(listOf(row(1, 300), row(2, 900), row(3, 100))), send, clock = { 1_000L })
+        val sync = ContactsSync(FakeSource(listOf(row(1, 300), row(2, 900), row(3, 100))), send, clock = { 0L })
         sync.onSyncRequest(request(0))
         assertEquals(900L, sent.last().syncMs)
     }
 
     @Test fun deletionsCountTowardsTheHighWaterMark() = runTest {
         val source = FakeSource(emptyList(), deleted = listOf("gone" to 700L))
-        ContactsSync(source, send, clock = { 1_000L }).onSyncRequest(request(500))
+        ContactsSync(source, send, clock = { 0L }).onSyncRequest(request(500))
         assertEquals(700L, sent.last().syncMs)
     }
 
     @Test fun onChangedPushesSinceTheLastSync() = runTest {
         val source = FakeSource(listOf(row(1, 100)))
-        val sync = ContactsSync(source, send, clock = { 1_000L })
+        val sync = ContactsSync(source, send, clock = { 0L })
         sync.onSyncRequest(request(0))
         sent.clear()
         source.rows = listOf(row(1, 100), row(2, 200))
@@ -98,7 +98,7 @@ class ContactsSyncTest {
 
     @Test fun onChangedBeforeAnyRequestSendsNothing() = runTest {
         val source = FakeSource(listOf(row(1)))
-        ContactsSync(source, send, clock = { 1_000L }).onChanged()
+        ContactsSync(source, send, clock = { 0L }).onChanged()
         assertTrue(sent.isEmpty())
         assertTrue(source.changedCalls.isEmpty())
     }
@@ -106,7 +106,7 @@ class ContactsSyncTest {
     @Test fun aFailedSendDoesNotAdvanceTheMark() = runTest {
         val source = FakeSource(listOf(row(1, 100)))
         var ok = true
-        val sync = ContactsSync(source, clock = { 1_000L }, send = { _, m -> if (ok) { sent += m as ContactsBatch; true } else false })
+        val sync = ContactsSync(source, clock = { 0L }, send = { _, m -> if (ok) { sent += m as ContactsBatch; true } else false })
         sync.onSyncRequest(request(50)) // mark 100
         sent.clear()
         source.rows = listOf(row(1, 100), row(2, 200))
@@ -127,6 +127,26 @@ class ContactsSyncTest {
         assertEquals(listOf(0L), source.changedCalls)
     }
 
+    @Test fun idleContactsDoNotMakeTheMarkStale() = runTest {
+        // Content untouched for 100 days, but the Mac syncs every few days: never a full sync.
+        var now = NOW
+        val source = FakeSource(listOf(row(1, NOW - 100 * DAY)))
+        val sync = ContactsSync(source, send, clock = { now })
+        sync.onSyncRequest(request(0))
+        val mark = sent.last().syncMs
+        assertEquals(NOW - 1, mark, "the mark is the phone clock before the read, not the old content time")
+        sent.clear()
+        now += 10 * DAY
+        sync.onSyncRequest(request(mark))
+        assertFalse(sent.single().full)
+        assertEquals(0, sent.single().upsertsCount)
+        assertEquals(now - 1, sent.single().syncMs)
+        sent.clear()
+        now += 40 * DAY // the Mac really did stay away for over 30 days
+        sync.onSyncRequest(request(mark))
+        assertTrue(sent.single().full)
+    }
+
     @Test fun aMarkInsideTheRetentionStaysIncremental() = runTest {
         val source = FakeSource(listOf(row(1, NOW - 5 * DAY)))
         ContactsSync(source, send, clock = { NOW }).onSyncRequest(request(NOW - 29 * DAY))
@@ -137,7 +157,7 @@ class ContactsSyncTest {
         // Worst case per contact: long multi-byte name and label, 20 numbers (~17 KB each).
         val big = "\u20ac".repeat(256)
         val fat = (1..100).map { ContactRow("id$it", big, List(20) { "1".repeat(64) to big }, it.toLong()) }
-        ContactsSync(FakeSource(fat), send, clock = { 1_000L }).onSyncRequest(request(0))
+        ContactsSync(FakeSource(fat), send, clock = { 0L }).onSyncRequest(request(0))
         assertTrue(sent.size > 1)
         assertTrue(sent.all { it.serializedSize <= 600 * 1024 })
         assertEquals(100, sent.sumOf { it.upsertsCount })
