@@ -25,7 +25,7 @@ PHONE_BIN="$ROOT/android/tools/phone-sim/build/install/phone-sim/bin/phone-sim"
 
 if [[ $BUILD -eq 1 ]]; then
   echo "== building am-mac-sim"
-  swift build --package-path "$MAC_PKG" --product am-mac-sim >&2
+  swift build --force-resolved-versions --package-path "$MAC_PKG" --product am-mac-sim >&2
   echo "== building phone-sim"
   (cd "$ROOT/android" && ./gradlew --console=plain -q :tools:phone-sim:installDist) >&2
 fi

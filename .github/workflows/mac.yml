@@ -6,12 +6,31 @@ permissions:
   contents: read
 jobs:
   mac:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 16.4
-        # macos-15 images carry several Xcodes; pin one so Swift/SDK changes are deliberate.
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Select newest Xcode (26 or later)
+        # The pinned packages (swift-crypto 5, swift-protobuf 1.39) need Swift tools 6.2, so Xcode 16.x
+        # cannot resolve them. Take the newest Xcode on the image and fail if none is 26+.
+        run: |
+          best=""
+          bestmajor=0
+          for app in /Applications/Xcode_*.app; do
+            v="${app#/Applications/Xcode_}"; v="${v%.app}"
+            major="${v%%.*}"
+            case "$v" in ''|*[!0-9.]*) continue ;; esac # skips beta and release-candidate apps
+            if [ "$major" -gt "$bestmajor" ] || { [ "$major" -eq "$bestmajor" ] && [ "$(printf '%s\n%s\n' "$best" "$app" | sort -V | tail -1)" = "$app" ]; }; then
+              best="$app"; bestmajor="$major"
+            fi
+          done
+          if [ -z "$best" ] || [ "$bestmajor" -lt 26 ]; then
+            echo "No Xcode 26 or later found on this image" >&2
+            ls -d /Applications/Xcode_*.app >&2 || true
+            exit 1
+          fi
+          sudo xcode-select -s "$best"
+          xcodebuild -version
+          swift --version
       - name: Install xcodegen
         run: brew install xcodegen
       - name: Install protoc 4.36.2
@@ -27,10 +46,10 @@ jobs:
       - name: Check protocol vectors
         run: python3 -I protocol/tools/make_vectors.py --check
       - name: Swift tests
-        run: swift test --package-path mac/Packages/AMKit
+        run: swift test --force-resolved-versions --package-path mac/Packages/AMKit
       - name: Generate Xcode project
         run: xcodegen --spec mac/project.yml --project mac
       - name: Build app
         run: |
           xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
-            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
+            -destination 'platform=macOS' -disableAutomaticPackageResolution CODE_SIGN_IDENTITY=- build
