@@ -48,7 +48,12 @@ jobs:
       - name: Swift tests
         run: swift test --force-resolved-versions --package-path mac/Packages/AMKit
       - name: Generate Xcode project
-        run: xcodegen --spec mac/project.yml --project mac
+        run: |
+          xcodegen --spec mac/project.yml --project mac
+          # The generated project has no Package.resolved of its own; AMKit's pins every
+          # remote dependency, so give it to the workspace for -disableAutomaticPackageResolution.
+          mkdir -p mac/AndroidMirroring.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          cp mac/Packages/AMKit/Package.resolved mac/AndroidMirroring.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
       - name: Build app
         run: |
           xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
