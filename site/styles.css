@@ -64,7 +64,8 @@ button { font: inherit; color: inherit; }
 .fine { font-size: .98rem; line-height: 1.5; max-width: 44em; }
 .kicker { font: 700 1rem/1.2 var(--f-display); font-variation-settings: "wdth" 100; margin: 0 0 14px; color: var(--orange); }
 
-.kin .w { display: inline-block; overflow: hidden; vertical-align: top; padding: 0 .02em .1em; margin: 0 -.02em -.1em; }
+/* The mask is tall enough for descenders (y, g, p) at the tight display leading. */
+.kin .w { display: inline-block; overflow: hidden; vertical-align: top; padding: .04em .03em .24em; margin: -.04em -.03em -.24em; }
 .kin .wi { display: inline-block; }
 
 /* ------------------------------------------------------------------ buttons */
@@ -150,7 +151,6 @@ html:not(.motion) .scene-wrap { order: -1; max-width: 980px; justify-self: cente
   position: absolute; left: 50%; top: 50%;
   width: calc(var(--cw) * 1px); height: calc(var(--ch) * 1px);
   transform: translate(-50%, -50%) scale(var(--s, .34));
-  perspective: 2200px;
 }
 @media (min-width: 420px) { .scene { --s: .4; } }
 @media (min-width: 600px) { .scene { --s: .55; } }
@@ -173,7 +173,7 @@ html.motion .bg { position: absolute; inset: 0; will-change: transform; }
 html.motion .story-copy { display: block; position: absolute; z-index: 3; left: var(--gutter); right: var(--gutter); top: 18px; }
 html.motion .stage-copy { position: absolute; left: 0; right: 0; top: 0; visibility: hidden; }
 html.motion .stage-copy[data-stage="0"] { visibility: visible; }
-.stage-copy[data-stage="2"], .stage-copy[data-stage="4"] { color: var(--paper); }
+html.motion .stage-copy[data-stage="2"], html.motion .stage-copy[data-stage="4"] { color: var(--paper); }
 html.motion .stage-copy:not([data-stage="0"]) .display { font-size: clamp(2rem, 8.4vw, 3.3rem); }
 html.motion .stage-copy:not([data-stage="0"]) .lede { font-size: clamp(1.02rem, .95rem + .5vw, 1.25rem); margin-top: 12px; max-width: 30em; }
 html.motion .stage-copy[data-stage="0"] .display { font-size: clamp(2.3rem, 10.4vw, 3.6rem); }
@@ -191,16 +191,19 @@ html.motion .story-steps {
 .story-pin[data-tone="dark"] .story-steps, .story-pin[data-tone="dark"] .story-skip { color: var(--paper); }
 
 @media (min-width: 900px) and (orientation: landscape) {
-  html.motion .story-copy { top: 50%; left: var(--gutter); right: auto; width: min(44vw, 680px); }
+  html.motion .story-copy { top: 50%; left: var(--gutter); right: auto; width: min(40vw, 700px); }
   html.motion .stage-copy { top: 0; transform: translateY(-50%); }
-  html.motion .stage-copy[data-stage="0"] .display { font-size: clamp(3rem, 5.4vw, 6rem); }
+  html.motion .stage-copy[data-stage="0"] .display { font-size: clamp(2.8rem, 5.1vw, 5.2rem); }
   html.motion .stage-copy .lede { max-width: min(100%, 27em) !important; }
   html.motion .stage-copy:not([data-stage="0"]) .display { font-size: clamp(2.6rem, 5vw, 5rem); }
   html.motion .stage-copy[data-stage="0"] .lede { font-size: clamp(1.1rem, .9rem + .5vw, 1.35rem); }
   html.motion .stage-copy:not([data-stage="0"]) .lede { font-size: clamp(1.1rem, .9rem + .5vw, 1.35rem); }
-  html.motion .scene-wrap { left: calc(var(--gutter) + min(44vw, 680px)); right: 0; top: 0; width: auto; height: 100%; }
-  html.motion .scene { --cw: 960; }
-  html.motion .story-steps { right: auto; width: min(40vw, 600px); bottom: 28px; gap: 10px; }
+  html.motion .scene-wrap { left: calc(var(--gutter) + min(40vw, 700px) - 8px); right: 0; top: 0; width: auto; height: 100%; }
+  html.motion .scene { --cw: 1180; --ch: 750; }
+  /* The devices' real extent (the base's near corner, the phone in front) plus room for pointer tilt. */
+  html.motion .mac-pos { left: 180px; top: 76px; }
+  html.motion .phone-pos { left: 882px; top: 220px; }
+  html.motion .story-steps { right: auto; width: min(40vw, 700px); bottom: 28px; gap: 10px; }
   .story-steps li { height: auto; background: none; opacity: 1; padding-top: 14px; }
   .story-steps li::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: currentColor; opacity: .3; }
   .story-steps li.on::before { opacity: 1; }
@@ -210,10 +213,13 @@ html.motion .story-steps {
 /* Portrait canvas: devices stacked, sized for phones */
 @media not all and (min-width: 900px) and (orientation: landscape) {
   html.motion .scene { --cw: 420; --ch: 500; top: 0; transform-origin: 50% 0; transform: translate(-50%, 0) scale(var(--s, .8)); }
+  html.motion .scene-wrap { overflow: hidden; }
 }
 html.motion .flyers { display: block; position: absolute; inset: 0; pointer-events: none; }
 
 /* ------------------------------------------------------------------ 3D rig */
+/* The camera: holds the 3D rig and the flying things, and zooms per stage on phones. */
+.cam { position: absolute; inset: 0; transform-origin: 0 0; perspective: 2200px; }
 .rig { position: absolute; inset: 0; transform-style: preserve-3d; }
 html:not(.motion) .rig { transform: rotateX(-11deg) rotateY(-17deg); }
 .rig > div, .mac-move, .phone-move, .mac, .phone, .lid, .base { transform-style: preserve-3d; }
@@ -325,8 +331,8 @@ html:not(.motion) .phone-move { transform: rotateY(-8deg) rotateZ(-2deg); }
 .mx-cursor { position: absolute; z-index: 9; left: 300px; top: 300px; width: 18px; height: 18px; }
 
 /* ------------------------------------------------------------------ Android UI recreations (Material 3, warm tonal scheme) */
-.ax { position: absolute; inset: 0; padding-top: 26px; }
-.ax-status { position: absolute; z-index: 6; left: 0; right: 0; top: 0; height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 6px 18px 0; font: 500 9.5px/1 var(--f-and); color: #231917; }
+.ax { position: absolute; inset: 0; padding-top: 26px; background: #fff8f5; }
+.ax-status { position: absolute; z-index: 30; left: 0; right: 0; top: 0; height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 6px 18px 0; font: 500 9.5px/1 var(--f-and); color: #231917; }
 .ax-status .r { display: flex; align-items: center; gap: 3px; }
 .ax-status svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
 .ax-pad { padding: 40px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -395,11 +401,11 @@ html:not(.motion) .phone-move { transform: rotateY(-8deg) rotateZ(-2deg); }
 .ax-call-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 100%; padding: 0 16px; font-size: 9px; color: #d8c2bb; }
 .ax-call-grid span { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .ax-call-grid svg { width: 38px; height: 38px; padding: 10px; border-radius: 50%; background: #3a3230; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
-.ax-heads { position: absolute; z-index: 5; left: 8px; right: 8px; top: 30px; padding: 9px 12px; border-radius: 16px; background: #fceae4; box-shadow: 0 6px 18px rgba(0,0,0,.22); font-size: 10.5px; line-height: 1.35; }
+.ax-heads { position: absolute; z-index: 25; left: 8px; right: 8px; top: 30px; padding: 9px 12px; border-radius: 16px; background: #fceae4; box-shadow: 0 6px 18px rgba(0,0,0,.22); font-size: 10.5px; line-height: 1.35; }
 .ax-heads p { margin: 0; }
 .ax-heads .t { display: flex; align-items: center; gap: 4px; font-size: 9px; color: #85736d; margin-bottom: 2px; }
 .ax-heads .t svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; }
-.ax-nav { position: absolute; z-index: 6; left: 50%; bottom: 8px; width: 70px; height: 3.5px; margin-left: -35px; border-radius: 4px; background: #231917; opacity: .7; }
+.ax-nav { position: absolute; z-index: 30; left: 50%; bottom: 8px; width: 70px; height: 3.5px; margin-left: -35px; border-radius: 4px; background: #231917; opacity: .7; }
 
 /* ------------------------------------------------------------------ flyers */
 .fly { position: absolute; left: 0; top: 0; opacity: 0; will-change: transform, opacity; }
@@ -409,7 +415,10 @@ html:not(.motion) .phone-move { transform: rotateY(-8deg) rotateZ(-2deg); }
 .fly-note svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; }
 .fly-file { width: 44px; height: 52px; margin: -26px 0 0 -22px; filter: drop-shadow(4px 4px 0 rgba(0,0,0,.85)); }
 .fly-file svg { width: 100%; height: 100%; }
-.fly-path i { position: absolute; left: 0; top: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px; background: var(--ink); box-shadow: 0 0 0 3px var(--paper); opacity: 0; }
+.fly-path i { position: absolute; left: 0; top: 0; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2.5px var(--ink); opacity: 0; }
+.cam-anchor { position: absolute; visibility: hidden; pointer-events: none; right: 6px; top: 24px; width: 254px; }
+.cam-anchor[data-cam="notes"] { height: 182px; }
+.cam-anchor[data-cam="call"] { height: 96px; }
 .fly-beam { transform-origin: 0 0; }
 .beam-face { position: absolute; inset: 0; overflow: hidden; border-radius: 8px; background: #fff8f5; box-shadow: 0 30px 60px rgba(0,0,0,.35); font: 400 10px/1.35 var(--f-and); color: #231917; }
 .beam-face > .ax { width: 198px; height: 426px; transform-origin: 0 0; }

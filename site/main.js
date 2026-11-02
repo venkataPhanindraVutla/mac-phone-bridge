@@ -65,17 +65,27 @@ const BRAND = "Mac Phone Bridge";
   var pin = q(".story-pin");
   var head = 52;
 
+  // Portrait, first stage: the devices sit below the hero copy. `drop` is how far the scene is pushed
+  // down for that; `dropP` (1 on the first stage, 0 once the story moves on) is driven by the story.
+  var drop = 0, dropP = { p: 1 };
+  function applyDrop() { if (sceneWrap) sceneWrap.style.transform = "translate3d(0," + (drop * dropP.p).toFixed(1) + "px,0)"; }
+
   function layoutStory() {
     if (!scene) return;
     if (motion && !wideMQ.matches) {
       // Portrait: the scene takes what the tallest stage caption (1-5) leaves.
-      var tallest = 0;
-      qa(".stage-copy").forEach(function (c, i) { if (i > 0) tallest = Math.max(tallest, c.offsetHeight); });
+      var copies = qa(".stage-copy"), tallest = 0;
+      copies.forEach(function (c, i) { if (i > 0) tallest = Math.max(tallest, c.offsetHeight); });
       var h = pin.clientHeight - tallest - 18 - 26;
       sceneWrap.style.setProperty("--scene-h", Math.max(200, h) + "px");
+      // Layout sizes only (offset*), so transforms and the load animation never skew it.
+      var copyBottom = q(".story-copy").offsetTop + copies[0].offsetTop + copies[0].offsetHeight + 20;
+      drop = Math.max(0, copyBottom - (pin.clientHeight - sceneWrap.offsetHeight));
     } else {
       sceneWrap.style.removeProperty("--scene-h");
+      drop = 0;
     }
+    applyDrop();
     fit();
   }
   function fit() {
@@ -84,7 +94,7 @@ const BRAND = "Mac Phone Bridge";
     var ch = parseFloat(cs.getPropertyValue("--ch")) || 700;
     var r = sceneWrap.getBoundingClientRect();
     if (!r.width || !r.height) return;
-    var s = Math.min(r.width / cw, r.height / ch) * (motion ? (wideMQ.matches ? .97 : .9) : 1);
+    var s = Math.min(r.width / cw, r.height / ch) * (motion ? (wideMQ.matches ? .96 : .9) : 1);
     scene.style.setProperty("--s", s.toFixed(4));
   }
   function sceneScale() { return parseFloat(scene.style.getPropertyValue("--s")) || 1; }
@@ -111,6 +121,17 @@ const BRAND = "Mac Phone Bridge";
     layoutStory();
     buildStory();
     buildSections();
+    // Web fonts change the copy's height: lay out again when they arrive, and whenever the hero copy
+    // or the pinned area changes size.
+    var relayout = function () { layoutStory(); ScrollTrigger.refresh(); };
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(relayout);
+    if ("ResizeObserver" in window) {
+      var roT = 0, first = true;
+      new ResizeObserver(function () {
+        if (first) { first = false; return; }
+        cancelAnimationFrame(roT); roT = requestAnimationFrame(layoutStory);
+      }).observe(q('.stage-copy[data-stage="0"]'));
+    }
   } else if (scene) {
     fit();
   }
@@ -131,7 +152,7 @@ const BRAND = "Mac Phone Bridge";
     var V = function (n) { return qa('[data-view="' + n + '"]', scene); };
 
     // Base poses per layout (the CSS ones apply only without motion).
-    var pose = function () { return wideMQ.matches ? { rx: -11, ry: -17 } : { rx: -9, ry: -12 }; };
+    var pose = function () { return wideMQ.matches ? { rx: -11, ry: -14 } : { rx: -9, ry: -12 }; };
     gsap.set(rig, { rotationX: pose().rx, rotationY: pose().ry, transformPerspective: 0 });
     gsap.set(phoneMove, { rotationY: -8, rotation: -2 });
 
@@ -168,10 +189,18 @@ const BRAND = "Mac Phone Bridge";
 
     // Geometry, in canvas units, measured on every refresh.
     var G = {};
+    var cam = q(".cam", scene);
+    // A rect in the camera's own (canvas) units, whatever the scene scale and camera zoom are.
     function rel(el) {
-      var s = sceneScale(), sr = scene.getBoundingClientRect(), r = el.getBoundingClientRect();
-      return { x: (r.left - sr.left) / s, y: (r.top - sr.top) / s, w: r.width / s, h: r.height / s };
+      var cr = cam.getBoundingClientRect(), f = cr.width / cam.offsetWidth, r = el.getBoundingClientRect();
+      return { x: (r.left - cr.left) / f, y: (r.top - cr.top) / f, w: r.width / f, h: r.height / f };
     }
+    function union(els) {
+      var rs = els.map(rel), x = Math.min.apply(null, rs.map(function (r) { return r.x; })), y = Math.min.apply(null, rs.map(function (r) { return r.y; }));
+      return { x: x, y: y, w: Math.max.apply(null, rs.map(function (r) { return r.x + r.w; })) - x, h: Math.max.apply(null, rs.map(function (r) { return r.y + r.h; })) - y };
+    }
+    // How high an arc may go: on phones the scene is clipped at its top edge.
+    function arcTop(y) { return wideMQ.matches ? y - 120 : Math.max(12, y - 60); }
     function measure() {
       var heads = rel(q('[data-view="p-heads"]', scene));
       var note = rel(q('[data-view="m-note1"]', scene));
@@ -184,18 +213,13 @@ const BRAND = "Mac Phone Bridge";
       G.cur = { x: ans.offsetLeft + ans.offsetParent.offsetLeft + 20, y: ans.offsetTop + ans.offsetParent.offsetTop + 8 };
       void cur;
       chatClone.style.transform = "scale(" + (ps.w / 198) + "," + (ps.h / 426) + ")";
-      // Portrait: on the first stage the devices sit lower, under the taller headline.
-      if (!wideMQ.matches) {
-        var c0 = copies[0].offsetHeight + 18 + 10;
-        var sceneTop = pin.clientHeight - sceneWrap.offsetHeight;
-        G.drop = Math.max(0, c0 - sceneTop);
-      } else G.drop = 0;
     }
     function measureFile() {
       var ps = rel(pscreen), status = rel(q(".mx-status", scene));
       G.p0 = { x: ps.x + ps.w * .25, y: ps.y + ps.h * .8 };
       G.p2 = { x: status.x + status.w / 2, y: status.y + status.h / 2 };
-      G.p1 = { x: G.p2.x - 40, y: Math.min(G.p0.y, G.p2.y) - 120 };
+      // Wide: a high arc over the gap. Portrait (phone below the Mac): bow out to the left, clear of the phone.
+      G.p1 = wideMQ.matches ? { x: G.p2.x - 40, y: arcTop(Math.min(G.p0.y, G.p2.y)) } : { x: Math.min(G.p0.x, G.p2.x) - 170, y: (G.p0.y + G.p2.y) / 2 };
       qa(".fly-path i", scene).forEach(function (d, i, all) {
         var p = bez((i + 1) / (all.length + 1));
         gsap.set(d, { x: p.x, y: p.y });
@@ -211,9 +235,11 @@ const BRAND = "Mac Phone Bridge";
     function inV(n, at, d) { return tl.to(V(n), { autoAlpha: 1, duration: d || .08 }, at); }
     function outV(n, at, d) { return tl.to(V(n), { autoAlpha: 0, duration: d || .06 }, at); }
     // Phone screens change like screens do: the new one slides over the old.
+    var zTop = 1;
     function swapP(from, to, at) {
-      tl.fromTo(V(to), { autoAlpha: 0, xPercent: 18 }, { autoAlpha: 1, xPercent: 0, duration: .12, ease: "power3.out" }, at);
-      tl.to(V(from), { autoAlpha: 0, duration: .05 }, at + .07);
+      tl.set(V(to), { zIndex: ++zTop, autoAlpha: 1, xPercent: 100 }, at);
+      tl.to(V(to), { xPercent: 0, duration: .12, ease: "power3.out" }, at);
+      tl.set(V(from), { autoAlpha: 0 }, at + .12);
     }
 
     // Stage copy and colour block swaps.
@@ -233,7 +259,36 @@ const BRAND = "Mac Phone Bridge";
 
     // Slow layered drift across the whole sequence.
     tl.to(macMove, { x: -16, z: -20, duration: 6.1, ease: "none" }, 0);
-    tl.fromTo(sceneWrap, { y: function () { return G.drop; } }, { y: 0, duration: .7, ease: "power2.inOut" }, .05);
+    // Portrait: the devices rise only as the hero copy leaves (it exits at 1.0), never over it.
+    tl.fromTo(dropP, { p: 1 }, { p: 0, duration: .45, ease: "power3.inOut", onUpdate: applyDrop }, 1.02);
+    // While the hero holds, its headline drifts up a little with the scroll.
+    tl.to(copies[0].querySelector(".display"), { y: -12, duration: 1, ease: "none" }, 0);
+
+    /* The camera. On phones the Mac's UI is too small to read in the full view, so each stage moves
+       in on the part being explained, and pulls back out for anything that travels between devices.
+       On wide screens every move is the identity. */
+    var camEls = {
+      pair: function () { return [q(".mx-pair", scene)]; },
+      phone: function () { return [q(".phone", scene)]; },
+      notes: function () { return [q('.cam-anchor[data-cam="notes"]', scene)]; },
+      menu: function () { return [q(".mx-menu", scene)]; },
+      call: function () { return [q('.cam-anchor[data-cam="call"]', scene)]; },
+      mirror: function () { return [q(".mx-mirror", scene)]; }
+    };
+    function camFor(name) {
+      if (wideMQ.matches || name === "all") return { x: 0, y: 0, scale: 1 };
+      var R = union(camEls[name]()), pad = .1;
+      R = { x: R.x - R.w * pad, y: R.y - R.h * pad, w: R.w * (1 + 2 * pad), h: R.h * (1 + 2 * pad) };
+      var s = sceneScale(), sr = scene.getBoundingClientRect(), wr = sceneWrap.getBoundingClientRect();
+      var Vw = { x: (wr.left - sr.left) / s, y: (wr.top - sr.top) / s, w: wr.width / s, h: wr.height / s };
+      var k = Math.max(1, Math.min(2.6, Vw.w / R.w, Vw.h / R.h));
+      return { x: Vw.x + Vw.w / 2 - k * (R.x + R.w / 2), y: Vw.y + Vw.h / 2 - k * (R.y + R.h / 2), scale: k };
+    }
+    function camTo(name, at, d) {
+      var c;
+      tl.to(cam, { x: function () { c = camFor(name); return c.x; }, y: function () { return c.y; }, scale: function () { return c.scale; }, duration: d || .2, ease: "power2.inOut" }, at);
+    }
+    gsap.set(cam, { x: 0, y: 0, scale: 1, transformOrigin: "0 0" });
 
     /* 1. Pair */
     swap(1, 1);
@@ -248,6 +303,7 @@ const BRAND = "Mac Phone Bridge";
     outV("m-code", 1.74); inV("m-paired", 1.76);
     swapP("p-code", "p-home", 1.74);
     tl.from(q(".mx-okc", scene), { scale: 0, duration: .12, ease: "back.out(3)" }, 1.76);
+    camTo("pair", 1.3, .16); camTo("phone", 1.47, .12); camTo("pair", 1.7, .14);
 
     /* 2. Notifications */
     swap(2, 2);
@@ -258,18 +314,20 @@ const BRAND = "Mac Phone Bridge";
     tl.set(flyNote, { autoAlpha: 1, x: function () { G.heads = rel(headsEl); G.note = rel(note1El); return G.heads.x; }, y: function () { return G.heads.y; }, scaleX: function () { return G.heads.w / 182; }, scaleY: function () { return G.heads.w / 182; }, rotation: 0 }, 2.36);
     tl.set(V("p-heads"), { autoAlpha: 0 }, 2.36);
     tl.to(flyNote, { x: function () { return G.note.x; }, duration: .4, ease: "power1.inOut" }, 2.36);
-    tl.to(flyNote, { y: function () { return Math.min(G.heads.y, G.note.y) - 120; }, duration: .2, ease: "power2.out" }, 2.36);
+    tl.to(flyNote, { y: function () { return arcTop(Math.min(G.heads.y, G.note.y)); }, duration: .2, ease: "power2.out" }, 2.36);
     tl.to(flyNote, { y: function () { return G.note.y; }, duration: .2, ease: "power2.in" }, 2.56);
     tl.to(flyNote, { scaleX: function () { return G.note.w / 182; }, scaleY: function () { return G.note.w / 182; }, keyframes: { rotation: [0, -8, 4, 0] }, duration: .4 }, 2.36);
     inV("m-note1", 2.74, .06);
     tl.to(flyNote, { autoAlpha: 0, duration: .06 }, 2.76);
     tl.fromTo(V("m-note2"), { autoAlpha: 0, y: -14 }, { autoAlpha: 1, y: 0, duration: .12 }, 2.8);
+    camTo("all", 2.0); camTo("notes", 2.74);
 
     /* 3. Files */
     swap(3, 3);
     tl.to(qa(".mx-note", scene), { x: 300, duration: .25, stagger: .05, ease: "power2.in" }, 3.0);
     tl.set(qa(".mx-note", scene), { autoAlpha: 0 }, 3.3);
     var sheet = q(".ax-sheet", scene);
+    tl.set(V("p-share"), { zIndex: 20 }, 3.05);
     inV("p-share", 3.05, .1);
     tl.fromTo(sheet, { yPercent: 100 }, { yPercent: 0, duration: .2, ease: "power3.out" }, 3.05);
     tl.to(q(".tg-mac", scene), { keyframes: { scale: [1, .86, 1.05, 1] }, duration: .14 }, 3.24);
@@ -288,6 +346,7 @@ const BRAND = "Mac Phone Bridge";
     inV("m-xfer-a", 3.64, .05);
     tl.set(V("m-xfer-a"), { display: "none" }, 3.82);
     tl.set(V("m-xfer-b"), { display: "flex", autoAlpha: 1 }, 3.82);
+    camTo("all", 3.0); camTo("menu", 3.62);
 
     /* 4. Calls */
     swap(4, 4);
@@ -307,12 +366,13 @@ const BRAND = "Mac Phone Bridge";
     tl.to(cursor, { autoAlpha: 0, duration: .05 }, 4.62);
     tl.set(V("m-callline"), { display: "flex", autoAlpha: 1 }, 4.62);
     inV("m-menu", 4.66, .08);
+    camTo("all", 4.0, .12); camTo("call", 4.16, .14); camTo("menu", 4.62, .15);
 
     /* 5. Full mode */
     swap(5, 5);
     outV("m-menu", 5.0, .08);
     tl.set(V("m-callline"), { display: "none" }, 5.1);
-    tl.to(phoneMove, { x: 10, rotationY: -6, rotation: -2, duration: .5 }, 5.0);
+    tl.to(phoneMove, { x: 0, y: 0, rotationY: -8, rotation: -2, duration: .5 }, 5.0);
     swapP("p-callon", "p-chat", 5.05);
     tl.to(pStatus, { color: "#231917", duration: .05 }, 5.1);
     var beam = q(".fly-beam", scene), ghosts = qa(".fly-beam .g", scene);
@@ -328,6 +388,7 @@ const BRAND = "Mac Phone Bridge";
     tl.set(q(".typed-target", scene), { autoAlpha: 1 }, 5.74);
     tl.to(chars, { opacity: 1, duration: .01, stagger: .2 / Math.max(1, chars.length) }, 5.74);
     if (pLast) tl.to(pLast, { autoAlpha: 1, duration: .05 }, 5.96);
+    camTo("all", 5.0); camTo("mirror", 5.64);
     tl.to({}, { duration: .15 }, 6.0);
 
     // Chapter bars and text tone follow the timeline.
@@ -354,7 +415,7 @@ const BRAND = "Mac Phone Bridge";
       invalidateOnRefresh: true,
       snap: wideMQ.matches ? { snapTo: snapPoints, inertia: false, duration: { min: .2, max: .6 }, delay: .15, ease: "power1.inOut" } : false,
       onRefreshInit: function () { gsap.set(rig, { rotationX: pose().rx, rotationY: pose().ry }); },
-      onRefresh: measure
+      onRefresh: function () { measure(); applyDrop(); }
     });
     ScrollTrigger.addEventListener("refreshInit", function () { layoutStory(); });
 
@@ -381,7 +442,7 @@ const BRAND = "Mac Phone Bridge";
         if (!visible) return;
         var nx = e.clientX / window.innerWidth * 2 - 1, ny = e.clientY / window.innerHeight * 2 - 1;
         var p = pose();
-        rx(p.rx - ny * 5); ry(p.ry + nx * 8);
+        rx(p.rx - ny * 4); ry(p.ry + nx * 6);
         scene.style.setProperty("--gx", (nx * 18).toFixed(1) + "%");
       }, { passive: true });
     } else {
