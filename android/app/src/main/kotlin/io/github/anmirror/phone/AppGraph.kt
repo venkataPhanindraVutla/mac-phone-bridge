@@ -169,9 +169,24 @@ class AppGraph private constructor(context: Context) {
 
     /** Created on first use (a Keystore key generation is slow), never on the main thread. */
     val identity: TlsIdentity = object : TlsIdentity {
-        private val real by lazy { AndroidKeystoreIdentity() }
+        private val real by lazy { AndroidKeystoreIdentity(onNewKey = ::noteNewIdentityKey) }
         override val certificateDer: ByteArray get() = real.certificateDer
         override fun keyManagers() = real.keyManagers()
+    }
+
+    /**
+     * A new identity key while Macs are paired means the old key was lost (they will refuse this
+     * phone until it is paired again): worth a line in the logs. First-ever generation is silent.
+     */
+    private fun noteNewIdentityKey() {
+        scope.launch {
+            val paired = when (val read = readPairings()) {
+                is StoreRead.Macs -> read.macs.size.toString().takeIf { read.macs.isNotEmpty() }
+                is StoreRead.Unreadable -> "unreadable"
+            } ?: return@launch
+            Log.w(TAG, "identity: new key generated while paired=$paired")
+            keepAliveLog.record(KeepAliveEvent.IDENTITY, "new-key,paired=$paired")
+        }
     }
 
     /** Content-free events for diagnosing a vanished service (`filesDir/keepalive-events.log`). */

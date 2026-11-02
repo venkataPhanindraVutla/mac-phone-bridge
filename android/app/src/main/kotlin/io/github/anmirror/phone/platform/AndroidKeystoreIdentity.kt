@@ -24,11 +24,17 @@ import javax.security.auth.x500.X500Principal
  *
  * Created on first use and kept until the app is uninstalled (or its data cleared).
  */
-class AndroidKeystoreIdentity : TlsIdentity {
+class AndroidKeystoreIdentity(
+    /** Called after a new key was generated, so the caller can notice one that replaces a lost key. */
+    onNewKey: () -> Unit = {},
+) : TlsIdentity {
     private val keyStore: KeyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
     init {
-        if (!keyStore.containsAlias(ALIAS)) generate()
+        if (!keyStore.containsAlias(ALIAS)) {
+            generate()
+            onNewKey()
+        }
     }
 
     override val certificateDer: ByteArray
