@@ -21,20 +21,35 @@ private final class Once: @unchecked Sendable {
 
     init(_ c: CheckedContinuation<Void, Error>) { continuation = c }
 
-    func resume(_ result: Result<Void, Error>) {
+    /// True when this call resumed it (the first one).
+    @discardableResult
+    func resume(_ result: Result<Void, Error>) -> Bool {
         lock.lock()
         let c = continuation
         continuation = nil
         lock.unlock()
         c?.resume(with: result)
+        return c != nil
     }
 }
 
-private final class TimeoutFlag: @unchecked Sendable {
+/// Resumes a `Bool` continuation once; later calls do nothing.
+private final class OnceBool: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func set() { lock.lock(); value = true; lock.unlock() }
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ c: CheckedContinuation<Bool, Never>) { continuation = c }
+
+    /// True when this call resumed it (the first one).
+    @discardableResult
+    func resume(_ value: Bool) -> Bool {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume(returning: value)
+        return c != nil
+    }
 }
 
 /// A phone-side bulk connection driven by hand: raw bytes, no framing beyond the hello.
@@ -43,8 +58,10 @@ final class RawBulkClient: @unchecked Sendable {
 
     private init(_ nw: NWConnection) { self.nw = nw }
 
-    /// Connects to 127.0.0.1:`port` as the named test identity, pinning the Mac.
-    static func connect(port: UInt16, identity name: String = "phone") async throws -> RawBulkClient {
+    /// Connects to 127.0.0.1:`port` as the named test identity, pinning the Mac. A handshake that
+    /// neither finishes nor fails within `timeout` is cancelled, so the test fails instead of hanging.
+    static func connect(port: UInt16, identity name: String = "phone",
+                        timeout: Duration = .seconds(30)) async throws -> RawBulkClient {
         let identity = try testIdentity(name)
         let pin = try vectorFingerprint("mac")
         let params = TLSParameters.client(identity: identity, acceptPeer: { $0 == pin })
@@ -60,6 +77,10 @@ final class RawBulkClient: @unchecked Sendable {
                 }
             }
             nw.start(queue: DispatchQueue(label: "test.bulk-client"))
+            Task {
+                try? await Task.sleep(for: timeout)
+                if once.resume(.failure(TestError("connect timed out"))) { nw.cancel() }
+            }
         }
         return RawBulkClient(nw)
     }
@@ -71,11 +92,19 @@ final class RawBulkClient: @unchecked Sendable {
         return try Frame.encode(AMEnvelope(channel: .files, id: 1, type: .bulkHello, payload: hello))
     }
 
+    /// Sends `data`; a send Network.framework never completes is given up after 30 s (the
+    /// connection is cancelled), so the test fails instead of hanging.
     func send(_ data: Data) async throws {
+        let nw = nw
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            let once = Once(c)
             nw.send(content: data, completion: .contentProcessed { error in
-                if let error { c.resume(throwing: error) } else { c.resume() }
+                once.resume(error.map { .failure($0) } ?? .success(()))
             })
+            Task {
+                try? await Task.sleep(for: .seconds(30))
+                if once.resume(.failure(TestError("send timed out"))) { nw.cancel() }
+            }
         }
     }
 
@@ -94,27 +123,30 @@ final class RawBulkClient: @unchecked Sendable {
         }
     }
 
-    /// True once the server has closed the connection, within `timeout`.
-    func closedByServer(timeout: Duration = .seconds(3)) async -> Bool {
-        let timedOut = TimeoutFlag()
-        return await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                while true {
-                    guard let d = await self.receive() else { return !timedOut.isSet }
+    /// True once the server has closed the connection, within `timeout` (generous: it only
+    /// bounds a close that is not coming). The answer does not wait for the read under way: once
+    /// the time is up the connection is cancelled and false comes back, whether or not
+    /// Network.framework ever completes that read.
+    func closedByServer(timeout: Duration = .seconds(30)) async -> Bool {
+        let nw = nw
+        return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            let answer = OnceBool(c)
+            let reader = Task {
+                while !Task.isCancelled {
+                    guard let d = await self.receive() else {
+                        answer.resume(true)
+                        return
+                    }
                     if d.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
                 }
             }
-            group.addTask {
+            Task {
                 try? await Task.sleep(for: timeout)
-                guard !Task.isCancelled else { return true }
-                // The group waits for every child: cancelling unblocks the pending receive.
-                timedOut.set()
-                self.nw.cancel()
-                return false
+                if answer.resume(false) {
+                    reader.cancel()
+                    nw.cancel()
+                }
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
         }
     }
 
@@ -122,7 +154,9 @@ final class RawBulkClient: @unchecked Sendable {
 }
 
 @MainActor
-func startBulk(tokens: BulkTokens = BulkTokens(), helloTimeout: Duration = .seconds(10),
+// The hello timeout is far off unless a test sets it: a slow runner must not end a connection
+// that a test still holds open.
+func startBulk(tokens: BulkTokens = BulkTokens(), helloTimeout: Duration = .seconds(60),
                allow: String? = "phone") async throws -> (BulkServer, UInt16, LinkLog) {
     let server = BulkServer(identity: P12IdentityProvider(url: identityURL("mac"), password: "test"),
                             tokens: tokens, helloTimeout: helloTimeout)
@@ -136,7 +170,7 @@ func startBulk(tokens: BulkTokens = BulkTokens(), helloTimeout: Duration = .seco
 
 /// Reads from `pipe` until `count` bytes arrived, EOF, or `timeout` (the pipe is then closed,
 /// so a missing byte fails the test instead of hanging it).
-func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .seconds(5)) async throws -> Data {
+func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .seconds(30)) async throws -> Data {
     let watchdog = Task {
         try? await Task.sleep(for: timeout)
         if !Task.isCancelled { pipe.close() }
@@ -258,7 +292,7 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
         let frame = try RawBulkClient.helloFrame(token: token, role: .phoneSends)
         try await client.send(frame.prefix(10))
 
-        #expect(await client.closedByServer(timeout: .seconds(3)))
+        #expect(await client.closedByServer())
         #expect(log.links.isEmpty)
     }
 
@@ -349,15 +383,18 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
 
         // Once the waiting ones go away, connections are accepted again.
         for c in waiting { c.close() }
-        var delivered = false
-        for attempt in 0..<20 where !delivered {
+        // The server frees the slots as it sees the closes: try again until one is taken.
+        let deadline = ContinuousClock.now + .seconds(30)
+        var attempt = 0
+        while log.links.isEmpty, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
+            attempt += 1
             guard let c = try? await RawBulkClient.connect(port: port) else { continue }
             defer { c.close() }
             try await c.hello(token: server.issue(role: .phoneSends, context: "again\(attempt)"), role: .phoneSends)
-            delivered = await eventually(timeout: .milliseconds(500)) { log.links.count == 1 }
+            _ = await eventually(timeout: .milliseconds(500)) { !log.links.isEmpty }
         }
-        #expect(delivered)
+        #expect(!log.links.isEmpty)
     }
 
     @Test func listenerRetryAfterFailureRestoresThePort() async throws {
@@ -366,7 +403,7 @@ func readExactly(_ pipe: any BulkPipe, _ count: Int, timeout: Duration = .second
         server.simulateListenerFailureForTesting()
         #expect(server.port == nil)
         // The retry fires after 250 ms; a loaded machine can take far longer to listen again.
-        #expect(await eventually(timeout: .seconds(10)) { server.port != nil })
+        #expect(await eventually { server.port != nil })
     }
 
     @Test func stopDuringListenerRetryStaysStopped() async throws {

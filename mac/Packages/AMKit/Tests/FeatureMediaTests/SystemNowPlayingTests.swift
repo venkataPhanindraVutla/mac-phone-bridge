@@ -41,7 +41,8 @@ private func offMain<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> 
     }
     #expect(statuses == [.success, .commandFailed])
     // Forwarded to the main actor.
-    for _ in 0..<200 where got.isEmpty { await Task.yield() }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while got.isEmpty, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(2)) }
     #expect(got.count == 1)
     #expect(got.first?.kind == .toggle)
     #expect(got.first?.seconds == nil)

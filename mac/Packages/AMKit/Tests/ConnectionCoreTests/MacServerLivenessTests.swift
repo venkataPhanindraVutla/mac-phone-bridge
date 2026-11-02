@@ -96,7 +96,7 @@ final class ManualClock: Clock, @unchecked Sendable {
                                                       pingInterval: .milliseconds(100))
         defer { server.stop() }
         let (phone, helloID) = try await connectPhone(port: port)
-        let ping = try #require(await phone.next(timeout: .seconds(1)))
+        let ping = try #require(await phone.next())
         #expect(ping.type == MessageType.ping.rawValue)
         #expect(ping.channel == .system)
         #expect(ping.replyTo == 0)
@@ -111,16 +111,16 @@ final class ManualClock: Clock, @unchecked Sendable {
         defer { server.stop() }
         let (phone, _) = try await connectPhone(port: port)
         #expect(await eventually { server.state != .idle })
-        let deadline = ContinuousClock.now + .milliseconds(1500)
+        // Five pings answered span at least four intervals, past the drop at the third silent one:
+        // counted, not timed, so a slow runner only makes this take longer.
         var pings = 0
-        while ContinuousClock.now < deadline {
-            if let e = await phone.next(timeout: .milliseconds(50)), e.type == MessageType.ping.rawValue {
-                pings += 1
-                try await phone.conn.send(.pong, AMPong(), channel: .system, replyTo: e.id)
-            }
+        while pings < 5 {
+            let e = try #require(await phone.next(), "pings keep coming to a phone that answers")
+            guard e.type == MessageType.ping.rawValue else { continue }
+            pings += 1
+            try await phone.conn.send(.pong, AMPong(), channel: .system, replyTo: e.id)
             #expect(server.state != .idle)
         }
-        #expect(pings >= 5)
         #expect(server.state != .idle)
         #expect(!log.events.contains { if case .disconnected = $0 { true } else { false } })
     }
@@ -132,27 +132,40 @@ final class ManualClock: Clock, @unchecked Sendable {
         defer { server.stop() }
         let (phone, _) = try await connectPhone(port: port)
         var pings = 0
-        while let e = await phone.next(timeout: .seconds(2)) {
+        // Until the Mac closes the link (nil); the default bound only matters if it never does.
+        while let e = await phone.next() {
             if e.type == MessageType.ping.rawValue { pings += 1 }
         }
-        #expect(await phone.ended(timeout: .seconds(2)))
+        #expect(await phone.ended())
         #expect(pings >= 3)
-        #expect(await eventually(timeout: .seconds(2)) { log.contains(.disconnected(known)) })
+        #expect(await eventually { log.contains(.disconnected(known)) })
         #expect(server.state == .idle)
     }
 
+    /// The liveness ticks run on a test clock, so only the silence rule could end the session while
+    /// the test waits past it; then the liveness rule, and only it, drops the silent phone.
     @Test func livenessSessionIgnoresSilenceTimeout() async throws {
         let (phones, known) = try knownPhoneStore()
+        let clock = ManualClock()
         let (server, port, log) = try await startServer(phones: phones, silenceTimeout: .milliseconds(150),
                                                         capabilities: livenessCaps,
-                                                        pingInterval: .milliseconds(200))
+                                                        pingInterval: .milliseconds(200), livenessClock: clock)
         defer { server.stop() }
+        var ended: [SessionEndReason] = []
+        server.logSessionEnd = { ended.append($0) }
         _ = try await connectPhone(port: port)
         #expect(await eventually { server.state != .idle })
         try await Task.sleep(for: .milliseconds(300))
         #expect(server.state != .idle, "the 75 s-style silence rule must not apply to a liveness session")
-        #expect(await eventually(timeout: .seconds(2)) { server.state == .idle })
+        #expect(server.state != .idle)
+        // Three pings unanswered, then the drop at the third silent tick (the fourth).
+        for _ in 0..<4 {
+            #expect(await eventually { clock.pendingSleepers == 1 })
+            clock.advance(by: .milliseconds(200))
+        }
+        #expect(await eventually { server.state == .idle })
         #expect(log.contains(.disconnected(known)))
+        #expect(ended == [.liveness])
     }
 
     @Test func legacyPhoneGetsNoPings() async throws {
@@ -176,7 +189,7 @@ final class ManualClock: Clock, @unchecked Sendable {
         let (phone, _) = try await connectPhone(port: port)
         var pongs = 0
         while pongs < 3 {
-            let e = try #require(await phone.next(timeout: .seconds(1)))
+            let e = try #require(await phone.next())
             guard e.type == MessageType.ping.rawValue else { continue }
             try await phone.conn.send(.pong, AMPong(), channel: .system, replyTo: e.id)
             pongs += 1
@@ -263,10 +276,11 @@ final class ManualClock: Clock, @unchecked Sendable {
         clock.advance(by: .seconds(20)) // part of an interval has passed before the sleep
 
         server.handleWake()
-        let ping = try #require(await phone.next(timeout: .seconds(1)), "a ping at once, not 30 s later")
+        // The clock does not move: a ping can only come from the wake.
+        let ping = try #require(await phone.next(), "a ping at once, not 30 s later")
         #expect(ping.type == MessageType.ping.rawValue)
         #expect(server.activePhone?.phone == known)
-        #expect(await eventually(timeout: .seconds(5)) { server.port == port && server.isListening })
+        #expect(await eventually { server.port == port && server.isListening })
         #expect(!log.events.contains { if case .disconnected = $0 { true } else { false } })
 
         // The phone answers; the session goes on, and the pinger runs on its usual interval.
@@ -316,7 +330,7 @@ final class ManualClock: Clock, @unchecked Sendable {
 
         // The 75 s rule (here 300 ms) for a phone without liveness.v1.
         _ = try await connectPhone(port: port, capabilities: ["status.v1", "find.v1"])
-        #expect(await eventually(timeout: .seconds(3)) { ended == [.silence] })
+        #expect(await eventually { ended == [.silence] })
 
         // The same phone connecting again replaces its old session.
         let (first, _) = try await connectPhone(port: port)

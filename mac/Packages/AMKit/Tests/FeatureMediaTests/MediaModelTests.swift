@@ -382,9 +382,12 @@ private func testJPEG() -> Data {
 
 @MainActor
 private func waitFor(_ condition: @MainActor () -> Bool) async -> Bool {
-    for _ in 0..<200 {
+    // A deadline, not a count of yields: work that hops threads needs time, not turns, and a busy
+    // runner can take seconds. The bound only matters when the test fails.
+    let deadline = ContinuousClock.now + .seconds(30)
+    while ContinuousClock.now < deadline {
         if condition() { return true }
-        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(2))
     }
     return condition()
 }

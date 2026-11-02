@@ -248,6 +248,13 @@ private func connect(_ r: Rig) async {
     await r.model.shortcutCheck?.value
 }
 
+/// Waits (30 s at most, which only matters when the test fails) for the access prompt to be asked.
+@MainActor
+private func waitForRequest(_ reader: FakeReader) async {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while reader.requests == 0, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(2)) }
+}
+
 /// Waits until no shortcut run is left, including one started when another returned.
 @MainActor
 private func settle(_ r: Rig) async {
@@ -512,7 +519,7 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
     let r = rig(enabled: false, reader: reader)
     await connect(r)
     let on = Task { await r.model.setEnabled(true) }
-    for _ in 0..<1000 where reader.requests == 0 { await Task.yield() }
+    await waitForRequest(reader)
     #expect(reader.requests == 1)
     await r.model.setEnabled(false)
     reader.answer()
@@ -527,7 +534,7 @@ private func receive(_ r: Rig, _ e: AMEnvelope) async {
     let r2 = rig(enabled: false, reader: reader2)
     await connect(r2)
     let first = Task { await r2.model.setEnabled(true) }
-    for _ in 0..<1000 where reader2.requests == 0 { await Task.yield() }
+    await waitForRequest(reader2)
     await r2.model.setEnabled(false)
     reader2.holdRequest = false
     await r2.model.setEnabled(true)

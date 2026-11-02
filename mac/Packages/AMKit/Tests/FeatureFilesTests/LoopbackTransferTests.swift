@@ -24,12 +24,15 @@ private final class Once: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     init(_ c: CheckedContinuation<Void, Error>) { continuation = c }
-    func resume(_ result: Result<Void, Error>) {
+    /// True when this call resumed it (the first one).
+    @discardableResult
+    func resume(_ result: Result<Void, Error>) -> Bool {
         let c = lock.withLock {
             defer { continuation = nil }
             return continuation
         }
         c?.resume(with: result)
+        return c != nil
     }
 }
 
@@ -56,6 +59,12 @@ private final class PhoneBulk: @unchecked Sendable {
                 }
             }
             nw.start(queue: DispatchQueue(label: "test.phone-bulk"))
+            // A handshake that neither finishes nor fails is cancelled: the test fails, not hangs.
+            let nw = nw
+            Task {
+                try? await Task.sleep(for: .seconds(30))
+                if once.resume(.failure(ClientError())) { nw.cancel() }
+            }
         }
         var hello = AMBulkHello()
         hello.token = token

@@ -175,11 +175,11 @@ private func post(_ name: Notification.Name, on center: NotificationCenter) asyn
     }
 }
 
-/// Lets the main queue run until `condition` holds (at most about a second).
+/// Lets the main queue run until `condition` holds (at most 30 s: generous, as on a busy runner
+/// the main queue can be seconds behind; the bound only matters when the test fails).
 @MainActor private func settle(_ condition: () -> Bool) async {
-    var waited = 0
-    while !condition(), waited < 100 {
-        waited += 1
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(10))
     }
 }

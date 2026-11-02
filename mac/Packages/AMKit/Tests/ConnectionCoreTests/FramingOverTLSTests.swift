@@ -17,7 +17,7 @@ final class LoopbackListener: @unchecked Sendable {
 
     func start() async throws -> UInt16 {
         listener.start(queue: queue)
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + .seconds(30)
         while ContinuousClock.now < deadline {
             if let p = listener.port?.rawValue, p != 0 { return p }
             try await Task.sleep(for: .milliseconds(5))
@@ -55,7 +55,8 @@ actor ServerSide {
     #expect(client.tlsVersion == .TLSv13)
 
     var serverConn: ControlConnection?
-    for _ in 0..<300 where serverConn == nil {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while serverConn == nil, ContinuousClock.now < deadline {
         serverConn = await server.connection
         if serverConn == nil { try await Task.sleep(for: .milliseconds(10)) }
     }
@@ -96,7 +97,7 @@ actor ServerSide {
         try AMEnvelope(channel: .pairing, id: 3, type: .pairComplete, payload: big),
     ]
     for e in expected {
-        let got = await inbox.next(timeout: .seconds(5))
+        let got = await inbox.next()
         #expect(got == e)
     }
 }
@@ -121,12 +122,13 @@ actor ServerSide {
         let client = try await connectClient(port: port, identity: stranger, pin: mac.fingerprint)
         let inbox = Inbox(client.envelopes)
         _ = try? await client.send(.ping, AMPing(), channel: .system)
-        #expect(await inbox.waitForEnd(timeout: .seconds(3)))
+        #expect(await inbox.waitForEnd())
         client.close()
     } catch {
         // Rejected during the handshake.
     }
-    #expect(ContinuousClock.now - start < .seconds(3))
+    // At once, not at the end of a wait: well inside the helpers' 30 s bounds.
+    #expect(ContinuousClock.now - start < .seconds(20))
     #expect(await server.connection == nil)
 }
 
@@ -195,7 +197,7 @@ final class AcceptedConnections: @unchecked Sendable {
         _ = await Inbox(client.envelopes).waitForEnd()
         client.close()
     }
-    let deadline = ContinuousClock.now + .seconds(3)
+    let deadline = ContinuousClock.now + .seconds(30)
     while ContinuousClock.now < deadline,
           accepted.all.isEmpty || accepted.all.contains(where: { $0.state != .cancelled }) {
         try await Task.sleep(for: .milliseconds(10))

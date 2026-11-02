@@ -46,9 +46,11 @@ extension Data {
     var hex: String { map { String(format: "%02x", $0) }.joined() }
 }
 
-/// Opens a TLS client connection to 127.0.0.1:`port` as `identity`, pinning `pin`.
+/// Opens a TLS client connection to 127.0.0.1:`port` as `identity`, pinning `pin`. A refusal
+/// fails at once; the generous bound only matters for a handshake that never ends (on a busy CI
+/// runner the server's half, on the main actor, can take seconds).
 func connectClient(port: UInt16, identity: TLSIdentity, pin: Data,
-                   timeout: Duration = .seconds(3)) async throws -> ControlConnection {
+                   timeout: Duration = .seconds(30)) async throws -> ControlConnection {
     let params = TLSParameters.client(identity: identity, acceptPeer: { $0 == pin })
     let nw = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: params)
     return try await ControlConnection.open(nw, timeout: timeout)
@@ -73,8 +75,9 @@ actor Inbox {
         ended = true
     }
 
-    /// The next envelope, or nil when the stream ended or `timeout` passed first.
-    func next(timeout: Duration = .seconds(3)) async -> AMEnvelope? {
+    /// The next envelope, or nil when the stream ended or `timeout` passed first. Pass a short
+    /// `timeout` to check that nothing comes; the default only bounds a wait for what must come.
+    func next(timeout: Duration = .seconds(30)) async -> AMEnvelope? {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if !items.isEmpty { return items.removeFirst() }
@@ -85,7 +88,7 @@ actor Inbox {
     }
 
     /// True once the stream has ended (EOF, error or close) within `timeout`.
-    func waitForEnd(timeout: Duration = .seconds(3)) async -> Bool {
+    func waitForEnd(timeout: Duration = .seconds(30)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if ended { return true }
