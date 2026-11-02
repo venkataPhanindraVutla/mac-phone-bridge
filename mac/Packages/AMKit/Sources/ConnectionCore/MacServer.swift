@@ -151,6 +151,9 @@ public final class MacServer {
     @ObservationIgnored private var retiredSecrets: [Data] = []
     private static let maxRetiredSecrets = 16
 
+    /// Connections closed after a flush whose data is not yet handed to the network.
+    @ObservationIgnored private(set) var pendingFlushes = 0
+
     private static let listenerQueue = DispatchQueue(label: "io.github.anmirror.listener")
     private static let maxRestartAttempts = 40
 
@@ -225,6 +228,15 @@ public final class MacServer {
         isListening = false
         refreshPolicy()
         recomputeState()
+    }
+
+    /// Returns once the goodbyes and errors sent before closing have reached the network, or after
+    /// `timeout`. The app waits on this when it quits.
+    public func waitForFlush(timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while pendingFlushes > 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     /// After wake from sleep: listen again on the same port. A session that shares `liveness.v1`
@@ -699,7 +711,14 @@ public final class MacServer {
         let phase = session.phase
         session.phase = .closed
         if case .active = phase { logSessionEnd(reason) }
-        if flush { session.conn.closeAfterFlush() } else { session.conn.close() }
+        if flush {
+            pendingFlushes += 1
+            session.conn.closeAfterFlush { [weak self] in
+                Task { @MainActor in self?.pendingFlushes -= 1 }
+            }
+        } else {
+            session.conn.close()
+        }
         if let w = window, w.session === session {
             // The phone went away mid-confirmation: the spent secret cannot be reused.
             w.session = nil

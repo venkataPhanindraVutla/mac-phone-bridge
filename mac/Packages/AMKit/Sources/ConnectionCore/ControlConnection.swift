@@ -136,13 +136,21 @@ public actor ControlConnection {
 
     /// Ends the stream after everything already sent has been handed to TLS: used to close
     /// right after a `system.error` so the peer still reads it.
-    public nonisolated func closeAfterFlush() {
+    /// `done` runs once, when the data has been handed to TLS or after the 2 s cap.
+    public nonisolated func closeAfterFlush(then done: (@Sendable () -> Void)? = nil) {
         continuation.finish()
         let connection = self.connection
+        let once = Once(done)
         connection.send(content: nil, contentContext: .finalMessage, isComplete: true,
-                        completion: .contentProcessed { _ in connection.cancel() })
+                        completion: .contentProcessed { _ in
+                            connection.cancel()
+                            once.run()
+                        })
         // Do not linger if the peer never reads.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { connection.cancel() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            connection.cancel()
+            once.run()
+        }
     }
 
     private static func peerCertificate(_ metadata: NWProtocolTLS.Metadata) -> Data? {
@@ -229,5 +237,21 @@ private final class FrameReader: @unchecked Sendable {
             }
             receiveNext()
         }
+    }
+}
+
+/// Runs a closure at most once, from any thread.
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () -> Void)?
+
+    init(_ action: (@Sendable () -> Void)?) { self.action = action }
+
+    func run() {
+        lock.lock()
+        let a = action
+        action = nil
+        lock.unlock()
+        a?()
     }
 }

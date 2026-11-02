@@ -85,4 +85,27 @@ private struct NoListener: Error {}
         #expect(try phones.all().isEmpty)
         #expect(log.contains(.unpaired(known)))
     }
+
+    /// 0.1-F-d: the app can wait until the goodbye has been handed to the network.
+    @Test func stopCanBeWaitedOnUntilTheGoodbyeIsFlushed() async throws {
+        let phones = InMemoryPairedPhoneStore()
+        try phones.save(try pairedPhone("phone"))
+        let (server, port, _) = try await startServer(phones: phones)
+        let phone = try await TestPhone.connect("phone", port: port)
+        try await phone.sendHello()
+        _ = await phone.next()
+        #expect(await eventually { server.activePhone != nil })
+        server.stop()
+        #expect(server.pendingFlushes == 1)
+        await server.waitForFlush(timeout: .seconds(3))
+        #expect(server.pendingFlushes == 0)
+        let bye = try #require(await phone.next())
+        #expect(bye.type == MessageType.goodbye.rawValue)
+    }
+
+    @Test func waitForFlushWithNothingPendingReturnsAtOnce() async throws {
+        let (server, _, _) = try await startServer()
+        defer { server.stop() }
+        await server.waitForFlush(timeout: .seconds(3))
+    }
 }
