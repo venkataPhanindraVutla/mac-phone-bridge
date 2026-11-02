@@ -133,12 +133,17 @@ func refusedAtTLS(_ name: String, port: UInt16) async -> Bool {
 
     /// R37 M2: the TLS gate for unknown certificates closes when the 5-minute secret expires.
     @Test func unknownCertRefusedAfterSecretExpires() async throws {
-        let (server, port, log) = try await startServer(pairingLifetime: 0.3)
+        // The secret's age is read from `clock`, so only the test ages it: on a busy runner the
+        // expiry task (and the second pairing below) may run late without the secret running out.
+        let clock = TestClock()
+        let (server, port, log) = try await startServer(pairingLifetime: 0.3, now: { clock.now })
         defer { server.stop() }
         let uri = server.beginPairing()
         #expect(!server.pairingSecretSpent)
-        try await Task.sleep(for: .milliseconds(600))
-        #expect(server.pairingSecretSpent)
+        clock.advance(1)
+        // The expiry task closes the gate by itself. Its timer starts when the task first runs on
+        // the main actor, which a busy main actor can put off: wait for it, not a fixed time.
+        #expect(await eventually(timeout: .seconds(30)) { server.pairingSecretSpent })
         #expect(await refusedAtTLS("stranger", port: port))
         #expect(await eventually { log.contains(.rejected(.notPairedCertificate)) })
         // R11: the window itself stays until the user closes or replaces it.

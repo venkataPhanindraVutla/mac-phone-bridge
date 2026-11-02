@@ -80,14 +80,15 @@ func startServer(phones: any PairedPhoneStore = InMemoryPairedPhoneStore(),
                  capabilities: Set<String> = ["status.v1", "find.v1"],
                  pingInterval: Duration = .seconds(30),
                  missedPingLimit: Int = 3,
-                 livenessClock: any Clock<Duration> = ContinuousClock()) async throws -> (MacServer, UInt16, EventLog) {
+                 livenessClock: any Clock<Duration> = ContinuousClock(),
+                 now: @escaping () -> Date = Date.init) async throws -> (MacServer, UInt16, EventLog) {
     let server = MacServer(
         identity: P12IdentityProvider(url: identityURL("mac"), password: "test"),
         phones: phones, secrets: secrets, macName: "Test Mac", appVersion: "0.1-test",
         capabilities: capabilities, advertise: false,
         silenceTimeout: silenceTimeout, pairingLifetime: pairingLifetime,
         confirmationTimeout: confirmationTimeout,
-        pingInterval: pingInterval, missedPingLimit: missedPingLimit, livenessClock: livenessClock)
+        pingInterval: pingInterval, missedPingLimit: missedPingLimit, livenessClock: livenessClock, now: now)
     let log = EventLog()
     server.onEvent = { log.events.append($0) }
     try server.start()
