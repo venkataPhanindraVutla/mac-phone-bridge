@@ -22,6 +22,7 @@ import {
 } from "@tabler/icons-react"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { cn } from "@/lib/utils"
+import { CrossStage } from "./CrossStage"
 import { Avatar, Photo, Wallpaper } from "./parts"
 
 function useLoop(ms: number) {
@@ -191,7 +192,17 @@ function ClipboardDemo() {
   const clip = clips[tick % clips.length]
   const secret = clip.startsWith("•")
   return (
-    <div ref={ref} className="grid w-full max-w-[22rem] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 text-[0.8rem]">
+    <div ref={ref} className="relative grid w-full max-w-[22rem] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 text-[0.8rem]">
+      <motion.span
+        key={`chip${tick}`}
+        aria-hidden="true"
+        className={cn("absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-0.5 text-[0.68rem] font-semibold whitespace-nowrap", secret ? "bg-[#3a3a3a] text-mist" : "bg-lime text-night")}
+        initial={{ left: "22%", y: 0, opacity: 0, scale: 0.8 }}
+        animate={secret ? { left: ["22%", "50%"], y: [0, -34], opacity: [0, 1, 0], scale: [0.8, 1, 0.8] } : { left: ["22%", "50%", "78%"], y: [0, -38, 0], opacity: [0, 1, 1, 0], scale: [0.8, 1.05, 0.8] }}
+        transition={{ duration: 1, ease: "easeInOut" }}
+      >
+        {secret ? "Not sent" : "Copied"}
+      </motion.span>
       <div className="rounded-xl bg-[#1c1c1c]/90 p-3 ring-1 ring-white/10">
         <p className="text-white/45">Mac</p>
         <AnimatePresence mode="wait">
@@ -200,13 +211,11 @@ function ClipboardDemo() {
           </motion.p>
         </AnimatePresence>
       </div>
-      <motion.span key={tick} initial={{ x: -6, opacity: 0 }} animate={{ x: 4, opacity: 1 }} transition={{ duration: 0.6 }} className={secret ? "text-white/30" : "text-lime"} aria-hidden="true">
-        →
-      </motion.span>
+      <span className="w-6" aria-hidden="true" />
       <div className="rounded-xl bg-[#f2f2f2] p-3 text-[#1c1b22]">
         <p className="text-black/45">Phone</p>
         <AnimatePresence mode="wait">
-          <motion.p key={clip} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} exit={{ opacity: 0 }} className={cn("mt-1 truncate", secret && "text-black/45 italic")}>
+          <motion.p key={clip} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.9 }} exit={{ opacity: 0 }} className={cn("mt-1 truncate", secret && "text-black/45 italic")}>
             {secret ? "Secret, not sent" : clip}
           </motion.p>
         </AnimatePresence>
@@ -433,11 +442,14 @@ export function Features() {
             Everything your phone does, on the Mac you're already using.
           </h2>
           <p className="max-w-[30rem] text-lg text-haze lg:justify-self-end">
-            Every feature here is built and in testing. None of them needs developer settings on the phone, except Full mode. Go ahead and try the tiles.
+            Every feature here is built and in testing. None of them needs developer settings on the phone, except Full mode. Press a button below and watch it cross over.
           </p>
         </div>
 
-        <ul className="mt-16 grid gap-4 md:grid-cols-2 lg:grid-cols-6 lg:grid-rows-[auto]">
+        <CrossStage />
+
+        <h3 className="mt-28 font-display text-[1.6rem] font-semibold tracking-tight">Every feature, one tile each</h3>
+        <ul className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-6 lg:grid-rows-[auto]">
           <Tile desktop className="md:col-span-2 lg:col-span-4 lg:row-span-2" title="Notifications with actions" text="Real Mac notifications, with their buttons and inline reply. Choose which apps come through, and dismiss on either device to clear both.">
             <NotificationsDemo />
           </Tile>
