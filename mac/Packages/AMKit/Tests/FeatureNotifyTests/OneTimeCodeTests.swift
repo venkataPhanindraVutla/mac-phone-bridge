@@ -25,6 +25,8 @@ import Testing
     ("Ana", "call 123-456-7890 code", nil),
     ("Ana", "code 987 654 3210", nil),
     ("Ana", "Your code is 4821ms", nil),
+    ("認証", "認証 code：123456を入力してください", "123456"),
+    ("验证", "验证 code 123456是你的", "123456"),
     ("Ana", "Your code is 4821.", "4821"),
     ("Calendar", "Meeting Oct 28, 2026 login link", nil),
     ("Calendar", "Meeting Oct 28 2026 login link", nil),

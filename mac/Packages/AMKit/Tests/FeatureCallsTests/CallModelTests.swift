@@ -232,26 +232,76 @@ struct CallModelTests {
 
     @Test func refusedCommandsHaveAShortMessage() async {
         let h = Harness()
-        #expect(h.model.errorMessage == nil)
+        #expect(h.model.errorMessage(for: "c1") == nil)
         h.model.apply(call("c1"))
         await h.model.answer("c1")
         var r = AMCallCommandResult()
         r.callID = "c1"; r.outcome = .notAllowed
         h.model.result(r)
-        #expect(h.model.errorMessage == "Couldn't answer on the phone.")
+        #expect(h.model.errorMessage(for: "c1") == "Couldn't answer on the phone.")
+        #expect(h.model.errorMessage(for: "c2") == nil)      // only the call it belongs to
         await h.model.decline("c1")                    // a new command clears the old message
-        #expect(h.model.errorMessage == nil)
+        #expect(h.model.errorMessage(for: "c1") == nil)
         r.outcome = .failed
         h.model.result(r)
-        #expect(h.model.errorMessage == "Couldn't decline on the phone.")
+        #expect(h.model.errorMessage(for: "c1") == "Couldn't decline on the phone.")
         h.model.apply(call("c2", .active))
         await h.model.toggleMute()
         r.callID = "c2"; r.outcome = .failed
         h.model.result(r)
-        #expect(h.model.errorMessage == "Couldn't do that on the phone.")
+        #expect(h.model.errorMessage(for: "c2") == "Couldn't do that on the phone.")
+        #expect(h.model.errorMessage(for: "c1") == nil)
         r.outcome = .ok
         h.model.result(r)
-        #expect(h.model.errorMessage == nil)
+        #expect(h.model.errorMessage(for: "c2") == nil)
+    }
+
+    private func refuseAnswer(_ h: Harness, _ id: String) async {
+        await h.model.answer(id)
+        var r = AMCallCommandResult()
+        r.callID = id; r.outcome = .notAllowed
+        h.model.result(r)
+        #expect(h.model.errorMessage(for: id) != nil)
+    }
+
+    @Test func errorClearsWhenThatCallEnds() async {
+        let h = Harness()
+        h.model.apply(call("c1"))
+        await refuseAnswer(h, "c1")
+        h.model.apply(call("c1", .ended))
+        #expect(h.model.errorMessage(for: "c1") == nil)
+        h.model.apply(call("c2"))                      // a new call shows nothing
+        #expect(h.model.errorMessage(for: "c2") == nil)
+    }
+
+    @Test func errorOfAnActiveCallClearsWhenItEnds() async {
+        let h = Harness()
+        h.model.apply(call("c1"))
+        await refuseAnswer(h, "c1")
+        h.model.apply(call("c1", .active))              // answered on the phone
+        #expect(h.model.errorMessage(for: "c1") != nil)
+        h.model.apply(call("c1", .ended))
+        #expect(h.model.errorMessage(for: "c1") == nil)
+    }
+
+    @Test func errorClearsOnCloseNoSuchCallAndDisconnect() async {
+        let h = Harness()
+        h.model.apply(call("c1"))
+        await refuseAnswer(h, "c1")
+        h.model.close("c1")
+        #expect(h.model.errorMessage(for: "c1") == nil)
+
+        h.model.apply(call("c2"))
+        await refuseAnswer(h, "c2")
+        var r = AMCallCommandResult()
+        r.callID = "c2"; r.outcome = .noSuchCall
+        h.model.result(r)
+        #expect(h.model.errorMessage(for: "c2") == nil)
+
+        h.model.apply(call("c3"))
+        await refuseAnswer(h, "c3")
+        h.model.disconnected()
+        #expect(h.model.errorMessage(for: "c3") == nil)
     }
 
     @Test func timerContinuesAfterReconnectMidCall() {

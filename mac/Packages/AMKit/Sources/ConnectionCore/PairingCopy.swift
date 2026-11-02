@@ -43,7 +43,13 @@ extension PairingCopy {
 public enum StartupCopy {
     public static func message(for error: any Error) -> LocalizedStringResource {
         // errSecUserCanceled (Deny on the Keychain prompt), errSecAuthFailed, errSecInteractionNotAllowed.
-        if case let IdentityError.keychain(status) = error, [-128, -25293, -25308].contains(status) {
+        let denied: Bool
+        switch error {
+        case IdentityError.identityUnavailable: denied = true
+        case let IdentityError.keychain(status): denied = [-128, -25293, -25308].contains(status)
+        default: denied = false
+        }
+        if denied {
             return LocalizedStringResource("startup.error.keychain",
                 defaultValue: "Can't start: allow Keychain access and reopen the app.", bundle: .main)
         }

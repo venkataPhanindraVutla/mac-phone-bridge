@@ -28,6 +28,8 @@ public final class CGEventPoster: EventPoster {
     private var phases = ScrollPhases()
     /// Bumped on every scroll, so only the last one's timer ends the gesture.
     private var scrollGeneration = 0
+    /// A "began" has gone out and its "ended" has not.
+    private var gestureOpen = false
 
     public init() {
         source = CGEventSource(stateID: .hidSystemState)
@@ -80,6 +82,9 @@ public final class CGEventPoster: EventPoster {
     /// for `ScrollPhases.gap`.
     public func scroll(pixelsX: Int32, pixelsY: Int32) {
         let phase = phases.next(at: ProcessInfo.processInfo.systemUptime)
+        // A late "ended" task must not leave the old gesture open under a new "began".
+        if phase == .began, gestureOpen { postScroll(pixelsX: 0, pixelsY: 0, phase: ScrollPhases.endedValue) }
+        gestureOpen = true
         postScroll(pixelsX: pixelsX, pixelsY: pixelsY, phase: phase.cgValue)
         scrollGeneration += 1
         let generation = scrollGeneration
@@ -89,6 +94,7 @@ public final class CGEventPoster: EventPoster {
             // could disagree with the sleep's own clock and leave it hanging.)
             guard let self, generation == self.scrollGeneration else { return }
             self.phases.end()
+            self.gestureOpen = false
             self.postScroll(pixelsX: 0, pixelsY: 0, phase: ScrollPhases.endedValue)
         }
     }

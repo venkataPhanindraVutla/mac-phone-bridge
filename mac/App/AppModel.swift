@@ -77,8 +77,12 @@ final class AppModel {
     private(set) var pairedName: String?
     private(set) var pairingFailure: LocalizedStringResource?
     private(set) var startupError: LocalizedStringResource?
-    /// The phone that was just paired has to wait for this one (named) to disconnect.
-    private(set) var pairedWaitsFor: String?
+    @ObservationIgnored private var pairedPhoneID: String?
+    /// The name of the connected phone the just-paired one has to wait for; nil once it is free or connected.
+    var pairedWaitsFor: String? {
+        guard let id = pairedPhoneID, let current = server.activePhone?.phone, current.id != id else { return nil }
+        return current.name
+    }
     /// The saved port stayed busy and a start on any free port was tried; set again only after a start worked.
     @ObservationIgnored private var triedAnyPort = false
     @ObservationIgnored private var didShutDown = false
@@ -712,7 +716,7 @@ final class AppModel {
     func startPairing() -> PairingURI? {
         guard server.isListening else { return nil }
         pairedName = nil
-        pairedWaitsFor = nil
+        pairedPhoneID = nil
         pairingFailure = nil
         let uri = server.beginPairing()
         pairingDeadline = Date().addingTimeInterval(Self.pairingLifetime)
@@ -760,7 +764,7 @@ final class AppModel {
     // MARK: server
 
     /// App quit: tell the phone (`system.goodbye SHUTDOWN`) and close. The goodbye is queued on
-    /// the connection's own queue; a short pause lets it reach the wire before the process ends.
+    /// the connection's own queue; `shutdownAndFlush` waits (briefly) for it to reach the wire.
     /// Transfers end here, not through the session's work queue (it never drains while the app
     /// terminates), so a receive under way leaves no part file behind.
     func shutdown() {
@@ -856,7 +860,7 @@ final class AppModel {
         case let .paired(phone):
             pairedName = phone.name
             // A phone already connected keeps the Mac; the new one gets BUSY until it disconnects.
-            if let current = server.activePhone?.phone, current.id != phone.id { pairedWaitsFor = current.name } else { pairedWaitsFor = nil }
+            pairedPhoneID = phone.id
             pairingDeadline = nil
             refreshPhones()
         case let .connected(phone, shared):

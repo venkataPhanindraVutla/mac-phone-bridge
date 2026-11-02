@@ -114,7 +114,7 @@ struct MenuContent: View {
             }
             Button("Hang up") { Task { await model.calls.hangUp() } }
                 .accessibilityLabel(Text("Hang up"))
-            if let message = model.calls.errorMessage {
+            if let message = model.calls.errorMessage(for: call.callID) {
                 Text(message)
             }
         }

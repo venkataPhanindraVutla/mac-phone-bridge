@@ -97,7 +97,7 @@ private struct IncomingCallView: View {
                         button(action)
                     }
                 }
-                if let message = model.errorMessage {
+                if let message = model.errorMessage(for: callID) {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
             }

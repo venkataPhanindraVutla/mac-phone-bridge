@@ -25,6 +25,8 @@ import Testing
         #expect(String(localized: StartupCopy.message(for: IdentityError.keychain(status)))
             == "Can't start: allow Keychain access and reopen the app.")
     }
+    #expect(String(localized: StartupCopy.message(for: IdentityError.identityUnavailable))
+        == "Can't start: allow Keychain access and reopen the app.")
     #expect(String(localized: StartupCopy.message(for: IdentityError.keychain(-1)))
         == "Can't start. Quit and reopen the app.")
     #expect(String(localized: StartupCopy.message(for: IdentityError.noIdentityInFile))

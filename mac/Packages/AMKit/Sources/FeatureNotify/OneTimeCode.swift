@@ -40,7 +40,7 @@ public enum OneTimeCode {
         let joiners: Set<Character> = [":", "/", ".", ","]
         let isGoogle = c[start] == "G"
         if start > 0, c[start - 1].isLetter || c[start - 1].isNumber { return false }  // "XX1234", inside a longer run
-        if end < c.count, c[end].isLetter { return false }                           // "4821ms"
+        if end < c.count, c[end].isASCII, c[end].isLetter { return false }           // "4821ms" (not "123456です")
         if start > 0, joiners.contains(c[start - 1]) { return false }                // "12:3045", "1.2345"
         if end + 1 < c.count, joiners.contains(c[end]), c[end + 1].isNumber { return false }  // "1234/56"
         if !isGoogle {

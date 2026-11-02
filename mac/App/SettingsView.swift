@@ -115,7 +115,12 @@ struct SettingsView: View {
         }
         .onChange(of: model.currentPhone?.id) { _, _ in reloadNotify() }
         // New apps show up while the window is open.
-        .onChange(of: model.notifications.seenAppsVersion) { _, _ in reloadNotify() }
+        .onChange(of: model.notifications.seenAppsVersion) { _, _ in
+            // Only the app list: a switch just flipped here must not be undone by a reload.
+            if let phone = model.currentPhone {
+                notify.seenApps = model.notifications.settings(for: phone.id).seenApps
+            }
+        }
         // Test mode never locks: it must not stay on once Settings closes.
         .onDisappear { model.proximity.testMode = false }
     }

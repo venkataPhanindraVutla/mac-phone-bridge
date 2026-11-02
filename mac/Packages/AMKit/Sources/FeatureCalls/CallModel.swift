@@ -32,12 +32,13 @@ public final class CallModel {
     /// The "Show phone calls" switch. Off: nothing shows and missed calls are ignored, but call states are
     /// still followed, so switching it on mid-call shows the call.
     public var enabled: Bool = true {
-        didSet { if !enabled { lastError = nil } }
+        didSet { if !enabled { lastError = nil; failure = nil } }
     }
-    /// A short line for a refused Answer, Decline, Mute or Hang up; nil when there is nothing to say.
-    public var errorMessage: String? {
-        guard enabled, lastError == .notAllowed || lastError == .failed else { return nil }
-        switch lastAction {
+    /// A short line for a refused Answer, Decline, Mute or Hang up on call `id`; nil when there is
+    /// nothing to say. It goes when the call ends, is closed or is gone, and never shows on another call.
+    public func errorMessage(for id: String) -> String? {
+        guard enabled, let failure, failure.callID == id else { return nil }
+        switch failure.action {
         case .answer: return String(localized: "Couldn't answer on the phone.", bundle: .main)
         case .decline: return String(localized: "Couldn't decline on the phone.", bundle: .main)
         default: return String(localized: "Couldn't do that on the phone.", bundle: .main)
@@ -46,6 +47,8 @@ public final class CallModel {
 
     private var trackedRinging: [AMCallState] = []
     private var trackedActive: AMCallState?
+    /// The refused command's call and action, for the message.
+    private var failure: (callID: String, action: AMCallAction)?
     private var trackedElapsedText: String?
 
     @ObservationIgnored private let nameFor: (String) -> String?
@@ -89,6 +92,7 @@ public final class CallModel {
         trackedRinging = []
         setActive(nil)
         lastError = nil
+        failure = nil
         closed = []
     }
 
@@ -175,6 +179,7 @@ public final class CallModel {
         case .ended:
             trackedRinging.removeAll { $0.callID == s.callID }
             closed.remove(s.callID)
+            if failure?.callID == s.callID { failure = nil }
             if resumable?.callID == s.callID { resumable = nil }
             if trackedActive?.callID == s.callID { setActive(nil) }
         default:
@@ -186,14 +191,18 @@ public final class CallModel {
         switch r.outcome {
         case .ok:
             lastError = nil
+            if failure?.callID == r.callID { failure = nil }
         case .noSuchCall:
             lastError = .noSuchCall
+            if failure?.callID == r.callID { failure = nil }
             trackedRinging.removeAll { $0.callID == r.callID }
             if trackedActive?.callID == r.callID { setActive(nil) }
         case .notAllowed:
             lastError = .notAllowed
+            failure = (r.callID, lastAction ?? .UNRECOGNIZED(0))
         case .failed:
             lastError = .failed
+            failure = (r.callID, lastAction ?? .UNRECOGNIZED(0))
         default:
             break
         }
@@ -236,11 +245,13 @@ public final class CallModel {
     /// Closes a panel on this Mac only; the phone keeps ringing.
     public func close(_ id: String) {
         closed.insert(id)
+        if failure?.callID == id { failure = nil }
         trackedRinging.removeAll { $0.callID == id }
     }
 
     private func command(_ action: AMCallAction, _ id: String) async {
         lastError = nil
+        failure = nil
         lastAction = action
         var c = AMCallCommand()
         c.callID = id

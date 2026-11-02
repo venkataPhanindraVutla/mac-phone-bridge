@@ -427,13 +427,17 @@ public final class MacServer {
     private func attach(_ conn: ControlConnection) {
         // The window may have closed between the TLS handshake and now.
         guard policy.accepts(conn.peerFingerprint) else {
-            // Tell the phone the pairing window is gone (it would otherwise show "cancelled").
-            var error = AMError()
-            error.code = .pairingExpired
-            error.message = MacRejection.pairingExpired.rawValue
-            Task {
-                try? await conn.send(.error, error, channel: .system)
-                conn.closeAfterFlush()
+            if pairedPhone(conn.peerFingerprint) == nil {
+                // A pairing attempt whose window is gone: tell the phone (it would show "cancelled").
+                var error = AMError()
+                error.code = .pairingExpired
+                error.message = MacRejection.pairingExpired.rawValue
+                Task {
+                    try? await conn.send(.error, error, channel: .system)
+                    conn.closeAfterFlush()
+                }
+            } else {
+                conn.close()   // a phone forgotten mid-reconnect: nothing to explain
             }
             emit(.rejected(.notPairedCertificate))
             return
