@@ -220,8 +220,11 @@ const BRAND = "Mac Phone Bridge";
     function swap(i, at) {
       tl.to(bgs[i], { yPercent: 0, duration: .5, ease: "power3.inOut" }, at);
       var prev = copies[i - 1], next = copies[i];
-      tl.to(qa(".wi", prev), { yPercent: -115, duration: .3, stagger: .015, ease: "power2.in" }, at);
-      tl.to(qa(".lede, .cta-row, .status-note", prev), { autoAlpha: 0, y: -12, duration: .25 }, at);
+      // The hero's exit renders its start values now, before the load animation exists, so rewinding
+      // the story always restores a visible headline. Later stages keep the state their entrance left.
+      var first = i === 1;
+      tl.fromTo(qa(".wi", prev), { yPercent: 0 }, { yPercent: -115, duration: .3, stagger: .015, ease: "power2.in", immediateRender: first }, at);
+      tl.fromTo(qa(".lede, .cta-row, .status-note", prev), { autoAlpha: 1, y: 0 }, { autoAlpha: 0, y: -12, duration: .25, immediateRender: first }, at);
       tl.set(prev, { autoAlpha: 0 }, at + .4);
       tl.set(next, { autoAlpha: 1 }, at + .28);
       tl.to(qa(".wi", next), { yPercent: 0, duration: .4, stagger: .03, ease: "power3.out" }, at + .3);
@@ -234,7 +237,7 @@ const BRAND = "Mac Phone Bridge";
 
     /* 1. Pair */
     swap(1, 1);
-    tl.to(phoneMove, { x: -14, y: -10, rotationY: -15, rotation: 0, duration: .6 }, 1.0);
+    tl.fromTo(phoneMove, { x: 0, y: 0, rotationY: -8, rotation: -2 }, { x: -14, y: -10, rotationY: -15, rotation: 0, duration: .6, immediateRender: false }, 1.0);
     swapP("p-onboard", "p-scan", 1.15);
     inV("m-pair", 1.1, .2);
     tl.from(V("m-pair"), { scale: .9, duration: .25, ease: "back.out(1.6)" }, 1.1);
@@ -356,9 +359,14 @@ const BRAND = "Mac Phone Bridge";
     ScrollTrigger.addEventListener("refreshInit", function () { layoutStory(); });
 
     // The one load moment: the headline sets itself, the devices rise into place.
-    gsap.from(qa(".wi", copies[0]), { yPercent: 115, duration: .9, stagger: .06, ease: "power4.out", delay: .1 });
-    gsap.from(qa(".lede, .cta-row, .status-note", copies[0]), { autoAlpha: 0, y: 14, duration: .6, stagger: .08, delay: .55, ease: "power2.out" });
-    gsap.from([macMove, phoneMove], { y: 240, duration: 1.3, stagger: .12, ease: "power3.out", delay: .2 });
+    // Only when the page opens at the top; the first scroll finishes it.
+    if (window.scrollY < 10) {
+      var intro = gsap.timeline();
+      intro.from(qa(".wi", copies[0]), { yPercent: 115, duration: .9, stagger: .06, ease: "power4.out" }, .1);
+      intro.from(qa(".lede, .cta-row, .status-note", copies[0]), { autoAlpha: 0, y: 14, duration: .6, stagger: .08, ease: "power2.out" }, .55);
+      intro.from([macMove, phoneMove], { yPercent: 70, duration: 1.3, stagger: .12, ease: "power3.out" }, .2);
+      window.addEventListener("scroll", function () { intro.progress(1); }, { once: true, passive: true });
+    }
 
     // Pointer tilt on desktop, a slow float on touch.
     var visible = true;

@@ -26,7 +26,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..900&amp;family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400&amp;display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..900&amp;family=Newsreader:wght@400&amp;display=swap">
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
@@ -358,7 +358,7 @@
           <div class="mx-bar pg-bar">
             <b>Finder</b><span>File</span><span class="hide-s">Edit</span><span class="hide-s">View</span>
             <span class="mx-bar-r">
-              <button class="mx-status pg-status" type="button" aria-expanded="false" aria-controls="pg-menu" aria-label="Phone menu: Asha's phone, battery 82 percent, charging"><svg aria-hidden="true"><use href="#i-phone"/></svg>82%&#x26A1;&#xFE0E;</button>
+              <button class="mx-status pg-status" type="button" aria-expanded="false" aria-controls="pg-menu"><svg aria-hidden="true"><use href="#i-phone"/></svg><span class="vh">Asha's phone menu, battery </span>82%<span aria-hidden="true">&#x26A1;&#xFE0E;</span><span class="vh">, charging</span></button>
               <span class="hide-s">Tue 10:24</span>
             </span>
           </div>
@@ -396,6 +396,7 @@
             <div class="mx-tb"><i></i><i></i><i></i><span>Asha's phone</span></div>
             <div class="mx-tools" aria-hidden="true"><svg><use href="#i-tri"/></svg><svg><use href="#i-home"/></svg><svg><use href="#i-recents"/></svg><svg><use href="#i-rotate"/></svg></div>
             <div class="pg-mirror-body">
+              <div class="ax-chat-top pg-mirror-top" aria-hidden="true"><svg><use href="#i-back"/></svg><span class="av">P</span><b>Priya</b></div>
               <div class="ax-msgs pg-msgs-mirror" aria-hidden="true"></div>
               <form class="pg-compose" autocomplete="off">
                 <label class="vh" for="pg-input">Type a message to Priya with the Mac's keyboard</label>
