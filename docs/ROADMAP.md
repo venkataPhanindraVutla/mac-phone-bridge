@@ -56,7 +56,7 @@ Feature IDs (F-xx) refer to the [PRD](PRD.md). The order within v1 is a **builde
 
 ### 0.9 Beta → 1.0
 - Hardening across the device matrix (Architecture §8).
-- Battery under 2%/day idle.
+- Battery under 4%/day idle (owner, 2026-11-02: up to 4% is acceptable for launch).
 - VoiceOver/TalkBack pass; strings ready for translation.
 - Threat-model review.
 - Release pipeline: Mac DMG on GitHub Releases (notarized with a Homebrew cask once a paid Apple account or nonprofit waiver exists; otherwise un-notarized with install steps), Sparkle updates, Android APK on GitHub Releases and **F-Droid**.

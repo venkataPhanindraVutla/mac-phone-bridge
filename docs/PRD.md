@@ -53,7 +53,7 @@ Think of it as what Apple's Continuity features (iPhone Mirroring, Handoff, Univ
 - Sends any user data to a server: no account, no cloud relay, no analytics or telemetry by default.
 - Needs developer mode for the basic features.
 - Feels like a web or cross-platform app on either side.
-- Drains the phone battery noticeably when idle. Target: under 2% per day attributable to the app with no active use.
+- Drains the phone battery noticeably when idle. Target: under 4% per day attributable to the app with no active use.
 - Leaves the paired connection unauthenticated or unencrypted.
 
 ## 5. Setup levels
@@ -221,7 +221,7 @@ Each feature lists the user outcome, required behavior, setup level, and accepta
 - **Security:**
   - Mutually authenticated, encrypted connection with keys pinned at pairing.
   - The Full-mode helper only accepts commands from the paired Mac over that connection.
-- **Battery:** under 2% per day idle on the phone (see anti-goals). Discovery and keep-alive must be designed for this.
+- **Battery:** under 4% per day idle on the phone (see anti-goals). Discovery and keep-alive must be designed for this.
 - **Reliability:** reconnects automatically after sleep, a network change, or the app being killed by the phone's battery saver. Shows clear state when it can't.
 - **Accessibility:**
   - Mac UI fully usable with VoiceOver and the keyboard.
