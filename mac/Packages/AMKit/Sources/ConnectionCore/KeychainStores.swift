@@ -1,5 +1,6 @@
 import AMProtocol
 import Foundation
+import os
 import Security
 
 /// One generic-password item in the login keychain (legacy file keychain).
@@ -86,6 +87,7 @@ public final class KeychainPairedPhoneStore: PairedPhoneStore, @unchecked Sendab
 
 /// The discovery key (32 random bytes, created on first use) in the login keychain.
 public final class KeychainSecretStore: SecretStore, @unchecked Sendable {
+    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "keychain")
     private let item: KeychainItem
     private let lock = NSLock()
 
@@ -95,7 +97,11 @@ public final class KeychainSecretStore: SecretStore, @unchecked Sendable {
 
     public func discoveryKey() throws -> Data {
         lock.lock(); defer { lock.unlock() }
-        if let key = try item.read(), key.count == 32 { return key }
+        if let key = try item.read() {
+            if key.count == 32 { return key }
+            // Paired phones match the advertisement by this key, so a new one orphans them.
+            Self.log.error("the discovery key has \(key.count, privacy: .public) bytes, not 32; making a new one")
+        }
         let key = PairingCrypto.randomBytes(32)
         try item.write(key)
         return key

@@ -105,6 +105,12 @@ public final class MacServer {
     @ObservationIgnored public var onEvent: ((MacServerEvent) -> Void)?
     /// Test hook: sees every accepted NWConnection before the handshake.
     @ObservationIgnored var onAcceptForTesting: ((NWConnection) -> Void)?
+    /// Test hook: runs after a connection's TLS handshake, just before it is attached.
+    @ObservationIgnored var beforeAttachForTesting: (() -> Void)?
+    /// Makes the listener (port 0: any free port). Tests replace it to make starting fail.
+    @ObservationIgnored var makeListener: (NWParameters, UInt16) throws -> NWListener = { params, port in
+        port == 0 ? try NWListener(using: params) : try NWListener(using: params, on: NWEndpoint.Port(rawValue: port) ?? .any)
+    }
     /// Where the end of each phone session (one that reached `.active`) is reported: the log by
     /// default, so a Release build can tell why a phone dropped. Tests replace it.
     @ObservationIgnored var logSessionEnd: (SessionEndReason) -> Void = { reason in
@@ -187,10 +193,13 @@ public final class MacServer {
         guard listener == nil else { return }
         let identity = try identityProvider.identity()
         self.identity = identity
+        advertiser?.stop()
         if advertise { advertiser = BonjourAdvertiser(discoveryKey: try secrets.discoveryKey()) }
         pairedCache = nil
         refreshPolicy()
         restartAttempts = 0
+        // A start on any port must not go on retrying the port of an earlier listener.
+        if port == nil || port == 0 { self.port = nil }
         try startListener(port: port ?? 0)
     }
 
@@ -233,7 +242,9 @@ public final class MacServer {
         isListening = false
         restartAttempts = 0
         advertiser?.rotateInstanceName()
-        try? startListener(port: port)
+        do { try startListener(port: port) } catch {
+            emit(.listenerFailed(String(describing: error)))
+        }
         recomputeState()
     }
 
@@ -290,10 +301,16 @@ public final class MacServer {
     }
 
     /// Unpairs: tells the phone (`system.goodbye UNPAIRED`) if it is connected, then removes it.
-    public func forget(phoneID: String) async {
+    /// Returns false, changing nothing, when the paired list could not be updated.
+    @discardableResult
+    public func forget(phoneID: String) async -> Bool {
         let known = pairedList().first { $0.id == phoneID }
         // Untrust first, so a reconnect cannot slip in while the goodbye is on its way.
-        try? phones.remove(id: phoneID)
+        do { try phones.remove(id: phoneID) } catch {
+            Self.sessionLog.error("could not remove a paired phone: \(String(describing: error), privacy: .public)")
+            pairedCache = nil
+            return false
+        }
         pairedCache = nil
         refreshPolicy()
         var bye = AMGoodbye()
@@ -307,6 +324,7 @@ public final class MacServer {
         }
         if let known { emit(.unpaired(known)) }
         recomputeState()
+        return true
     }
 
     // MARK: listener
@@ -319,12 +337,7 @@ public final class MacServer {
             if !ok { Task { @MainActor in self?.emit(.rejected(.notPairedCertificate)) } }
             return ok
         }
-        let l: NWListener
-        if port == 0 {
-            l = try NWListener(using: params)
-        } else {
-            l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port) ?? .any)
-        }
+        let l = try makeListener(params, port)
         listenerGeneration += 1
         let generation = listenerGeneration
         l.stateUpdateHandler = { [weak self] st in
@@ -342,6 +355,11 @@ public final class MacServer {
         listener = l
         advertiser?.attach(to: l)
         l.start(queue: Self.listenerQueue)
+    }
+
+    /// Test hook: the listener fails as it does when its port cannot be rebound.
+    func simulateListenerFailureForTesting() {
+        listenerChanged(.failed("simulated"), generation: listenerGeneration)
     }
 
     private enum ListenerReport: Sendable {
@@ -367,7 +385,9 @@ public final class MacServer {
                 Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(250))
                     guard let self, self.listener == nil, self.identity != nil else { return }
-                    try? self.startListener(port: p)
+                    do { try self.startListener(port: p) } catch {
+                        self.emit(.listenerFailed(String(describing: error)))
+                    }
                 }
             } else {
                 emit(.listenerFailed(message))
@@ -380,7 +400,12 @@ public final class MacServer {
         Task { [weak self] in
             do {
                 let conn = try await ControlConnection.open(nw, timeout: .seconds(10))
-                if let self { self.attach(conn) } else { conn.close() }
+                if let self {
+                    self.beforeAttachForTesting?()
+                    self.attach(conn)
+                } else {
+                    conn.close()
+                }
             } catch {
                 nw.cancel()
             }
@@ -390,7 +415,14 @@ public final class MacServer {
     private func attach(_ conn: ControlConnection) {
         // The window may have closed between the TLS handshake and now.
         guard policy.accepts(conn.peerFingerprint) else {
-            conn.close()
+            // Tell the phone the pairing window is gone (it would otherwise show "cancelled").
+            var error = AMError()
+            error.code = .pairingExpired
+            error.message = MacRejection.pairingExpired.rawValue
+            Task {
+                try? await conn.send(.error, error, channel: .system)
+                conn.closeAfterFlush()
+            }
             emit(.rejected(.notPairedCertificate))
             return
         }

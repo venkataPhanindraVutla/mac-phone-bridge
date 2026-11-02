@@ -1,6 +1,7 @@
 import AMProtocol
 import Foundation
 import Network
+import os
 import Security
 
 /// Network.framework parameters for the protocol's transport: TCP plus mutual TLS 1.3,
@@ -10,6 +11,7 @@ import Security
 /// block below is therefore the whole trust decision: it hashes the peer's leaf certificate
 /// and asks `acceptPeer`. Nothing else is consulted.
 public enum TLSParameters {
+    private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "tls")
     private static let verifyQueue = DispatchQueue(label: "io.github.anmirror.tls-verify")
 
     /// TCP keepalive on every control and bulk socket (SPEC 1): seconds idle before the first
@@ -67,6 +69,9 @@ public enum TLSParameters {
         sec_protocol_options_set_max_tls_protocol_version(sec, .TLSv13)
         if let local = sec_identity_create(identity.secIdentity) {
             sec_protocol_options_set_local_identity(sec, local)
+        } else {
+            // Without it the handshake has no certificate and every phone is refused.
+            log.error("could not make the TLS identity; connections will fail")
         }
         sec_protocol_options_set_verify_block(sec, { _, trust, complete in
             let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
