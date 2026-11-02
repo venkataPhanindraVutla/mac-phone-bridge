@@ -19,7 +19,13 @@ import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.MIRROR_TAG
 import io.github.anmirror.phone.R
 import io.github.anmirror.phone.pairingErrorRes
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -133,9 +139,24 @@ fun closesPairingNotification(state: SetupState): Boolean =
     state == SetupState.Connecting || state == SetupState.Ready || state == SetupState.ConnectFailed
 
 /**
+ * Holds the reply broadcast while [work] pairs: until it ends, the setup starts connecting, or
+ * [holdMs] pass. Android delivers one broadcast at a time to the app, and connecting waits for the
+ * ADB proof's own broadcast (ruling R58), so the reply must be let go before then.
+ */
+suspend fun holdReplyBroadcast(work: Job, state: StateFlow<SetupState>, holdMs: Long) {
+    withTimeoutOrNull(holdMs) {
+        select {
+            work.onJoin {}
+            async { state.first(::closesPairingNotification) }.onAwait {}
+        }
+        coroutineContext.cancelChildren()
+    }
+}
+
+/**
  * The pairing notification's "Enter code": hands the typed reply to the Full mode setup. Pairing
  * and connecting can outlast a receiver's time, so the work runs on the app scope; the broadcast
- * is held for at most [HOLD_MS]. The reply is never logged.
+ * is held while pairing, for at most [HOLD_MS] (see [holdReplyBroadcast]). The reply is never logged.
  */
 class PairingReplyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -148,7 +169,7 @@ class PairingReplyReceiver : BroadcastReceiver() {
         }
         graph.scope.launch {
             try {
-                withTimeoutOrNull(HOLD_MS) { work.join() }
+                holdReplyBroadcast(work, graph.fullModeSetup.state, HOLD_MS)
             } finally {
                 pending.finish()
             }

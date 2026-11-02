@@ -225,10 +225,12 @@ class LibAdbClient(
     }
 
     override suspend fun connect(host: String, port: Int) {
+        val t0 = System.nanoTime()
         // Our own timed TCP connect first: libadb's socket has no connect timeout.
         withContext(Dispatchers.IO) {
             Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs.toInt()) }
         }
+        val tTcp = System.nanoTime()
         val made = AtomicReference<AdbConnection?>(null)
         val abandoned = AtomicBoolean(false)
         val closeOnce = CloseOnce { made.get()?.close() }
@@ -260,14 +262,19 @@ class LibAdbClient(
             closeOnce()
             throw SocketTimeoutException("adb connect timed out")
         }
+        val tConn = System.nanoTime()
         // Ruling R58: before anything uses it (or it replaces the connection in use), the peer
         // proves it can run a command as the phone's shell. Its exec stream is the only one opened.
+        var tOpened = 0L
         val proven = try {
-            proof.prove { service -> openOn(conn, service) }
+            proof.prove { service -> openOn(conn, service).also { tOpened = System.nanoTime() } }
         } catch (e: Throwable) {
             closeOnce()
             throw e
         }
+        val tEnd = System.nanoTime()
+        fun ms(from: Long, to: Long) = if (to == 0L) -1 else (to - from) / 1_000_000
+        log("adb-connect-ms tcp=${ms(t0, tTcp)} handshake=${ms(tTcp, tConn)} open=${ms(tConn, tOpened)} wait=${ms(if (tOpened == 0L) tConn else tOpened, tEnd)} proven=$proven")
         if (!proven) {
             closeOnce()
             throw AdbPeerProofException()
