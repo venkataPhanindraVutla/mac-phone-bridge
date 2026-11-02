@@ -42,6 +42,16 @@ public struct DelayFrame: Equatable, Sendable {
     }
 }
 
+/// The time `DelayProbe` reads and waits on: the continuous clock the frames are stamped with (a
+/// test hook; a test's frames are stamped on its own clock).
+struct DelayClock: Sendable {
+    var now: @Sendable () -> ContinuousClock.Instant
+    var sleep: @Sendable (ContinuousClock.Instant) async throws -> Void
+
+    static let system = DelayClock(now: { ContinuousClock.now },
+                                   sleep: { try await Task.sleep(until: $0, clock: .continuous) })
+}
+
 /// The delay trials over a running session that was just asked for the phone's DELAY test screen
 /// (black with a white square in each corner; the centre white while a finger is down).
 ///
@@ -72,6 +82,8 @@ public final class DelayProbe {
     var settle: Duration = .milliseconds(500)
     /// Pictures in a row with the marker before the test screen counts as up (R56: 3).
     var markerFrames = 3
+    /// What deadlines, the settle time and pauses are measured on (a test hook).
+    var clock = DelayClock.system
 
     private var pending: [DelayFrame] = []
     private var latest: DelayFrame?
@@ -88,7 +100,7 @@ public final class DelayProbe {
     }
 
     public func run() async -> DelayResult {
-        let began = ContinuousClock.now
+        let began = clock.now()
         let stream = await frames()
         let pump = Task { [weak self] in
             for await frame in stream { self?.deliver(frame) }
@@ -104,16 +116,16 @@ public final class DelayProbe {
         // Only pictures decoded after the finger was last lifted show whether it is idle again.
         var lifted = began
         for trial in 0..<trials {
-            if trial > 0, pause > .zero { try? await Task.sleep(for: pause) }
+            if trial > 0, pause > .zero { try? await clock.sleep(clock.now() + pause) }
             if ended { break }
             guard await idleTestScreen(since: lifted, within: timeout) else { continue }
             pending.removeAll()
-            let down = ContinuousClock.now
+            let down = clock.now()
             tap(true)
             taps += 1
             let white = await next(until: down + timeout) { $0.at >= down && $0.centerLuma > Self.whiteAbove }
             tap(false)
-            lifted = .now
+            lifted = clock.now()
             if let white { delays.append(LatenessMeter.ms(white.at - down)) }
         }
         return Self.summary(delays, trials: taps, misses: taps - delays.count)
@@ -159,8 +171,8 @@ public final class DelayProbe {
         let settled = since + settle
         var run = 0
         while true {
-            if run >= markerFrames, ContinuousClock.now >= settled { return true }
-            if ended || ContinuousClock.now >= deadline { return false }
+            if run >= markerFrames, clock.now() >= settled { return true }
+            if ended || clock.now() >= deadline { return false }
             // Enough in a row but too soon: wait for the settle time, or a picture that breaks the run.
             let until = run >= markerFrames ? min(settled, deadline) : deadline
             guard let frame = await next(until: until, { _ in true }) else { continue }
@@ -175,7 +187,7 @@ public final class DelayProbe {
             pending.removeAll()
             return true
         }
-        return await next(until: .now + within) { $0.at >= since && Self.idle($0) } != nil
+        return await next(until: clock.now() + within) { $0.at >= since && Self.idle($0) } != nil
     }
 
     /// The first picture from now on that matches, or nil at `deadline` or the end of the frames.
@@ -185,10 +197,11 @@ public final class DelayProbe {
                 let f = pending.removeFirst()
                 if match(f) { return f }
             }
-            if ended || ContinuousClock.now >= deadline { return nil }
+            if ended || clock.now() >= deadline { return nil }
+            let sleep = clock.sleep
             let timer = Task { [weak self] in
                 do {
-                    try await Task.sleep(until: deadline, clock: .continuous)
+                    try await sleep(deadline)
                     self?.wake()
                 } catch {}
             }
