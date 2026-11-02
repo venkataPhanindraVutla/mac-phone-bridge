@@ -89,6 +89,16 @@ class PairingControllerTest {
     }
 
     @Test
+    fun anUnexpectedThrowEndsInFailedNotConnecting() = runTest {
+        val r = rig(pairer = { _, _ -> throw IllegalStateException("boom") })
+        r.controller.pair(link(listOf("192.168.0.121")))
+        runCurrent()
+        assertEquals(PairingState.Failed(PairingFailure.REJECTED), r.controller.state.value)
+        r.controller.dismiss()
+        assertEquals(PairingState.Idle, r.controller.state.value)
+    }
+
+    @Test
     fun declinedLinkIsNeverDialed() = runTest {
         val r = rig()
         r.controller.offerLink(link(listOf("192.168.0.121")))

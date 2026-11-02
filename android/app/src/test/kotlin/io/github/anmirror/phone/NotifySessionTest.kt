@@ -58,4 +58,38 @@ class NotifySessionTest {
         s.listenerBound()
         assertEquals(1, resyncs)
     }
+
+    @Test
+    fun aLateResetForTheSameConnectionDoesNotClearAnAppliedFilter() = runBlocking {
+        var resyncs = 0
+        val s = NotifySession { resyncs++ }
+        val conn = Any()
+        s.filterApplied(listenerBound = true, connection = conn)
+        s.reset(connection = conn) // posted from the state collector after the filter was handled
+        s.filterApplied(listenerBound = true, connection = conn)
+        assertEquals(1, resyncs)
+    }
+
+    @Test
+    fun aLateResetDoesNotLoseTheResyncWhenTheListenerBindsAfterTheFilter() = runBlocking {
+        var resyncs = 0
+        val s = NotifySession { resyncs++ }
+        val conn = Any()
+        s.filterApplied(listenerBound = false, connection = conn)
+        s.reset(connection = conn) // the late reset for the same connection
+        s.listenerBound()
+        assertEquals(1, resyncs)
+    }
+
+    @Test
+    fun aNewConnectionStartsAFreshSession() = runBlocking {
+        var resyncs = 0
+        val s = NotifySession { resyncs++ }
+        s.filterApplied(listenerBound = true, connection = Any())
+        s.filterApplied(listenerBound = true, connection = Any())
+        assertEquals(2, resyncs)
+        s.reset() // disconnect: always clears
+        s.filterApplied(listenerBound = true, connection = Any())
+        assertEquals(3, resyncs)
+    }
 }

@@ -169,9 +169,24 @@ class AppGraph private constructor(context: Context) {
 
     /** Created on first use (a Keystore key generation is slow), never on the main thread. */
     val identity: TlsIdentity = object : TlsIdentity {
-        private val real by lazy { AndroidKeystoreIdentity() }
+        private val real by lazy { AndroidKeystoreIdentity(onNewKey = ::noteNewIdentityKey) }
         override val certificateDer: ByteArray get() = real.certificateDer
         override fun keyManagers() = real.keyManagers()
+    }
+
+    /**
+     * A new identity key while Macs are paired means the old key was lost (they will refuse this
+     * phone until it is paired again): worth a line in the logs. First-ever generation is silent.
+     */
+    private fun noteNewIdentityKey() {
+        scope.launch {
+            val paired = when (val read = readPairings()) {
+                is StoreRead.Macs -> read.macs.size.toString().takeIf { read.macs.isNotEmpty() }
+                is StoreRead.Unreadable -> "unreadable"
+            } ?: return@launch
+            Log.w(TAG, "identity: new key generated while paired=$paired")
+            keepAliveLog.record(KeepAliveEvent.IDENTITY, "new-key,paired=$paired")
+        }
     }
 
     /** Content-free events for diagnosing a vanished service (`filesDir/keepalive-events.log`). */
@@ -271,7 +286,13 @@ class AppGraph private constructor(context: Context) {
      * remembers what it sent per Mac, so it is told which one this is.
      */
     val notifySession = NotifySession {
-        (manager.state.value as? PhoneConnectionState.Connected)?.let { notifyBridge.onConnected(it.mac.id) }
+        val connected = manager.state.value as? PhoneConnectionState.Connected
+        when {
+            connected == null -> Log.i(TAG, "notify resync skipped: not connected")
+            // Switch off, no access or listener unbound: nothing is sent, so do not read the active list either.
+            !notifyOpen() -> Log.i(TAG, "notify resync skipped: feature closed")
+            else -> notifyBridge.onConnected(connected.mac.id)
+        }
     }
 
     private val _listenerBound = MutableStateFlow(false)
@@ -1454,8 +1475,31 @@ class DelegatingCallNotifications(context: Context) {
     fun isDialerCall(sbn: StatusBarNotification): Boolean =
         sbn.notification.category == Notification.CATEGORY_CALL && sbn.packageName in dialerPackages()
 
-    fun notification(): Notification? = active?.invoke()?.firstOrNull { isDialerCall(it) }?.notification
+    /**
+     * The dialer's call notification. Several can be up (a call and a missed-call or voicemail one):
+     * the one carrying answer / decline / hang-up intents wins, then an ongoing one, else the first.
+     */
+    fun notification(): Notification? =
+        pickCallNotification(active?.invoke()?.filter { isDialerCall(it) }.orEmpty()) { callRank(it.notification) }?.notification
+
+    private fun callRank(n: Notification): Int {
+        val extras = n.extras
+        val controls = extras != null && (
+            extras.containsKey(Notification.EXTRA_ANSWER_INTENT) ||
+                extras.containsKey(Notification.EXTRA_DECLINE_INTENT) ||
+                extras.containsKey(Notification.EXTRA_HANG_UP_INTENT)
+            )
+        return when {
+            controls -> 2
+            n.flags and Notification.FLAG_ONGOING_EVENT != 0 -> 1
+            else -> 0
+        }
+    }
 
     /** Title of the call notification: the caller's number or name. */
     fun title(): String? = notification()?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
 }
+
+/** The highest-[rank] candidate; the first of equals. Null for none. */
+internal fun <T> pickCallNotification(candidates: List<T>, rank: (T) -> Int): T? =
+    candidates.withIndex().maxWithOrNull(compareBy<IndexedValue<T>> { rank(it.value) }.thenByDescending { it.index })?.value

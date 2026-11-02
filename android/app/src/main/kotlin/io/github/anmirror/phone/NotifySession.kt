@@ -12,15 +12,24 @@ import io.github.anmirror.protocol.v1.ActionResult
  */
 class NotifySession(private val resync: suspend () -> Unit) {
     private var filterApplied = false
+    private var appliedOn: Any? = null
 
-    fun reset() {
+    /**
+     * Clears the latch. With a [connection] (the one that just connected) it is a no-op when that
+     * same connection's filter was already applied: this reset is posted from another thread and
+     * can land after the Mac's first filter was handled. A disconnect passes none and always clears.
+     */
+    fun reset(connection: Any? = null) {
+        if (connection != null && filterApplied && appliedOn === connection) return
         filterApplied = false
+        appliedOn = null
     }
 
-    /** A `notify.filter` was applied. */
-    suspend fun filterApplied(listenerBound: Boolean) {
-        if (filterApplied) return
+    /** A `notify.filter` was applied on [connection] (a different one than last time starts afresh). */
+    suspend fun filterApplied(listenerBound: Boolean, connection: Any? = null) {
+        if (filterApplied && (connection == null || appliedOn === connection)) return
         filterApplied = true
+        appliedOn = connection
         if (listenerBound) resync()
     }
 

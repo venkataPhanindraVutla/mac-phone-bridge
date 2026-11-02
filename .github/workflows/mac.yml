@@ -2,11 +2,35 @@ name: mac
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   mac:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest Xcode (26 or later)
+        # The pinned packages (swift-crypto 5, swift-protobuf 1.39) need Swift tools 6.2, so Xcode 16.x
+        # cannot resolve them. Take the newest Xcode on the image and fail if none is 26+.
+        run: |
+          best=""
+          bestmajor=0
+          for app in /Applications/Xcode_*.app; do
+            v="${app#/Applications/Xcode_}"; v="${v%.app}"
+            major="${v%%.*}"
+            case "$v" in ''|*[!0-9.]*) continue ;; esac # skips beta and release-candidate apps
+            if [ "$major" -gt "$bestmajor" ] || { [ "$major" -eq "$bestmajor" ] && [ "$(printf '%s\n%s\n' "$best" "$app" | sort -V | tail -1)" = "$app" ]; }; then
+              best="$app"; bestmajor="$major"
+            fi
+          done
+          if [ -z "$best" ] || [ "$bestmajor" -lt 26 ]; then
+            echo "No Xcode 26 or later found on this image" >&2
+            ls -d /Applications/Xcode_*.app >&2 || true
+            exit 1
+          fi
+          sudo xcode-select -s "$best"
+          xcodebuild -version
+          swift --version
       - name: Install xcodegen
         run: brew install xcodegen
       - name: Install protoc 4.36.2
@@ -22,19 +46,15 @@ jobs:
       - name: Check protocol vectors
         run: python3 -I protocol/tools/make_vectors.py --check
       - name: Swift tests
-        run: swift test --package-path mac/Packages/AMKit
+        run: swift test --force-resolved-versions --package-path mac/Packages/AMKit
       - name: Generate Xcode project
         run: |
-          if [ -f mac/project.yml ]; then
-            xcodegen --spec mac/project.yml --project mac
-          else
-            echo "mac/project.yml not present yet (added by Task 8); skipping"
-          fi
+          xcodegen --spec mac/project.yml --project mac
+          # The generated project has no Package.resolved of its own; AMKit's pins every
+          # remote dependency, so give it to the workspace for -disableAutomaticPackageResolution.
+          mkdir -p mac/AndroidMirroring.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          cp mac/Packages/AMKit/Package.resolved mac/AndroidMirroring.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
       - name: Build app
         run: |
-          if [ -f mac/project.yml ]; then
-            xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
-              -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
-          else
-            echo "mac app not present yet; skipping"
-          fi
+          xcodebuild -project mac/AndroidMirroring.xcodeproj -scheme AndroidMirroring \
+            -destination 'platform=macOS' -disableAutomaticPackageResolution CODE_SIGN_IDENTITY=- build

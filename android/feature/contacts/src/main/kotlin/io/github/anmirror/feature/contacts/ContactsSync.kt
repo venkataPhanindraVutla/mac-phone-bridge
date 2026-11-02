@@ -1,5 +1,6 @@
 package io.github.anmirror.feature.contacts
 
+import android.provider.ContactsContract
 import com.google.protobuf.MessageLite
 import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.Contact
@@ -14,13 +15,16 @@ import kotlinx.coroutines.withContext
 
 /**
  * Sends the address book to the Mac in batches (SPEC 11). Reads it live and keeps only the
- * high-water mark of the last successful sync, in memory. Every entry point runs under one mutex,
+ * mark of the last successful sync, in memory. The mark (`sync_ms`) is the later of the newest
+ * change seen and the phone's clock just before the read, so it tracks when the Mac last synced
+ * even while the address book is idle. Every entry point runs under one mutex,
  * so a sync request and a change push never interleave their batches.
  */
 class ContactsSync(
     private val source: ContactsSource,
     private val send: suspend (type: String, payload: MessageLite) -> Boolean,
     private val batchSize: Int = 200,
+    private val clock: () -> Long = System::currentTimeMillis,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val mutex = Mutex()
@@ -31,7 +35,9 @@ class ContactsSync(
     /** The Mac asked for contacts: everything when `since_ms` is 0, else the changes since then. */
     suspend fun onSyncRequest(r: ContactsSyncRequest) = mutex.withLock {
         val since = r.sinceMs
-        if (since == 0L) full() else incremental(since, ackWhenEmpty = true)
+        // Android forgets deletions after about 30 days; a Mac that last synced longer ago could miss one for good.
+        val stale = since < clock() - ContactsContract.DeletedContacts.DAYS_KEPT_MILLISECONDS
+        if (since == 0L || stale) full() else incremental(since, ackWhenEmpty = true)
     }
 
     /** The address book changed (the caller debounces): pushes what changed since the last sync. */
@@ -41,12 +47,13 @@ class ContactsSync(
     }
 
     private suspend fun full() {
+        val readAt = clock() - 1 // before the read: a later change has a later timestamp
         val rows = withContext(io) { source.changedSince(0) }
-        val syncMs = rows.maxOfOrNull { it.updatedMs } ?: 0L
-        val chunks = rows.chunked(batchSize).ifEmpty { listOf(emptyList()) }
+        val syncMs = maxOf(readAt, rows.maxOfOrNull { it.updatedMs } ?: 0L)
+        val chunks = batches(rows).ifEmpty { listOf(emptyList()) }
         for ((i, chunk) in chunks.withIndex()) {
             val batch = ContactsBatch.newBuilder()
-                .addAllUpserts(chunk.map(::toProto))
+                .addAllUpserts(chunk)
                 .setFull(true)
                 .setLast(i == chunks.lastIndex)
                 .setSyncMs(syncMs)
@@ -57,15 +64,16 @@ class ContactsSync(
     }
 
     private suspend fun incremental(since: Long, ackWhenEmpty: Boolean) {
+        val readAt = clock() - 1
         val (rows, deleted) = withContext(io) { source.changedSince(since) to source.deletedSince(since) }
         if (rows.isEmpty() && deleted.isEmpty() && !ackWhenEmpty) return
-        val syncMs = maxOf(since, rows.maxOfOrNull { it.updatedMs } ?: 0L, deleted.maxOfOrNull { it.second } ?: 0L)
-        val upserts = rows.chunked(batchSize)
+        val syncMs = maxOf(since, readAt, rows.maxOfOrNull { it.updatedMs } ?: 0L, deleted.maxOfOrNull { it.second } ?: 0L)
+        val upserts = batches(rows)
         val deletes = deleted.map { it.first }.chunked(batchSize)
         val count = maxOf(upserts.size, deletes.size, 1)
         for (i in 0 until count) {
             val batch = ContactsBatch.newBuilder()
-                .addAllUpserts(upserts.getOrNull(i).orEmpty().map(::toProto))
+                .addAllUpserts(upserts.getOrNull(i).orEmpty())
                 .addAllDeletedIds(deletes.getOrNull(i).orEmpty())
                 .setLast(i == count - 1)
                 .setSyncMs(syncMs)
@@ -73,6 +81,26 @@ class ContactsSync(
             if (!send(MessageType.CONTACTS_BATCH, batch)) return
         }
         lastSyncMs = syncMs
+    }
+
+    /** Converts and groups [rows] so a batch holds at most [batchSize] contacts and about [MAX_BATCH_BYTES]. */
+    private fun batches(rows: List<ContactRow>): List<List<Contact>> {
+        val out = ArrayList<List<Contact>>()
+        var cur = ArrayList<Contact>()
+        var bytes = 0
+        for (row in rows) {
+            val c = toProto(row)
+            val size = c.serializedSize + 8 // field tag and length prefix, with room
+            if (cur.isNotEmpty() && (cur.size >= batchSize || bytes + size > MAX_BATCH_BYTES)) {
+                out += cur
+                cur = ArrayList()
+                bytes = 0
+            }
+            cur += c
+            bytes += size
+        }
+        if (cur.isNotEmpty()) out += cur
+        return out
     }
 
     private fun toProto(row: ContactRow): Contact = Contact.newBuilder()
@@ -84,7 +112,9 @@ class ContactsSync(
         .build()
 
     private companion object {
-        // Keeps a 200-contact batch far under the 1 MiB frame limit whatever the address book holds.
+        // One contact is at most ~20 KB serialized, so a batch (cut at MAX_BATCH_BYTES) stays far
+        // under the 1 MiB frame limit whatever the address book holds.
+        const val MAX_BATCH_BYTES = 512 * 1024
         const val MAX_NAME = 256
         const val MAX_NUMBER = 64
         const val MAX_PHONES = 20

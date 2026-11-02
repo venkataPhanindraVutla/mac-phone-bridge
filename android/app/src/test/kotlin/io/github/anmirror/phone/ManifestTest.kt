@@ -37,6 +37,13 @@ class ManifestTest {
     }
 
     @Test
+    fun shareTargetSurvivesTheUserLeavingWhileFilesOpen() {
+        // noHistory would destroy it on leaving and silently drop a slow share (it now says "not sent").
+        val activity = component("activity", ".share.ShareToMacActivity")
+        assertEquals("", activity.getAttributeNS(android, "noHistory"))
+    }
+
+    @Test
     fun mirrorStopReceiverIsPrivate() {
         assertEquals("false", component("receiver", ".service.MirrorStopReceiver").getAttributeNS(android, "exported"))
     }

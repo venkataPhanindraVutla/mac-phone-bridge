@@ -40,6 +40,14 @@ internal interface DocOps {
     fun delete(id: String)
 }
 
+/**
+ * The ID of a renamed document, or null when the rename failed. [renamedId] is null when the
+ * platform swallowed an exception, so the rename may still have taken effect: it then counts
+ * only if [nameNow] says the document now has [wanted].
+ */
+internal fun idAfterRename(renamedId: String?, id: String, wanted: String, nameNow: (String) -> String?): String? =
+    renamedId ?: id.takeIf { nameNow(it) == wanted }
+
 internal class Placed(val id: String, val name: String)
 
 /**
@@ -108,6 +116,8 @@ internal class DocPaths<D : Any>(
                 } catch (e: FileNotFoundException) {
                     null
                 } catch (e: IllegalArgumentException) {
+                    null
+                } catch (e: SecurityException) { // a cached ID the grant no longer covers
                     null
                 }
                 if (doc == null || nameOf(doc) != segment) {

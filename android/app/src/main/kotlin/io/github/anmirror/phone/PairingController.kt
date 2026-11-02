@@ -7,6 +7,7 @@ import io.github.anmirror.connection.PairingFailure
 import io.github.anmirror.connection.PairingResult
 import io.github.anmirror.protocol.PairingUri
 import io.github.anmirror.protocol.PairingUriException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -128,15 +129,24 @@ class PairingController(
         _state.value = PairingState.Connecting(uri.macName)
         job = scope.launch {
             val switchesFrom = switchedFromName(uri)
-            val result = pair(uri) { code6 ->
-                val d = CompletableDeferred<Boolean>()
-                decision = d
-                _state.value = PairingState.ShowCode(uri.macName, code6, switchesFrom)
-                try {
-                    d.await().also { if (it) _state.value = PairingState.WaitingForMac(uri.macName) }
-                } finally {
-                    decision = null
+            val result = try {
+                pair(uri) { code6 ->
+                    val d = CompletableDeferred<Boolean>()
+                    decision = d
+                    _state.value = PairingState.ShowCode(uri.macName, code6, switchesFrom)
+                    try {
+                        d.await().also { if (it) _state.value = PairingState.WaitingForMac(uri.macName) }
+                    } finally {
+                        decision = null
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Not an IO or protocol failure the client maps itself: do not stay in Connecting/ShowCode.
+                Log.e(TAG, "pairing: unexpected ${e.javaClass.simpleName}")
+                _state.value = PairingState.Failed(PairingFailure.REJECTED)
+                return@launch
             }
             when (result) {
                 is PairingResult.Paired -> withContext(NonCancellable) {

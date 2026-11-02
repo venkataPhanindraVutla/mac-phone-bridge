@@ -238,7 +238,10 @@ which the phone shows as "code expired".
    - Match: Mac sends `pairing.verified`.
    - Mismatch: `system.error BAD_PAIRING_SECRET`.
    - After **3** bad proofs, or when the secret has already been used, or is **5 minutes old**:
-     `system.error PAIRING_EXPIRED`.
+     `system.error PAIRING_EXPIRED`. This reaches only a connection that was accepted while the
+     window was still open (for example one that was already connected when another phone used
+     the secret). A phone that connects after the window closed never gets it: its certificate
+     is refused during the TLS handshake (see above).
 3. Both sides compute and show the **confirmation code**.
 4. Each side sends `pairing.confirm{accepted}` when its user decides. `accepted = false` from
    either side means both show "Pairing cancelled" and the connection closes. Each side waits
@@ -364,7 +367,9 @@ Channel `NOTIFY`. Messages are listed in section 3.
   otherwise. It carries `reply_to` set to the invoke's `id` and an `ActionOutcome`. The Mac does
   not retry.
 - `notify.filter` is sent by the Mac after every connect and on every settings change. The
-  phone sends nothing for muted packages, or for anything at all when `enabled = false`.
+  phone sends no `notify.posted` for muted packages, or at all when `enabled = false`. With
+  `enabled = false` it still sends `notify.removed` for what the Mac already has and, after a
+  connect, an empty `notify.snapshot`, so the Mac drops whatever it still shows.
 - Icons go request to response (`notify.icon_request`, `notify.icon`), once per package per
   Mac cache.
 - `notify.availability` reports whether the feature works on the phone: `enabled` and, when
@@ -382,9 +387,13 @@ Channel `NOTIFY`. Messages are listed in section 3.
 
 Channel `CONTACTS`.
 
-- `ContactsSyncRequest.since_ms` is the phone's `CONTACT_LAST_UPDATED_TIMESTAMP` high-water
-  mark, taken from the `sync_ms` of the last batch the Mac received; `0` asks for a full sync.
-- Batches hold at most 200 contacts. A `full = true` sequence replaces the Mac's whole store
+- `ContactsSyncRequest.since_ms` is the `sync_ms` of the last batch the Mac received; `0` asks
+  for a full sync. `sync_ms` is a phone-clock time at or before which every change was already
+  included: the later of the newest `CONTACT_LAST_UPDATED_TIMESTAMP` or deletion time sent and
+  the phone's clock just before it read the address book. The Mac only echoes it back.
+- Android keeps deletions for about 30 days, so a request whose `since_ms` is older than that
+  gets a full sync (`full = true`) instead of the changes.
+- Batches hold at most 200 contacts and about 512 KB. A `full = true` sequence replaces the Mac's whole store
   when the batch with `last = true` arrives; until then the old store stays in use.
 - While connected, the phone pushes `full = false` batches on change, debounced by 5 s.
   `deleted_ids` lists removed contacts.
@@ -474,7 +483,8 @@ Channel `FILES`. `files.*` messages are the transport for `files.v1`, `browse.v1
   5. Cap at 255 bytes of UTF-8, cutting the stem at a Unicode scalar boundary and keeping an
      extension (the text from the last `.`, dot included) of at most 16 bytes. After any cut,
      strip trailing spaces and dots from the cut stem (or from the whole name when there is no
-     extension), so step 3 still holds.
+     extension). This is the only place trailing dots are removed: a name that needed no cut
+     keeps them.
   6. Collisions are case-insensitive and normalization-insensitive: two names collide when
      `key(name) = lowercase(NFC(name))` is equal, where NFC is Unicode normalization form C and
      `lowercase` is the Unicode default lowercase mapping, independent of locale (Python

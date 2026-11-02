@@ -16,8 +16,14 @@ class RingControllerTest {
         val volumeSets = mutableListOf<Int>()
         override fun volume() = vol
         override fun maxVolume() = max
-        override fun setVolume(v: Int) { vol = v; volumeSets += v }
-        override fun startLoop() { looping = true; startCalls++ }
+        var failStart = false
+        /** setVolume throws once this many calls have been made. */
+        var failVolumeAfter = Int.MAX_VALUE
+        override fun setVolume(v: Int) {
+            if (volumeSets.size >= failVolumeAfter) throw IllegalStateException("volume")
+            vol = v; volumeSets += v
+        }
+        override fun startLoop() { if (failStart) throw IllegalStateException("loop"); looping = true; startCalls++ }
         override fun stopLoop() { looping = false }
     }
 
@@ -79,6 +85,37 @@ class RingControllerTest {
         assertEquals(1, r.notifier.cancelled)
         assertFalse(r.controller.ringing.value)
         assertEquals(false, r.states.last().ringing)
+    }
+
+    @Test
+    fun aRestoreThatThrowsInTheStartFailureStillCancelsAndReports() {
+        val r = Rig(vol = 2)
+        r.audio.failStart = true
+        r.audio.failVolumeAfter = 1 // the first volume change (to max) works, the restore does not
+        r.controller.start() // must not throw
+        assertEquals(1, r.notifier.cancelled)
+        assertFalse(r.controller.ringing.value)
+        assertEquals(false, r.states.last().ringing)
+    }
+
+    @Test
+    fun aFailedVolumeRestoreStillRestoresTheFilterAndKeepsTheSavedState() {
+        val r = Rig(vol = 2, filter = INTERRUPTION_FILTER_NONE)
+        r.audio.failStart = true
+        r.audio.failVolumeAfter = 1
+        r.controller.start()
+        assertEquals(INTERRUPTION_FILTER_NONE, r.dnd.current)
+        assertTrue(r.store.saved != null, "kept, so the next service start can retry the volume")
+    }
+
+    @Test
+    fun stopSurvivesARestoreThatThrows() {
+        val r = Rig(vol = 2)
+        r.controller.start()
+        r.audio.failVolumeAfter = r.audio.volumeSets.size
+        r.controller.stop()
+        assertFalse(r.controller.ringing.value)
+        assertEquals(1, r.notifier.cancelled)
     }
 
     @Test

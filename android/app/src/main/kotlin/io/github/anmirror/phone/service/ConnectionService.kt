@@ -283,10 +283,11 @@ class ConnectionService : LifecycleService() {
         val bridge = graph.notifyBridge
         graph.manager.on(MessageType.NOTIFY_FILTER) { env ->
             val filter = NotificationFilter.parseFrom(env.payload)
+            val connection = graph.manager.state.value as? Connected // the connection this filter arrived on
             graph.postNotifyEvent {
                 bridge.onFilter(filter)
                 // The Mac sends a filter right after connecting (SPEC 10): the first one starts the session.
-                graph.notifySession.filterApplied(graph.listenerBound.value)
+                graph.notifySession.filterApplied(graph.listenerBound.value, connection)
             }
         }
         graph.manager.on(MessageType.NOTIFY_DISMISS) { env ->
@@ -328,7 +329,10 @@ class ConnectionService : LifecycleService() {
                         return@collect
                     }
                     val availability = featureAvailability(granted = access, userOn = on)
-                    if (lastNotifyEnabled == null) graph.postNotifyEvent { graph.notifySession.reset() }
+                    if (lastNotifyEnabled == null) {
+                        val connection = graph.manager.state.value as? Connected
+                        graph.postNotifyEvent { graph.notifySession.reset(connection) }
+                    }
                     graph.manager.send(Channel.CHANNEL_NOTIFY, MessageType.NOTIFY_AVAILABILITY, availability)
                     // Switched on (or access granted) mid-session: catch the Mac up.
                     if (availability.enabled && lastNotifyEnabled == false) {

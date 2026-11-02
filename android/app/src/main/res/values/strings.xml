@@ -150,6 +150,8 @@
     <string name="share_target">Send to Mac</string>
     <!-- Toast when a shared file's size can't be known, so it can't be sent. -->
     <string name="share_file_unreadable">Couldn\'t send %1$s</string>
+    <!-- Toast when the share was closed before the files were opened, so nothing was sent. -->
+    <string name="share_not_sent">Not sent. Share again to retry.</string>
     <plurals name="share_files_unreadable">
         <item quantity="one">Couldn\'t send %1$d file</item>
         <item quantity="other">Couldn\'t send %1$d files</item>

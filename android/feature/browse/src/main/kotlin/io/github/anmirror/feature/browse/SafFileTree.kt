@@ -104,7 +104,8 @@ class SafFileTree(
         if (taken) return@guard exists
         val renamed = DocumentsContract.renameDocument(resolver, docUri(doc.id), newName)
         paths.invalidate(path)
-        val id = renamed?.let(DocumentsContract::getDocumentId) ?: doc.id
+        val id = idAfterRename(renamed?.let(DocumentsContract::getDocumentId), doc.id, newName) { query(it)?.name }
+            ?: return@guard io
         val now = query(id) ?: return@guard io
         TreeResult.Ok(now.toEntry(now.name))
     }
@@ -194,7 +195,8 @@ class SafFileTree(
     private val docOps = object : DocOps {
         override fun rename(id: String, name: String): String {
             val renamed = DocumentsContract.renameDocument(resolver, docUri(id), name)
-            return renamed?.let(DocumentsContract::getDocumentId) ?: id
+            return idAfterRename(renamed?.let(DocumentsContract::getDocumentId), id, name) { query(it)?.name }
+                ?: throw IOException("rename refused")
         }
 
         override fun delete(id: String) {

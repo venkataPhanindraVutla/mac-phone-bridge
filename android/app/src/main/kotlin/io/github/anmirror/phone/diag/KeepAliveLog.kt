@@ -13,6 +13,8 @@ enum class KeepAliveEvent(val code: String) {
     SOCKET_TUNE("socket-tune"), SESSION_END("session-end"),
     /** Full mode setup: stages, error names and port numbers (never the code, never an address). */
     FULL_MODE("full-mode"),
+    /** The phone identity key was generated: `new-key,paired=<count or unreadable>`. */
+    IDENTITY("identity"),
 }
 
 /** `session-end <reason>,matured=<bool>,liveness=<bool>,s=<seconds>` (ConnectionManager's onSessionEnd). */
