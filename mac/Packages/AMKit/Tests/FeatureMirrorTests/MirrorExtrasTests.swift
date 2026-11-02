@@ -79,7 +79,12 @@ private final class ExtrasRig {
         model.linkGrace = .milliseconds(100)
         model.qualityInterval = .seconds(3600)
         if let clock { model.sessionClock = clock.clock }
-        record = { [unowned self] type in log.append((type, control?.mac.bytesSent ?? 0)) }
+        // Weak: the model can outlive the rig (a session's deadline task holds it), and a send after
+        // the test has ended must not touch a freed rig.
+        record = { [weak self] type in
+            guard let self else { return }
+            log.append((type, control?.mac.bytesSent ?? 0))
+        }
     }
 
     func ready(shared: Set<String> = ["mirror.v1"]) async {
@@ -456,8 +461,11 @@ private final class ExtrasRig {
     /// goes at the 200 ms drain deadline, not before and not later.
     @Test func timeoutWithStalledControlLinkWaitsAtMostTheDeadline() async throws {
         let fake = FakeResetClock()
-        // Long enough for the first frame to turn the screen off first, even on a busy machine.
         let rig = ExtrasRig(clock: fake, startDeadline: .seconds(2))
+        // The start deadline passes when the test says, after the first frame has turned the
+        // screen off: a busy runner cannot reorder the two.
+        let sleeps = ManualSleeps()
+        rig.model.startSleep = sleeps.sleep
         rig.model.screenOffByDefault = true
         await rig.ready()
         await rig.model.start()
@@ -468,6 +476,8 @@ private final class ExtrasRig {
         try await videoPhone.send(sampleWithDummyByte)
         try await until("screen off") { rig.model.screenOff }
         let session = try #require(rig.model.session)
+        try await until("the start deadline") { sleeps.pending == 1 }
+        sleeps.fire()
         // The deadline queues the screen-on and waits for it to be written.
         try await until("timed out, waiting") { session.flushesWaitingOrDone == 1 }
         #expect(!rig.model.screenOff)

@@ -55,6 +55,8 @@ public final class PhotosModel: SessionFeature {
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
     @ObservationIgnored private let downloads: URL
     @ObservationIgnored private let requestTimeout: Duration
+    /// How the list and thumbnail-link deadlines wait out `requestTimeout` (a test hook).
+    @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     @ObservationIgnored private let fetchTimeout: Duration
     @ObservationIgnored private let stallTimeout: Duration
 
@@ -159,8 +161,8 @@ public final class PhotosModel: SessionFeature {
         let requestID = engine.nextRequestID()
         let answer = Answer<AMPhotosList>()
         listWaiter = (requestID, answer)
-        let timeout = Task { [requestTimeout] in
-            try? await Task.sleep(for: requestTimeout)
+        let timeout = Task { [requestTimeout, sleep] in
+            try? await sleep(requestTimeout)
             answer.resolve(nil)
         }
         var request = AMPhotosListRequest()
@@ -193,8 +195,8 @@ public final class PhotosModel: SessionFeature {
         thumbs.ids = ids
         thumbs.token = bulk.issue(role: .thumbnails, context: Self.thumbsContext)
         awaitingLink = (gen, wanted)
-        linkTimeout = Task { [weak self, requestTimeout] in
-            try? await Task.sleep(for: requestTimeout)
+        linkTimeout = Task { [weak self, requestTimeout, sleep] in
+            try? await sleep(requestTimeout)
             guard !Task.isCancelled, let self, self.awaitingLink?.generation == gen else { return }
             Self.log.info("thumbnail link did not come")
             self.awaitingLink = nil

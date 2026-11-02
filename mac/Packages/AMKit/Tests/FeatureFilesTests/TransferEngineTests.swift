@@ -20,7 +20,9 @@ func envelope<M: SwiftProtobuf.Message>(_ type: MessageType, _ message: M) -> AM
 }
 
 extension TransferTiming {
-    static let fast = TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .seconds(5),
+    /// No progress throttling, and deadlines a minute off: they only fire in a test that sets
+    /// them short, never because a busy runner was slow between two steps.
+    static let fast = TransferTiming(acceptTimeout: .seconds(60), stallTimeout: .seconds(60),
                                      progressInterval: .zero, freeMargin: 64 << 20)
 }
 
@@ -269,7 +271,7 @@ final class Rig {
 }
 
 @MainActor @Test func acceptTimeoutFailsTimedOut() async throws {
-    let r = Rig(timing: TransferTiming(acceptTimeout: .milliseconds(200), stallTimeout: .seconds(5),
+    let r = Rig(timing: TransferTiming(acceptTimeout: .milliseconds(200), stallTimeout: .seconds(60),
                                        progressInterval: .zero, freeMargin: 0))
     defer { r.cleanUp() }
     await r.connect()
@@ -530,26 +532,30 @@ final class Rig {
 
 @MainActor @Test func requestDeadlinePausesWhileReceiving() async throws {
     let r = Rig(); defer { r.cleanUp() }
+    // The deadline's waits are the test's: it sees each one start, and ends it when it says.
+    let sleeps = ManualSleeps()
+    r.engine.sleep = sleeps.sleep
     await r.connect()
     // A phone send under way: the answer to a request would queue behind it.
     let phone = try await r.startReceive(r.offer("t1", size: 1000))
     let id = r.engine.nextRequestID()
     var result: Result<URL, TransferFailure>?
     r.engine.expect(requestID: id, destination: .folder(r.dir), deadline: .milliseconds(150)) { result = $0 }
-    try await Task.sleep(for: .milliseconds(400))
-    #expect(result == nil, "no countdown while a receive is live")
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(sleeps.requested.isEmpty, "no countdown while a receive is live")
+    #expect(result == nil)
 
     // The receive ends: the request gets a full deadline from now.
     let bytes = randomBytes(1000)
     try await phone.send(bytes)
     await r.complete("t1", sha(bytes))
     try await until("t1 done") { r.item("t1").map { $0.isFinal } == true }
-    let ended = ContinuousClock.now
-    try await Task.sleep(for: .milliseconds(60))
+    try await until("the deadline starts") { sleeps.pending == 1 }
+    #expect(sleeps.requested == [.milliseconds(150)])
     #expect(result == nil)
+    sleeps.fire()
     try await until("deadline") { result != nil }
     #expect(result == .failure(.transfer(.timedOut)))
-    #expect(ContinuousClock.now - ended >= .milliseconds(140))
 }
 
 @MainActor @Test func requestDeadlineIsNotArmedUntilTheQueueDrains() async throws {
@@ -652,7 +658,7 @@ final class Rig {
 }
 
 @MainActor @Test func stalledLinkTimesOut() async throws {
-    let r = Rig(timing: TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .milliseconds(300),
+    let r = Rig(timing: TransferTiming(acceptTimeout: .seconds(60), stallTimeout: .milliseconds(300),
                                        progressInterval: .zero, freeMargin: 0))
     defer { r.cleanUp() }
     // Idle time runs on this clock, which only the test moves: however late a busy runner lets the

@@ -142,8 +142,12 @@ public final class MirrorModel: SessionFeature {
     @ObservationIgnored private let send: @MainActor (MessageType, any SwiftProtobuf.Message & Sendable) async -> Void
     @ObservationIgnored private let makeSink: @MainActor () -> any FrameSink
     @ObservationIgnored private let startDeadline: Duration
+    /// How the start deadline waits out `startDeadline` (a test hook).
+    @ObservationIgnored var startSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// How long a link end waits for the phone's state before it counts as LINK_FAILED (internal, for tests).
     @ObservationIgnored var linkGrace: Duration = .seconds(1)
+    /// How a link end waits out `linkGrace` (a test hook).
+    @ObservationIgnored var graceSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// Whether this Mac decodes Opus (internal, so tests can say it doesn't); AAC otherwise.
     @ObservationIgnored var opusSupported: () -> Bool = { AudioDecoder.supports(.opus) }
     private var sharesMirror = false
@@ -312,8 +316,8 @@ public final class MirrorModel: SessionFeature {
         carriedScreenOff = carryScreenOff
         videoSize = nil
         phase = .starting
-        deadline = Task { [weak self, startDeadline] in
-            try? await Task.sleep(for: startDeadline)
+        deadline = Task { [weak self, startDeadline, startSleep] in
+            try? await startSleep(startDeadline)
             guard !Task.isCancelled, let self, self.sessionID == id, self.phase == .starting else { return }
             await self.stopCurrent(.timeout)
         }
@@ -594,8 +598,8 @@ public final class MirrorModel: SessionFeature {
                 return
             }
             guard linkEnd == nil else { return }
-            linkEnd = Task { [weak self, linkGrace] in
-                try? await Task.sleep(for: linkGrace)
+            linkEnd = Task { [weak self, linkGrace, graceSleep] in
+                try? await graceSleep(linkGrace)
                 guard !Task.isCancelled, let self, self.sessionID == id, self.current != nil else { return }
                 await self.stopCurrent(.phone(.linkFailed))
             }
