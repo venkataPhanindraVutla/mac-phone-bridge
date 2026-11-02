@@ -85,6 +85,7 @@ class ShareToMacActivity : ComponentActivity() {
                 }
             } catch (e: CancellationException) {
                 synchronized(ready) { ready.forEach { it.close() } } // destroyed meanwhile: send nothing
+                toast(getString(R.string.share_not_sent))
                 throw e
             }
             Log.i(TAG, "share: ${ready.size} files queued, ${unreadable.size} unreadable")

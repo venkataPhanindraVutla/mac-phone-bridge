@@ -117,14 +117,14 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
-        <!-- The "Send to Mac" share target: no UI, sends in onCreate and finishes. -->
+        <!-- The "Send to Mac" share target: no UI, sends in onCreate and finishes. Not noHistory:
+             leaving while slow files open would destroy it and drop the share; it says "not sent" instead. -->
         <activity
             android:name=".share.ShareToMacActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
             android:excludeFromRecents="true"
             android:label="@string/share_target"
-            android:noHistory="true"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
