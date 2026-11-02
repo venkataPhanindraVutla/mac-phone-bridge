@@ -36,7 +36,11 @@ import kotlinx.coroutines.withContext
 class ShareToMacActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState != null) return finish() // config changes are handled; a restore has nothing to do
+        if (savedInstanceState != null) {
+            // Config changes are handled, so this is a restore after the process died: the share is lost.
+            toast(getString(R.string.share_not_sent))
+            return finish()
+        }
         val streams = streams(intent)
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         when (val out = ShareClassifier.classify(text, streams.size)) {

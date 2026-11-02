@@ -71,6 +71,17 @@ class NotifySessionTest {
     }
 
     @Test
+    fun aLateResetDoesNotLoseTheResyncWhenTheListenerBindsAfterTheFilter() = runBlocking {
+        var resyncs = 0
+        val s = NotifySession { resyncs++ }
+        val conn = Any()
+        s.filterApplied(listenerBound = false, connection = conn)
+        s.reset(connection = conn) // the late reset for the same connection
+        s.listenerBound()
+        assertEquals(1, resyncs)
+    }
+
+    @Test
     fun aNewConnectionStartsAFreshSession() = runBlocking {
         var resyncs = 0
         val s = NotifySession { resyncs++ }

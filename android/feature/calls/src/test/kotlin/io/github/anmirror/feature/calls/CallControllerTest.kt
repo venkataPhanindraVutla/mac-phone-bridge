@@ -33,9 +33,10 @@ private class FakeActions(
     var answerOk: Boolean = true,
     var endOk: Boolean = true,
     var available: Boolean = true,
+    var availabilityThrows: Boolean = false,
 ) : CallActions {
     val log = mutableListOf<String>()
-    override fun isAvailable() = available
+    override fun isAvailable(): Boolean { if (availabilityThrows) throw IllegalStateException("extras"); return available }
     override fun answer(): Boolean { log += "answer"; return answerOk }
     override fun end(): Boolean { log += "end"; return endOk }
 }
@@ -392,6 +393,12 @@ class CallControllerTest {
         controller.refreshIdentity()
         assertTrue(last.canAnswer)
         assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_OK, controller.onCommand(cmd(last.callId, CallAction.CALL_ACTION_ANSWER)).outcome)
+    }
+
+    @Test fun aThrowWhileCheckingAnswerabilityStillOpensTheCall() = test({ primary.available = false; fallback.availabilityThrows = true }) {
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        assertEquals(CallPhase.CALL_PHASE_RINGING, last.phase)
+        assertFalse(last.canAnswer)
     }
 
     @Test fun canAnswerWithOnlyThePermissionPath() = test({ fallback.available = false }) {

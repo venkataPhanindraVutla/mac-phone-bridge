@@ -41,9 +41,9 @@ internal interface DocOps {
 }
 
 /**
- * The ID of a renamed document, or null when the rename failed. A provider returns the new ID,
- * or null: either "unchanged" or a refusal (API 29+), so null counts only if [nameNow] says the
- * document now has [wanted].
+ * The ID of a renamed document, or null when the rename failed. [renamedId] is null when the
+ * platform swallowed an exception, so the rename may still have taken effect: it then counts
+ * only if [nameNow] says the document now has [wanted].
  */
 internal fun idAfterRename(renamedId: String?, id: String, wanted: String, nameNow: (String) -> String?): String? =
     renamedId ?: id.takeIf { nameNow(it) == wanted }

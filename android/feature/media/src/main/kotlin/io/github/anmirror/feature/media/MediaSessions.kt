@@ -137,7 +137,6 @@ class AndroidMediaSessions(
             if (!watching) return
             watching = false
             listVersion++ // a start() still reading its list must not apply it after this stop
-
             manager?.removeOnActiveSessionsChangedListener(activeListener)
             app.contentResolver.unregisterContentObserver(volumeObserver)
             sessions.also { sessions = emptyList() }

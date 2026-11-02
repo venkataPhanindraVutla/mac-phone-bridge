@@ -233,7 +233,9 @@ class CallController(
     }
 
     /** Answer is offered only when some way to answer exists now: the permission path or the dialer's notification. */
-    private fun canAnswerNow(): Boolean = primary?.isAvailable() == true || fallback.isAvailable()
+    private fun canAnswerNow(): Boolean =
+        // Reading the dialer's notification can throw (unparcelling extras): that must not drop the call.
+        runCatching { primary?.isAvailable() == true || fallback.isAvailable() }.getOrDefault(false)
 
     /** The dialer's notification may appear (or the permission arrive) after the ring began: update the ringing call. */
     private suspend fun refreshAnswerability() {
