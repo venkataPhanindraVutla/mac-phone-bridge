@@ -231,7 +231,7 @@ public final class MirrorSession: @unchecked Sendable {
         audioOutput.stop()
     }
 
-    /// Media packets parsed so far (internal, for tests).
+    /// Media packets parsed and handled (queued for the decoder or dropped) so far (internal, for tests).
     var packetsParsed: Int { lock.withLock { parsed } }
 
     /// Video frames (not config packets) received so far, decoded or not.
@@ -309,7 +309,6 @@ public final class MirrorSession: @unchecked Sendable {
     private func video(_ packet: MediaPacket, codec: ScrcpyCodec) {
         let arrival = clock.now()
         let late: Bool = lock.withLock {
-            parsed += 1
             guard !packet.config else { return false }
             framesReceived += 1
             let lateness = meter.record(pts: packet.pts, arrival: arrival)
@@ -328,6 +327,8 @@ public final class MirrorSession: @unchecked Sendable {
             decoder.dropUntilKeyFrame()
             requestReset()
         }
+        // Counted once the packet is queued or dropped, so a test that waits for the count sees that.
+        lock.withLock { parsed += 1 }
     }
 
     /// Decodes the audio link into `audioOutput`. When the phone sends no audio, audio the Mac
