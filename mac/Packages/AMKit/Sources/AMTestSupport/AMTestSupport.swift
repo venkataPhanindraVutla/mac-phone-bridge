@@ -173,8 +173,10 @@ public struct TimedOut: Error, CustomStringConvertible {
 }
 
 /// Polls `condition` on the main actor until it holds, or throws `TimedOut` after `timeout`.
+/// The bound only matters when the test is failing anyway, so it is generous: on a CI runner every
+/// suite shares one busy main actor, and a step that takes microseconds here can take seconds there.
 @MainActor
-public func until(_ what: String = "condition", timeout: Duration = .seconds(5),
+public func until(_ what: String = "condition", timeout: Duration = .seconds(30),
                   _ condition: @MainActor () -> Bool) async throws {
     let deadline = ContinuousClock.now + timeout
     while !condition() {
