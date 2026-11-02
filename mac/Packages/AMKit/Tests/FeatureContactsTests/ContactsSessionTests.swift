@@ -44,19 +44,20 @@ private final class Rig {
     init() {
         session = ContactsSession(
             enabled: true,
-            open: { [unowned self] id in
-                self.opens += 1
-                let key = self.keys[id] ?? SymmetricKey(size: .bits256)
-                self.keys[id] = key
-                return ContactsStore(file: EncryptedFile(url: self.url(id), key: key))
+            // Weak: a session that outlives the rig must not touch a freed one.
+            open: { [weak self, dir] id in
+                self?.opens += 1
+                let key = self?.keys[id] ?? SymmetricKey(size: .bits256)
+                self?.keys[id] = key
+                return ContactsStore(file: EncryptedFile(url: ContactsStore.fileURL(phoneID: id, in: dir), key: key))
             },
-            remove: { [unowned self] id in
-                self.removed.append(id)
-                try? FileManager.default.removeItem(at: self.url(id))
-                self.keys[id] = nil
+            remove: { [weak self, dir] id in
+                self?.removed.append(id)
+                try? FileManager.default.removeItem(at: ContactsStore.fileURL(phoneID: id, in: dir))
+                self?.keys[id] = nil
             },
-            pairedPhoneIDs: { [unowned self] in self.paired },
-            requestSync: { [unowned self] since in self.syncs.append(since) })
+            pairedPhoneIDs: { [weak self] in self?.paired ?? [] },
+            requestSync: { [weak self] since in self?.syncs.append(since) })
     }
 
     func url(_ id: String) -> URL { ContactsStore.fileURL(phoneID: id, in: dir) }

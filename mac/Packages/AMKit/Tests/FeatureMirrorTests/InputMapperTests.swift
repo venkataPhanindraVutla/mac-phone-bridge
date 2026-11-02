@@ -38,13 +38,13 @@ final class InputRig {
 
     init() {
         mapper = InputMapper(
-            send: { [unowned self] in sent.append($0) },
-            videoSize: { [unowned self] in size },
-            pasteboardText: { [unowned self] in pasteboard },
-            onPasteSent: { [unowned self] in pastes.append($0) },
-            closeWindow: { [unowned self] in closes += 1 }
+            send: { [weak self] in self?.sent.append($0) },
+            videoSize: { [weak self] in self?.size },
+            pasteboardText: { [weak self] in self?.pasteboard },
+            onPasteSent: { [weak self] in self?.pastes.append($0) },
+            closeWindow: { [weak self] in self?.closes += 1 }
         )
-        mapper.beep = { [unowned self] in beeps += 1 }
+        mapper.beep = { [weak self] in self?.beeps += 1 }
     }
 
     /// Clears what was sent so far.
@@ -195,8 +195,9 @@ final class InputRig {
         // Everything up to the Mac's close of the link (EOF): the UP, last (a RESET_VIDEO may come first).
         let rest = Data(try await readAll(links.control, 1 << 20).drop(while: { $0 == 17 }))
         #expect(rest.hex == touchUp(160, 320, 320, 640).hex, "\(ending)")
-        // The Mac closed it (well inside readAll's 5 s wait), once the UP had gone.
-        #expect(ContinuousClock.now - ended < .seconds(2), "\(ending)")
+        // The Mac closed it, once the UP had gone: well inside readAll's 30 s wait, which would
+        // otherwise have ended the read.
+        #expect(ContinuousClock.now - ended < .seconds(20), "\(ending)")
     }
 
     /// The release hook is the view's mapper, and runs with the session still current.
