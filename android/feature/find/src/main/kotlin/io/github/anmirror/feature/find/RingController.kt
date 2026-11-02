@@ -62,7 +62,7 @@ class RingController(
             } catch (e: Exception) {
                 // Half-started: put everything back and report not ringing.
                 runCatching { audio.stopLoop() }
-                runCatching { restore() }
+                restore()
                 runCatching { notifier.cancel() }
                 maySilent = false
                 _ringing.value = false
@@ -104,11 +104,16 @@ class RingController(
         }
     }
 
+    /**
+     * Puts the volume and the filter back, each step on its own: one failing must not skip the
+     * other. The saved state is cleared only when both worked, so [restoreLeftover] retries
+     * the rest on the next service start. Never throws.
+     */
     private fun restore() {
-        audio.setVolume(savedVolume)
-        restoreFilter(savedFilter)
+        val volumeBack = runCatching { audio.setVolume(savedVolume) }.isSuccess
+        val filterBack = runCatching { restoreFilter(savedFilter) }.isSuccess
         savedFilter = null
-        store.clear()
+        if (volumeBack && filterBack) runCatching { store.clear() }
     }
 
     // Only if it is still our ALARMS: a change the user made meanwhile stays.

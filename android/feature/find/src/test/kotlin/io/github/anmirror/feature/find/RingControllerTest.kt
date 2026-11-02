@@ -99,6 +99,26 @@ class RingControllerTest {
     }
 
     @Test
+    fun aFailedVolumeRestoreStillRestoresTheFilterAndKeepsTheSavedState() {
+        val r = Rig(vol = 2, filter = INTERRUPTION_FILTER_NONE)
+        r.audio.failStart = true
+        r.audio.failVolumeAfter = 1
+        r.controller.start()
+        assertEquals(INTERRUPTION_FILTER_NONE, r.dnd.current)
+        assertTrue(r.store.saved != null, "kept, so the next service start can retry the volume")
+    }
+
+    @Test
+    fun stopSurvivesARestoreThatThrows() {
+        val r = Rig(vol = 2)
+        r.controller.start()
+        r.audio.failVolumeAfter = r.audio.volumeSets.size
+        r.controller.stop()
+        assertFalse(r.controller.ringing.value)
+        assertEquals(1, r.notifier.cancelled)
+    }
+
+    @Test
     fun startTwiceIsIdempotent() {
         val r = Rig(vol = 2)
         r.controller.start()
