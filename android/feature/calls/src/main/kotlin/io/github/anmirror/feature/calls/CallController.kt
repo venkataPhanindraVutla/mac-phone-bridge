@@ -171,6 +171,7 @@ class CallController(
 
     private suspend fun handle(e: Event) {
         if (e.phase == null) {
+            refreshAnswerability()
             refreshIdentity(null)
             publish()
             return
@@ -179,7 +180,7 @@ class CallController(
         lastPhase = e.phase
         when (e.phase) {
             TelephonyPhase.RINGING -> when (prev) {
-                TelephonyPhase.IDLE -> open(incoming = true, e.number, canAnswer = true, active = false)
+                TelephonyPhase.IDLE -> open(incoming = true, e.number, canAnswer = canAnswerNow(), active = false)
                 TelephonyPhase.OFFHOOK -> open(incoming = true, e.number, canAnswer = false, active = false).waiting = true
                 TelephonyPhase.RINGING -> Unit
             }
@@ -229,6 +230,19 @@ class CallController(
         calls += call
         send(MessageType.CALLS_STATE, call.toState())
         return call
+    }
+
+    /** Answer is offered only when some way to answer exists now: the permission path or the dialer's notification. */
+    private fun canAnswerNow(): Boolean = primary?.isAvailable() == true || fallback.isAvailable()
+
+    /** The dialer's notification may appear (or the permission arrive) after the ring began: update the ringing call. */
+    private suspend fun refreshAnswerability() {
+        val can = canAnswerNow()
+        for (call in calls) {
+            if (call.phase != CallPhase.CALL_PHASE_RINGING || call.waiting || !call.incoming || call.canAnswer == can) continue
+            call.canAnswer = can
+            send(MessageType.CALLS_STATE, call.toState())
+        }
     }
 
     /** Mute can be offered when the microphone state can be read at all. */

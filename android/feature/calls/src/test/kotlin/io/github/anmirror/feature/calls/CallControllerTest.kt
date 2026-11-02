@@ -379,5 +379,25 @@ class CallControllerTest {
         assertEquals(1, states.map { it.callId }.distinct().size)
     }
 
+    @Test fun cannotAnswerWhenNothingCanAnswer() = test({ primary.available = false; fallback.available = false }) {
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        assertFalse(last.canAnswer)
+        assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_NOT_ALLOWED, controller.onCommand(cmd(last.callId, CallAction.CALL_ACTION_ANSWER)).outcome)
+    }
+
+    @Test fun canAnswerTurnsOnWhenTheDialerNotificationAppears() = test({ primary.available = false; fallback.available = false }) {
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        assertFalse(last.canAnswer)
+        fallback.available = true // the dialer's CallStyle notification was posted
+        controller.refreshIdentity()
+        assertTrue(last.canAnswer)
+        assertEquals(CallCommandOutcome.CALL_COMMAND_OUTCOME_OK, controller.onCommand(cmd(last.callId, CallAction.CALL_ACTION_ANSWER)).outcome)
+    }
+
+    @Test fun canAnswerWithOnlyThePermissionPath() = test({ fallback.available = false }) {
+        source.emit(TelephonyPhase.RINGING, "+911234")
+        assertTrue(last.canAnswer)
+    }
+
     private fun assertNotEqualsId(a: String, b: String) = assertTrue(a != b)
 }
