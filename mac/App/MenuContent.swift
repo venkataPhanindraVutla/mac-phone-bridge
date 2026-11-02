@@ -20,7 +20,7 @@ struct MenuContent: View {
             Text(model.statusText)
         }
         if let error = model.startupError {
-            Text("Can't start: \(error)")
+            Text(error)
         }
 
         // Feature items (phone status, Ring phone) are added to this section.

@@ -78,17 +78,6 @@
         }
       }
     },
-    "Can't start: %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Can't start: %@"
-          }
-        }
-      }
-    },
     "Pair a phone…": {
       "extractionState": "manual",
       "localizations": {
@@ -2891,6 +2880,138 @@
           "stringUnit": {
             "state": "translated",
             "value": "The test screen didn't open on the phone."
+          }
+        }
+      }
+    },
+    "Couldn't answer on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't answer on the phone."
+          }
+        }
+      }
+    },
+    "Couldn't decline on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't decline on the phone."
+          }
+        }
+      }
+    },
+    "Couldn't do that on the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't do that on the phone."
+          }
+        }
+      }
+    },
+    "Couldn't load photos from the phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load photos from the phone."
+          }
+        }
+      }
+    },
+    "pairing.error.timedOut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Time ran out before you confirmed. Show a new code."
+          }
+        }
+      }
+    },
+    "startup.error.keychain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't start: allow Keychain access and reopen the app."
+          }
+        }
+      }
+    },
+    "startup.error.generic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't start. Quit and reopen the app."
+          }
+        }
+      }
+    },
+    "startup.error.listener": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't listen for phones. Check your network and reopen the app."
+          }
+        }
+      }
+    },
+    "%@ connects when %@ disconnects.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ connects when %@ disconnects."
+          }
+        }
+      }
+    },
+    "Couldn't forget %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't forget %@."
+          }
+        }
+      }
+    },
+    "It is still paired. Try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It is still paired. Try again."
+          }
+        }
+      }
+    },
+    "OK": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
           }
         }
       }

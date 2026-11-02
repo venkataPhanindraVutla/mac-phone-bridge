@@ -22,6 +22,7 @@ import FeatureStatus
 import Foundation
 import Observation
 import os
+import SystemConfiguration
 
 /// Owns the connection and the feature models. Feature models (phone status, ring) are added
 /// here next to `server`; the views only read this object.
@@ -75,7 +76,12 @@ final class AppModel {
     /// Set when pairing finished; shown by the pairing window.
     private(set) var pairedName: String?
     private(set) var pairingFailure: LocalizedStringResource?
-    private(set) var startupError: String?
+    private(set) var startupError: LocalizedStringResource?
+    /// The phone that was just paired has to wait for this one (named) to disconnect.
+    private(set) var pairedWaitsFor: String?
+    /// The saved port stayed busy and a start on any free port was tried; set again only after a start worked.
+    @ObservationIgnored private var triedAnyPort = false
+    @ObservationIgnored private var didShutDown = false
 
     @ObservationIgnored private let phoneStore: any PairedPhoneStore
     @ObservationIgnored private let screenshotFolders: (desktop: URL, downloads: URL, temp: URL)
@@ -146,7 +152,7 @@ final class AppModel {
             identity: KeychainIdentityProvider(),
             phones: store,
             secrets: KeychainSecretStore(),
-            macName: Host.current().localizedName ?? "Mac",
+            macName: Self.computerName(),
             appVersion: version,
             capabilities: Self.capabilities
         )
@@ -706,6 +712,7 @@ final class AppModel {
     func startPairing() -> PairingURI? {
         guard server.isListening else { return nil }
         pairedName = nil
+        pairedWaitsFor = nil
         pairingFailure = nil
         let uri = server.beginPairing()
         pairingDeadline = Date().addingTimeInterval(Self.pairingLifetime)
@@ -737,7 +744,17 @@ final class AppModel {
         alert.addButton(withTitle: String(localized: "Forget"))
         alert.addButton(withTitle: String(localized: "Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task { await server.forget(phoneID: phone.id) }
+        Task {
+            if await server.forget(phoneID: phone.id) { return }
+            // The paired list could not be saved: the phone is still paired.
+            NSApp.activate(ignoringOtherApps: true)
+            let failed = NSAlert()
+            failed.messageText = String(localized: "Couldn't forget \(phone.name).")
+            failed.informativeText = String(localized: "It is still paired. Try again.")
+            failed.alertStyle = .warning
+            failed.addButton(withTitle: String(localized: "OK"))
+            failed.runModal()
+        }
     }
 
     // MARK: server
@@ -747,13 +764,24 @@ final class AppModel {
     /// Transfers end here, not through the session's work queue (it never drains while the app
     /// terminates), so a receive under way leaves no part file behind.
     func shutdown() {
+        guard !didShutDown else { return }
+        didShutDown = true
         // A button the phone holds is let go, and the laser hidden, before the process ends.
         input.shutdown()
-        let hadPhone = server.activePhone != nil
         server.stop()
         transfers.shutdown()
         bulk.stop()
-        if hadPhone { Thread.sleep(forTimeInterval: 0.25) }
+    }
+
+    /// Quit with a phone connected: shuts down, then waits (briefly) for its goodbye to reach the network.
+    func shutdownAndFlush() async {
+        shutdown()
+        await server.waitForFlush(timeout: .seconds(1))
+    }
+
+    /// The Mac's name from System Settings. `Host.current().localizedName` can block on DNS.
+    private static func computerName() -> String {
+        (SCDynamicStoreCopyComputerName(nil, nil) as String?).flatMap { $0.isEmpty ? nil : $0 } ?? "Mac"
     }
 
     private func start() {
@@ -761,7 +789,7 @@ final class AppModel {
         do {
             try server.start(port: UInt16(exactly: saved))
         } catch {
-            startupError = String(describing: error)
+            startupError = StartupCopy.message(for: error)
         }
         do {
             try bulk.start()
@@ -802,15 +830,23 @@ final class AppModel {
         switch event {
         case let .listening(port):
             UserDefaults.standard.set(Int(port), forKey: Self.portKey)
+            triedAnyPort = false
+            startupError = nil
             #if DEBUG
             if ProcessInfo.processInfo.environment["AM_DEBUG_BEGIN_PAIRING"] == "1", pairingDeadline == nil {
                 startPairing()
             }
             #endif
         case .listenerFailed:
-            // The remembered port stayed busy; use any free one from now on.
-            UserDefaults.standard.removeObject(forKey: Self.portKey)
-            try? server.start(port: 0)
+            if triedAnyPort {
+                // Any free port failed too: say so instead of trying again and again.
+                startupError = StartupCopy.listener
+            } else {
+                // The remembered port stayed busy; use any free one from now on (tried once).
+                triedAnyPort = true
+                UserDefaults.standard.removeObject(forKey: Self.portKey)
+                do { try server.start(port: 0) } catch { startupError = StartupCopy.message(for: error) }
+            }
         case let .pairingCode(code):
             #if DEBUG
             Self.log.info("pairing code: \(code, privacy: .public)")
@@ -819,6 +855,8 @@ final class AppModel {
             #endif
         case let .paired(phone):
             pairedName = phone.name
+            // A phone already connected keeps the Mac; the new one gets BUSY until it disconnects.
+            if let current = server.activePhone?.phone, current.id != phone.id { pairedWaitsFor = current.name } else { pairedWaitsFor = nil }
             pairingDeadline = nil
             refreshPhones()
         case let .connected(phone, shared):
@@ -851,7 +889,9 @@ final class AppModel {
             refreshPhones()
         case let .rejected(reason):
             switch reason {
-            case .pairingCancelled, .pairingRejected, .pairingTimedOut:
+            case .pairingTimedOut:
+                if pairingDeadline != nil { pairingFailure = PairingCopy.confirmationTimedOut }
+            case .pairingCancelled, .pairingRejected:
                 if pairingDeadline != nil { pairingFailure = PairingCopy.message(for: .pairingRejected) }
             case .pairingExpired:
                 if pairingDeadline != nil { pairingFailure = PairingCopy.message(for: .pairingExpired) }

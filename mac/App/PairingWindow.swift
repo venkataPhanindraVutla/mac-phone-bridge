@@ -101,6 +101,11 @@ struct PairingWindow: View {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 40)).foregroundStyle(.green)
                 .accessibilityHidden(true)
             Text("Paired with \(name)").font(.headline)
+            if let current = model.pairedWaitsFor {
+                Text("\(name) connects when \(current) disconnects.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel(Text("Done"))
@@ -130,13 +135,26 @@ struct PairingWindow: View {
 private struct HostWindowReader: NSViewRepresentable {
     let onChange: (NSWindow?) -> Void
 
+    /// Reports its window the moment it is attached or detached, so a hide-close never misses it.
+    private final class WindowView: NSView {
+        var onChange: (NSWindow?) -> Void = { _ in }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = window
+            // Not inside the view update that may have caused this.
+            let report = onChange
+            DispatchQueue.main.async { report(window) }
+        }
+    }
+
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { [weak view] in onChange(view?.window) }
+        let view = WindowView()
+        view.onChange = onChange
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { [weak view] in onChange(view?.window) }
+        (view as? WindowView)?.onChange = onChange
     }
 }

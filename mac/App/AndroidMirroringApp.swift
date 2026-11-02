@@ -49,6 +49,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// With a phone connected, quitting waits (briefly) for the goodbye to reach the network.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard model.server.activePhone != nil else { return .terminateNow }
+        Task { @MainActor in
+            await model.shutdownAndFlush()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }

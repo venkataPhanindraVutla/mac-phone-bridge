@@ -30,3 +30,30 @@ public enum PairingCopy {
         }
     }
 }
+
+extension PairingCopy {
+    /// The 60 s confirmation window ran out before the user pressed Confirm (not a refusal).
+    public static var confirmationTimedOut: LocalizedStringResource {
+        LocalizedStringResource("pairing.error.timedOut",
+            defaultValue: "Time ran out before you confirmed. Show a new code.", bundle: .main)
+    }
+}
+
+/// User-facing text for a server that could not start (the menu's first line).
+public enum StartupCopy {
+    public static func message(for error: any Error) -> LocalizedStringResource {
+        // errSecUserCanceled (Deny on the Keychain prompt), errSecAuthFailed, errSecInteractionNotAllowed.
+        if case let IdentityError.keychain(status) = error, [-128, -25293, -25308].contains(status) {
+            return LocalizedStringResource("startup.error.keychain",
+                defaultValue: "Can't start: allow Keychain access and reopen the app.", bundle: .main)
+        }
+        return LocalizedStringResource("startup.error.generic",
+            defaultValue: "Can't start. Quit and reopen the app.", bundle: .main)
+    }
+
+    /// No listener could be opened, even on any free port.
+    public static var listener: LocalizedStringResource {
+        LocalizedStringResource("startup.error.listener",
+            defaultValue: "Can't listen for phones. Check your network and reopen the app.", bundle: .main)
+    }
+}
