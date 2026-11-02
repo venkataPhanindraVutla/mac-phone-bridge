@@ -27,6 +27,8 @@ public protocol ShortcutRunner: Sendable {
 public struct SystemShortcuts: ShortcutRunner {
     let tool: URL
     let timeout: Duration
+    /// How long a tool that ignores SIGTERM gets before SIGKILL (a test hook).
+    var killAfter: Duration = .seconds(1)
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "focus")
 
     public init(tool: URL = URL(fileURLWithPath: "/usr/bin/shortcuts"), timeout: Duration = .seconds(10)) {
@@ -35,7 +37,7 @@ public struct SystemShortcuts: ShortcutRunner {
     }
 
     public func list() async -> [String]? {
-        let (end, output) = await Self.execute(tool, ["list"], timeout: timeout).result
+        let (end, output) = await Self.execute(tool, ["list"], timeout: timeout, killAfter: killAfter).result
         switch end {
         case .exited(0):
             let names = String(decoding: output, as: UTF8.self)
@@ -57,7 +59,7 @@ public struct SystemShortcuts: ShortcutRunner {
     }
 
     public func run(_ name: String) async -> ShortcutRunResult {
-        let (end, _) = await Self.execute(tool, ["run", name], timeout: timeout).result
+        let (end, _) = await Self.execute(tool, ["run", name], timeout: timeout, killAfter: killAfter).result
         switch end {
         case .exited(0):
             Self.log.info("shortcuts run exit 0")
@@ -85,8 +87,9 @@ public struct SystemShortcuts: ShortcutRunner {
     }
 
     /// Runs the tool to its end: it exited and its stdout reached end of file, or `timeout` passed.
-    /// Past the timeout it is terminated, then killed a second later if it is still there.
-    static func execute(_ tool: URL, _ arguments: [String], timeout: Duration) async -> Outcome {
+    /// Past the timeout it is terminated, then killed `killAfter` later if it is still there.
+    static func execute(_ tool: URL, _ arguments: [String], timeout: Duration,
+                        killAfter: Duration = .seconds(1)) async -> Outcome {
         let process = Process()
         process.executableURL = tool
         process.arguments = arguments
@@ -120,7 +123,7 @@ public struct SystemShortcuts: ShortcutRunner {
                 try? await Task.sleep(for: timeout)
                 guard !Task.isCancelled, state.timeOut() else { return }
                 kill(pid, SIGTERM)
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: killAfter)
                 if state.stillRunning { kill(pid, SIGKILL) }
             }
         }

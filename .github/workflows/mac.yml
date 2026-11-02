@@ -45,8 +45,33 @@ jobs:
         run: scripts/gen-proto.sh --check
       - name: Check protocol vectors
         run: python3 -I protocol/tools/make_vectors.py --check
-      - name: Swift tests
-        run: swift test --force-resolved-versions --package-path mac/Packages/AMKit
+      - name: Build Swift tests
+        run: swift build --build-tests --force-resolved-versions --package-path mac/Packages/AMKit
+      - name: Swift tests (one test target per process)
+        # Swift 6.3 links every test target into one bundle, and `swift test` would run all ~900
+        # tests at once in one process, sharing one main actor on the runner's 3 vCPUs. Run each
+        # target on its own instead, as Swift 6.4 does locally (one bundle per target); within a
+        # target the tests still run in parallel. A hang fails the step in minutes, and the log
+        # names the target that was running.
+        timeout-minutes: 20
+        run: |
+          pkg=mac/Packages/AMKit
+          targets="$(swift package --package-path "$pkg" dump-package | python3 -I -c '
+          import json, sys
+          print("\n".join(t["name"] for t in json.load(sys.stdin)["targets"] if t["type"] == "test"))')"
+          if [ -z "$targets" ]; then echo "No test targets found in $pkg/Package.swift" >&2; exit 1; fi
+          failed=""
+          for target in $targets; do
+            echo "== Running test target $target ($(date -u +%H:%M:%S) UTC)"
+            if ! swift test --skip-build --force-resolved-versions --package-path "$pkg" --filter "^$target\."; then
+              failed="$failed $target"
+            fi
+            echo "== Finished test target $target ($(date -u +%H:%M:%S) UTC)"
+          done
+          if [ -n "$failed" ]; then
+            echo "Failed test targets:$failed" >&2
+            exit 1
+          fi
       - name: Generate Xcode project
         run: |
           xcodegen --spec mac/project.yml --project mac

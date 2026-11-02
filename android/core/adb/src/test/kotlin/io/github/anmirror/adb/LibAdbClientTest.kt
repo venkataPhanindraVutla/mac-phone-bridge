@@ -80,7 +80,7 @@ class LibAdbClientTest {
     }
 
     private fun awaitCloses(n: Int) {
-        val until = System.currentTimeMillis() + 3_000
+        val until = System.currentTimeMillis() + 30_000
         while (closes.get() < n && System.currentTimeMillis() < until) Thread.sleep(10)
         assertEquals(n, closes.get(), "pairing context closes")
     }
@@ -108,9 +108,10 @@ class LibAdbClientTest {
         val port = server { c -> c.getInputStream().read(ByteArray(4096)) } // reads the hello, never answers
         val started = System.currentTimeMillis()
         // Bounded, so a regression fails here instead of hanging the suite.
-        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { client(timeoutMs = 500).pair("127.0.0.1", port, "482916") } }
+        withTimeout(30_000) { assertFailsWith<SocketTimeoutException> { client(timeoutMs = 500).pair("127.0.0.1", port, "482916") } }
         val took = System.currentTimeMillis() - started
-        assertTrue(took < 2_000, "took $took ms")
+        // At the 500 ms limit, not a hang: loose above, so a slow runner cannot trip it.
+        assertTrue(took in 450..20_000, "took $took ms")
         // The abandoned attempt ends when the peer goes, and closes its context there, once.
         assertEquals(0, closes.get())
         synchronized(accepted) { accepted.forEach { it.close() } }
@@ -127,10 +128,11 @@ class LibAdbClientTest {
     fun connectToSilentServerTimesOutWithinTheLimit() = runBlocking {
         val port = server { c -> c.getInputStream().read(ByteArray(4096)) }
         val started = System.currentTimeMillis()
-        val e = withTimeout(5_000) { assertFailsWith<IOException> { client(timeoutMs = 500).connect("127.0.0.1", port) } }
+        val e = withTimeout(30_000) { assertFailsWith<IOException> { client(timeoutMs = 500).connect("127.0.0.1", port) } }
         val took = System.currentTimeMillis() - started
         assertTrue(e is SocketTimeoutException, e.toString())
-        assertTrue(took < 4_000, "took $took ms")
+        // At the 500 ms limit, not a hang: loose above, so a slow runner cannot trip it.
+        assertTrue(took in 450..20_000, "took $took ms")
     }
 
     @Test
@@ -148,9 +150,9 @@ class LibAdbClientTest {
             release.await() // build() is still running when the connect is given up
             real(host, p)
         }
-        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { c.connect("127.0.0.1", port) } }
+        withTimeout(30_000) { assertFailsWith<SocketTimeoutException> { c.connect("127.0.0.1", port) } }
         release.countDown()
-        assertTrue(ended.await(3, TimeUnit.SECONDS), "the late connection was not closed")
+        assertTrue(ended.await(30, TimeUnit.SECONDS), "the late connection was not closed")
         // Both sockets closed without a byte: the late connection never sent CNXN, and isn't tracked.
         assertEquals(listOf(-1, -1), firstReads.toList())
         assertFalse(c.isConnected)
@@ -163,7 +165,8 @@ class LibAdbClientTest {
             c.getInputStream().read(ByteArray(64)) // returns once we close
             ended.countDown()
         }
-        val c = LibAdbClient(identity, sdk = 30, proof = proof, timeoutMs = 2_000, openTimeoutMs = 300)
+        // The open's own 300 ms limit, far from the connection's 20 s one: the test tells them apart.
+        val c = LibAdbClient(identity, sdk = 30, proof = proof, timeoutMs = 20_000, openTimeoutMs = 300)
         LibAdbTls.useContext(jvmTls())
         c.useConnection(c.buildConnection("127.0.0.1", port))
         val gate = CountDownLatch(1)
@@ -172,11 +175,11 @@ class LibAdbClientTest {
             error("unreachable")
         }
         val started = System.currentTimeMillis()
-        withTimeout(5_000) { assertFailsWith<SocketTimeoutException> { c.open("localabstract:scrcpy_0a1b2c3d") } }
+        withTimeout(30_000) { assertFailsWith<SocketTimeoutException> { c.open("localabstract:scrcpy_0a1b2c3d") } }
         val took = System.currentTimeMillis() - started
-        assertTrue(took < 2_000, "took $took ms")
+        assertTrue(took < 10_000, "took $took ms")
         // The connection was closed and forgotten: later opens fail at once instead of waiting.
-        assertTrue(ended.await(3, TimeUnit.SECONDS), "the silent connection was not closed")
+        assertTrue(ended.await(30, TimeUnit.SECONDS), "the silent connection was not closed")
         assertFailsWith<IOException> { c.open("shell:true") }
         gate.countDown()
     }
@@ -237,9 +240,11 @@ class LibAdbClientTest {
             }
         }
         val c = client()
-        withTimeout(5_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", peer.port) } }
+        withTimeout(30_000) { assertFailsWith<AdbPeerProofException> { c.connect("127.0.0.1", peer.port) } }
         assertFalse(c.isConnected)
-        Thread.sleep(600)
+        // Wait for the late broadcast itself rather than a fixed time: a slow runner can hold it back.
+        val until = System.currentTimeMillis() + 30_000
+        while (synchronized(late) { late.isEmpty() } && System.currentTimeMillis() < until) Thread.sleep(10)
         assertEquals(listOf(false), synchronized(late) { late.toList() }, "the late broadcast completed nothing")
     }
 

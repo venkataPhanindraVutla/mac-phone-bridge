@@ -55,12 +55,12 @@ final class Harness {
         icons = IconCache(directory: dir.appendingPathComponent("icons"))
         model = NotificationsModel(
             presenter: presenter, icons: icons,
-            load: { [unowned self] in self.stored[$0] ?? NotifySettings() },
-            save: { [unowned self] in self.stored[$0] = $1 },
-            copy: { [unowned self] in self.copied.append($0) },
-            nameFor: { [unowned self] in self.contacts[$0] },
+            load: { [weak self] in self?.stored[$0] ?? NotifySettings() },
+            save: { [weak self] in self?.stored[$0] = $1 },
+            copy: { [weak self] in self?.copied.append($0) },
+            nameFor: { [weak self] in self?.contacts[$0] },
             attachmentDirectory: dir.appendingPathComponent("att"),
-            send: { [unowned self] type, message in self.sent.append((type, message)) })
+            send: { [weak self] type, message in self?.sent.append((type, message)) })
     }
 
     /// Connects and lets the (separate) permission request finish.

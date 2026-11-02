@@ -171,28 +171,36 @@ import Testing
 
     /// A frame VideoToolbox can't decode: counted, the key frame hook fires, and frames are
     /// skipped until the next key frame.
+    ///
+    /// On a loaded machine (every suite in one process) VideoToolbox has once failed a good frame
+    /// too; the decoder then rightly skips again, to a key frame this sample does not have. Such a
+    /// run proves nothing either way, so it is tried again, at most three times.
     @Test func decodeErrorSkipsToTheNextKeyFrameAndAsksForOne() async throws {
-        let sink = CountingSink()
-        let pts = Recorder<UInt64>()
-        let needed = Recorder<Bool>()
-        let decoder = VideoDecoder(sink: sink, onFrame: { pts.append($0) })
-        decoder.onKeyFrameNeeded = { needed.append(true) }
-        defer { decoder.invalidate() }
-        // Config and key frame 0, then a frame whose slice data is garbage.
-        decoder.decode(samplePackets[0], codec: .h264)
-        decoder.decode(samplePackets[1], codec: .h264)
-        try await until("frame 0") { pts.count == 1 }
-        var garbage = Data([0, 0, 0, 1, 0x41])
-        garbage.append(Data(repeating: 0xFF, count: 64))
-        decoder.decode(MediaPacket(config: false, key: false, pts: 1, payload: garbage), codec: .h264)
-        try await until("the error") { decoder.decodeErrors == 1 }
-        #expect(needed.count == 1)
-        // Frames 1...29 are skipped; key frame 30 and the rest decode.
-        for p in samplePackets[2...60] { decoder.decode(p, codec: .h264) }
-        try await until("frames 30...59") { pts.count == 31 }
-        try await until("backlog drained") { decoder.backlog == 0 }
-        #expect(Array(pts.all.dropFirst()) == (30..<60).map { UInt64($0) * 16_667 })
-        #expect(decoder.decodeErrors == 1)
+        for attempt in 1...3 {
+            let sink = CountingSink()
+            let pts = Recorder<UInt64>()
+            let needed = Recorder<Bool>()
+            let decoder = VideoDecoder(sink: sink, onFrame: { pts.append($0) })
+            decoder.onKeyFrameNeeded = { needed.append(true) }
+            defer { decoder.invalidate() }
+            // Config and key frame 0, then a frame whose slice data is garbage.
+            decoder.decode(samplePackets[0], codec: .h264)
+            decoder.decode(samplePackets[1], codec: .h264)
+            try await until("frame 0") { pts.count == 1 }
+            var garbage = Data([0, 0, 0, 1, 0x41])
+            garbage.append(Data(repeating: 0xFF, count: 64))
+            decoder.decode(MediaPacket(config: false, key: false, pts: 1, payload: garbage), codec: .h264)
+            try await until("the error") { decoder.decodeErrors == 1 }
+            #expect(needed.count == 1)
+            // Frames 1...29 are skipped; key frame 30 and the rest decode.
+            for p in samplePackets[2...60] { decoder.decode(p, codec: .h264) }
+            try await until("backlog drained") { decoder.backlog == 0 }
+            try await until("frames 30...59, or another error") { pts.count == 31 || decoder.decodeErrors > 1 }
+            if decoder.decodeErrors > 1, attempt < 3 { continue }
+            #expect(Array(pts.all.dropFirst()) == (30..<60).map { UInt64($0) * 16_667 })
+            #expect(decoder.decodeErrors == 1)
+            return
+        }
     }
 
     nonisolated private static func name(_ e: MirrorSessionEvent) -> String {

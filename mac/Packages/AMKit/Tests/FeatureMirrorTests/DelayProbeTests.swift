@@ -143,7 +143,7 @@ private final class FakeScreen {
     func run(trials: Int, timeout: Duration = .seconds(3), pause: Duration = .zero,
              settle: Duration = .milliseconds(30), markerTimeout: Duration = .seconds(2)) async -> DelayResult {
         let stream = frames.stream
-        let probe = DelayProbe(tap: { [unowned self] in tap($0) }, frames: { stream }, trials: trials, timeout: timeout, pause: pause)
+        let probe = DelayProbe(tap: { [weak self] in self?.tap($0) }, frames: { stream }, trials: trials, timeout: timeout, pause: pause)
         probe.settle = settle
         probe.markerTimeout = markerTimeout
         probe.clock = clock.delayClock

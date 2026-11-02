@@ -254,7 +254,8 @@ private func connectOn(_ model: ClipboardModel, phoneID: String = "P1", phoneNam
         interval: .milliseconds(10))
     await connectOn(model)
     board.copy("looped")
-    for _ in 0..<200 where sent.messages.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while sent.messages.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(sent.messages.map(\.text) == ["looped"])
     model.disconnected()
     board.copy("after")

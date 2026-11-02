@@ -34,9 +34,9 @@ private final class Harness {
     init() {
         let stream = SendableBox(ticks.stream.makeAsyncIterator())
         model = CallModel(
-            nameFor: { [unowned self] in self.contacts[$0] }, presenter: presenter,
-            send: { [unowned self] type, message in self.sent.append((type, message)) },
-            now: { [unowned self] in self.clock },
+            nameFor: { [weak self] in self?.contacts[$0] }, presenter: presenter,
+            send: { [weak self] type, message in self?.sent.append((type, message)) },
+            now: { [weak self] in self?.clock ?? Date(timeIntervalSince1970: 1_000) },
             ticker: { var it = stream.value; _ = await it.next(); stream.value = it })
         model.connected(phoneID: "P1")
     }
@@ -199,8 +199,11 @@ struct CallModelTests {
         #expect(h.model.elapsed(now: h.clock) == "01:00")
     }
 
-    private func settle(_ cond: () -> Bool) async {
-        for _ in 0..<200 where !cond() { try? await Task.sleep(for: .milliseconds(5)) }
+    /// Polls until `cond` holds, for at most `bound`: generous by default, as a busy runner can
+    /// deliver the tick late. With `{ false }` and a short bound it lets queued work run.
+    private func settle(within bound: Duration = .seconds(30), _ cond: () -> Bool) async {
+        let deadline = ContinuousClock.now + bound
+        while !cond(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
     @Test func elapsedTicksWhileActive() async {
@@ -220,13 +223,13 @@ struct CallModelTests {
         #expect(h.model.elapsedText == nil)
         h.clock = h.clock.addingTimeInterval(5)
         h.ticks.continuation.yield()
-        await settle { false }
+        await settle(within: .seconds(1)) { false }
         #expect(h.model.elapsedText == nil)
         h.model.apply(call("c2", .active))
         h.model.reset()
         #expect(h.model.elapsedText == nil)
         h.ticks.continuation.yield()
-        await settle { false }
+        await settle(within: .seconds(1)) { false }
         #expect(h.model.elapsedText == nil)
     }
 

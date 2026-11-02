@@ -97,7 +97,7 @@ private struct NoListener: Error {}
         #expect(await eventually { server.activePhone != nil })
         server.stop()
         #expect(server.pendingFlushes == 1)
-        await server.waitForFlush(timeout: .seconds(3))
+        await server.waitForFlush(timeout: .seconds(30))
         #expect(server.pendingFlushes == 0)
         let bye = try #require(await phone.next())
         #expect(bye.type == MessageType.goodbye.rawValue)

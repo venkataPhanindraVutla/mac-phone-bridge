@@ -168,12 +168,14 @@ class PairingClientTest {
     fun missingVerifiedTimesOut() = runBlocking {
         TestMacServer { c ->
             c.expect(MessageType.PAIR_REQUEST)
-            c.awaitEof(5_000)
+            c.awaitEof(60_000)
         }.use { server ->
             val started = System.nanoTime()
-            val result = withTimeout(15_000) { client(verifyTimeoutMs = 300).pair(uri(server.port)) { true } }
+            val result = withTimeout(30_000) { client(verifyTimeoutMs = 300).pair(uri(server.port)) { true } }
             assertEquals(PairingResult.Failed(PairingFailure.TIMED_OUT), result)
-            assertTrue((System.nanoTime() - started) / 1_000_000 < 3_000)
+            // The client's 300 ms, not the Mac's minute of silence: loose, so a slow runner cannot trip it.
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(tookMs in 300..20_000, "took $tookMs ms")
             server.join()
         }
     }

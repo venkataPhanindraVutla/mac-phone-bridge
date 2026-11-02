@@ -198,8 +198,11 @@ class BrowseService(
      * browse writes still waiting their turn (they would go ahead if browsing reopened first).
      */
     fun cancelAll() {
-        cancelWhere(TransferError.TRANSFER_ERROR_DISABLED) { true }
+        // Listed first: cancelling a write under way lets the engine start the next queued one,
+        // which is then neither QUEUED nor tracked yet (its sink is still opening), so a list
+        // taken after the cancel could miss it and let it run.
         val waiting = transfers.transfers.value.filter { it.browseTarget && it.state == TransferState.QUEUED }
+        cancelWhere(TransferError.TRANSFER_ERROR_DISABLED) { true }
         waiting.forEach { transfers.cancel(it.id) }
         if (waiting.isNotEmpty()) log("browse: cancelled ${waiting.size} queued writes")
     }

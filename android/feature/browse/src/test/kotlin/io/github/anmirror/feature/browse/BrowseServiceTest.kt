@@ -182,7 +182,8 @@ class BrowseServiceTest {
     @After
     fun tearDown() = scope.cancel()
 
-    private fun awaitUntil(what: String, ms: Long = 5_000, condition: () -> Boolean) {
+    /** Polls [condition] for up to [ms]: generous, as the bound only matters when the test fails. */
+    private fun awaitUntil(what: String, ms: Long = 30_000, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + ms
         while (!condition()) {
             if (System.currentTimeMillis() > deadline) throw AssertionError("timed out waiting for $what")
@@ -539,7 +540,7 @@ class BrowseServiceTest {
         trees.remove(gated)
         browse.onRootsChanged()
         gated.gate.countDown()
-        opening.join(5_000)
+        opening.join(30_000)
         assertEquals(SinkResult.Refused(TransferError.TRANSFER_ERROR_BAD_TARGET), result.get())
         assertTrue(gated.inner.sink.aborted, "the part opened after the cancel is removed")
     }
@@ -552,7 +553,7 @@ class BrowseServiceTest {
         assertTrue(gated.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
         browse.cancelAll()
         gated.gate.countDown()
-        opening.join(5_000)
+        opening.join(30_000)
         assertEquals(SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED), result.get())
         assertTrue(gated.inner.sink.aborted)
     }

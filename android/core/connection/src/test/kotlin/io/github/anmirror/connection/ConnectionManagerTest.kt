@@ -125,11 +125,11 @@ class ConnectionManagerTest {
             val manager = ConnectionManager(scope, store, discovery, TlsConnector(Identities.phone), { phoneHello() })
             val started = System.nanoTime()
             manager.start()
-            val connected = withTimeout(10_000) {
+            val connected = withTimeout(30_000) {
                 manager.state.first { it is PhoneConnectionState.Connected } as PhoneConnectionState.Connected
             }
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
-            assertTrue(elapsedMs < 10_000, "reconnect took $elapsedMs ms")
+            assertTrue(elapsedMs < 30_000, "reconnect took $elapsedMs ms")
             assertEquals(Identities.MAC_FP, connected.mac.id)
             val saved = store.all().single()
             assertEquals("127.0.0.1", saved.lastHost)

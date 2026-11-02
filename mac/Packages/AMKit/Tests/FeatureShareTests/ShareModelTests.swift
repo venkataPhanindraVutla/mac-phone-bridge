@@ -272,7 +272,8 @@ private final class Rig {
 
 @MainActor
 private func until(_ condition: @MainActor () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(5)
+    // Generous: it only bounds a test that is failing, and a busy runner can be seconds behind.
+    let deadline = ContinuousClock.now + .seconds(30)
     while !condition() {
         if ContinuousClock.now >= deadline { Issue.record("timed out"); return }
         try await Task.sleep(for: .milliseconds(2))

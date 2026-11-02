@@ -218,7 +218,7 @@ class MirrorSessionTest {
         val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_VIDEO)
         mac.stall()
         video.fromHelper.output.write(ByteArray(1_000))
-        assertTrue(mac.writeEntered.await(5, TimeUnit.SECONDS))
+        assertTrue(mac.writeEntered.await(30, TimeUnit.SECONDS))
         val since = currentTime
         advanceTimeBy(MirrorSession.MAX_WRITE_BLOCKED_MS - (currentTime - since))
         runCurrent()
@@ -235,7 +235,7 @@ class MirrorSessionTest {
         val mac = dialer.link(BulkRole.BULK_ROLE_MIRROR_AUDIO)
         mac.stall()
         audio.fromHelper.output.write(ByteArray(100))
-        assertTrue(mac.writeEntered.await(5, TimeUnit.SECONDS))
+        assertTrue(mac.writeEntered.await(30, TimeUnit.SECONDS))
         advanceTimeBy(MirrorSession.MAX_WRITE_BLOCKED_MS)
         runCurrent()
         assertTrue(states.tryReceive().isFailure)
@@ -468,10 +468,10 @@ class MirrorSessionTest {
                 connect = { null }, onAdbLost = { adbLost++ }, newScid = { 0x0a1b2c3d },
             )
             val job = scope.launch { s.run {} }
-            withTimeout(5_000) { assertEquals(starting, next()) }
-            assertTrue(adb.pushEntered.await(5, TimeUnit.SECONDS))
+            withTimeout(30_000) { assertEquals(starting, next()) }
+            assertTrue(adb.pushEntered.await(30, TimeUnit.SECONDS))
             s.stop(MirrorReason.MIRROR_REASON_USER)
-            withTimeout(5_000) {
+            withTimeout(30_000) {
                 assertEquals(stopped(MirrorReason.MIRROR_REASON_USER), next())
                 job.join()
             }

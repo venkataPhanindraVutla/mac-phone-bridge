@@ -190,12 +190,12 @@ private class Harness(
     fun env(type: String, msg: MessageLite) = envelope(Channel.CHANNEL_FILES, 1, type, msg)
     fun deliver(type: String, msg: MessageLite) = runBlocking { engine.onMessage(env(type, msg)) }
     fun status(id: String) = engine.transfers.value.first { it.id == id }
-    fun awaitState(id: String, state: TransferState, ms: Long = 10_000) =
+    fun awaitState(id: String, state: TransferState, ms: Long = 30_000) =
         awaitUntil(ms, "state $state of $id (now ${engine.transfers.value.firstOrNull { it.id == id }?.state})") {
             engine.transfers.value.firstOrNull { it.id == id }?.state == state
         }
     fun types() = sent.map { it.first }
-    fun awaitSent(type: String, ms: Long = 10_000) = awaitUntil(ms, "sent $type") { type in types() }
+    fun awaitSent(type: String, ms: Long = 30_000) = awaitUntil(ms, "sent $type") { type in types() }
     inline fun <reified T : MessageLite> last(type: String): T = sent.last { it.first == type }.second as T
 
     fun offer(id: String, size: Long, name: String = "a.bin", token: ByteArray = byteArrayOf(7, 7)) =
@@ -208,6 +208,7 @@ private class Harness(
     fun close() { scope.cancel() }
 }
 
+/** Polls [cond] for up to [ms]: generous bounds, as they only matter when the test is failing. */
 private fun awaitUntil(ms: Long, what: String, cond: () -> Boolean) {
     val end = System.currentTimeMillis() + ms
     while (!cond()) {
@@ -250,7 +251,7 @@ class TransferEngineTest {
         h.deliver(MessageType.FILES_RECEIVED, TransferReceived.newBuilder().setTransferId(id).build())
         h.awaitState(id, TransferState.DONE)
         assertEquals(1_000_000L, h.status(id).done)
-        awaitUntil(5_000, "stream closed") { h.streams.single().closed.get() }
+        awaitUntil(30_000, "stream closed") { h.streams.single().closed.get() }
     }
 
     @Test
@@ -265,7 +266,7 @@ class TransferEngineTest {
         assertContentEquals(byteArrayOf(9, 9), h.hellos.single().token.toByteArray())
         assertEquals(BulkRole.BULK_ROLE_PHONE_RECEIVES, h.hellos.single().role)
         // Bytes are in; the engine waits for files.complete.
-        awaitUntil(5_000, "bytes written") { (sink.output as ByteArrayOutputStream).size() == data.size }
+        awaitUntil(30_000, "bytes written") { (sink.output as ByteArrayOutputStream).size() == data.size }
         assertFalse(sink.committed.get())
         h.deliver(MessageType.FILES_COMPLETE, h.complete("m1", sha(data)))
         h.awaitState("m1", TransferState.DONE)
@@ -303,7 +304,7 @@ class TransferEngineTest {
         }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", data.size.toLong()))
         h.awaitSent(MessageType.FILES_ACCEPT)
-        awaitUntil(5_000, "first half") { (sink.output as ByteArrayOutputStream).size() == 60_000 }
+        awaitUntil(30_000, "first half") { (sink.output as ByteArrayOutputStream).size() == 60_000 }
         h.deliver(MessageType.FILES_COMPLETE, h.complete("m1", sha(data)))
         Thread.sleep(50)
         assertFalse(sink.committed.get())
@@ -321,7 +322,7 @@ class TransferEngineTest {
             FakeStream(input = ClockedInput(chunks = 10, chunk = 1000, clock = clock, step = 100))
         }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 10_000))
-        awaitUntil(5_000, "two progress messages") { h.types().count { it == MessageType.FILES_PROGRESS } >= 2 }
+        awaitUntil(30_000, "two progress messages") { h.types().count { it == MessageType.FILES_PROGRESS } >= 2 }
         Thread.sleep(100)
         val progress = h.sent.filter { it.first == MessageType.FILES_PROGRESS }
             .map { (it.second as io.github.anmirror.protocol.v1.TransferProgress).bytesDone }
@@ -334,11 +335,11 @@ class TransferEngineTest {
         val sink = MemSink()
         val h = harness(Harness(sinkFor = { SinkResult.Ready(sink) }, makeStream = { FakeStream(input = BlockingInput()) }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000_000))
-        awaitUntil(5_000, "stream open") { h.streams.size == 1 }
+        awaitUntil(30_000, "stream open") { h.streams.size == 1 }
         val before = h.sent.size
         h.deliver(MessageType.FILES_CANCEL, TransferCancel.newBuilder().setTransferId("m1").build())
         h.awaitState("m1", TransferState.CANCELLED)
-        awaitUntil(5_000, "aborted") { sink.aborted.get() }
+        awaitUntil(30_000, "aborted") { sink.aborted.get() }
         assertTrue(h.streams.single().closed.get())
         assertFalse(sink.committed.get())
         assertEquals(before, h.sent.size) // a peer cancel is never answered
@@ -349,12 +350,12 @@ class TransferEngineTest {
         val sink = MemSink()
         val h = harness(Harness(sinkFor = { SinkResult.Ready(sink) }, makeStream = { FakeStream(input = BlockingInput()) }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000_000))
-        awaitUntil(5_000, "stream open") { h.streams.size == 1 }
+        awaitUntil(30_000, "stream open") { h.streams.size == 1 }
         h.engine.cancel("m1")
         h.awaitState("m1", TransferState.CANCELLED)
         h.awaitSent(MessageType.FILES_CANCEL)
         assertEquals("m1", h.last<TransferCancel>(MessageType.FILES_CANCEL).transferId)
-        awaitUntil(5_000, "aborted") { sink.aborted.get() }
+        awaitUntil(30_000, "aborted") { sink.aborted.get() }
         assertTrue(h.streams.single().closed.get())
     }
 
@@ -364,12 +365,12 @@ class TransferEngineTest {
         val id = h.engine.send(listOf(MemSource("big.bin", ByteArray(2_000_000)))).single()
         h.awaitSent(MessageType.FILES_OFFER)
         h.deliver(MessageType.FILES_ACCEPT, TransferAccept.newBuilder().setTransferId(id).build())
-        awaitUntil(5_000, "stream open") { h.streams.size == 1 }
+        awaitUntil(30_000, "stream open") { h.streams.size == 1 }
         Thread.sleep(50)
         val before = h.sent.size
         h.deliver(MessageType.FILES_CANCEL, TransferCancel.newBuilder().setTransferId(id).build())
         h.awaitState(id, TransferState.CANCELLED)
-        awaitUntil(5_000, "closed") { h.streams.single().closed.get() }
+        awaitUntil(30_000, "closed") { h.streams.single().closed.get() }
         assertEquals(before, h.sent.size)
         assertFalse(MessageType.FILES_COMPLETE in h.types())
     }
@@ -428,14 +429,14 @@ class TransferEngineTest {
         val sink = MemSink()
         val h = harness(Harness(sinkFor = { SinkResult.Ready(sink) }, makeStream = { FakeStream(input = BlockingInput()) }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000_000))
-        awaitUntil(5_000, "stream open") { h.streams.size == 1 }
+        awaitUntil(30_000, "stream open") { h.streams.size == 1 }
         // A queued send that never started.
         val q = h.engine.send(listOf(MemSource("q.bin", ByteArray(5)))).single()
         val before = h.sent.size
         h.engine.onDisconnected()
         h.awaitState("m1", TransferState.FAILED)
         assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.status("m1").error)
-        awaitUntil(5_000, "aborted") { sink.aborted.get() }
+        awaitUntil(30_000, "aborted") { sink.aborted.get() }
         assertTrue(h.streams.single().closed.get())
         // The send worker may already have picked the queued send up: then it ends on that
         // worker's thread, not inside onDisconnected().
@@ -653,7 +654,7 @@ class TransferEngineTest {
         val h = harness(Harness(dial = { kotlinx.coroutines.awaitCancellation() }))
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000))
         h.awaitSent(MessageType.FILES_ACCEPT)
-        awaitUntil(5_000, "dialling") { h.hellos.size == 1 }
+        awaitUntil(30_000, "dialling") { h.hellos.size == 1 }
         h.engine.cancel("m1")
         h.awaitState("m1", TransferState.CANCELLED, 3_000) // the stall timeout is 30 s
         h.awaitSent(MessageType.FILES_CANCEL)
@@ -679,7 +680,7 @@ class TransferEngineTest {
         h.deliver(MessageType.FILES_OFFER, h.offer("m1", 1_000))
         h.awaitState("m1", TransferState.FAILED)
         assertEquals(TransferError.TRANSFER_ERROR_TIMED_OUT, h.status("m1").error)
-        awaitUntil(5_000, "late stream closed") { h.streams.size == 1 && h.streams.single().closed.get() }
+        awaitUntil(30_000, "late stream closed") { h.streams.size == 1 && h.streams.single().closed.get() }
     }
 
     @Test

@@ -652,9 +652,11 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     #expect(xs.count < 10)
 }
 
-/// Waits up to about 2 s for `condition`.
+/// Waits up to 30 s for `condition` (generous: it only bounds a test that is failing, and a busy
+/// runner can be seconds behind).
 @MainActor private func eventually(_ condition: () -> Bool) async -> Bool {
-    for _ in 0..<400 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while ContinuousClock.now < deadline {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(5))
     }

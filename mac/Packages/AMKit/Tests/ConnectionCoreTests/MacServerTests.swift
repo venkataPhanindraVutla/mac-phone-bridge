@@ -24,7 +24,7 @@ struct TestPhone {
         return TestPhone(identity: identity, conn: conn, inbox: Inbox(conn.envelopes))
     }
 
-    func next(timeout: Duration = .seconds(3)) async -> AMEnvelope? { await inbox.next(timeout: timeout) }
+    func next(timeout: Duration = .seconds(30)) async -> AMEnvelope? { await inbox.next(timeout: timeout) }
 
     /// The next message, which must be `system.error`; returns its code.
     func nextErrorCode() async throws -> AMErrorCode {
@@ -62,7 +62,7 @@ struct TestPhone {
         try await conn.send(.pairConfirm, c, channel: .pairing)
     }
 
-    func ended(timeout: Duration = .seconds(3)) async -> Bool { await inbox.waitForEnd(timeout: timeout) }
+    func ended(timeout: Duration = .seconds(30)) async -> Bool { await inbox.waitForEnd(timeout: timeout) }
 }
 
 func pairedPhone(_ name: String) throws -> PairedPhone {
@@ -262,6 +262,9 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
         defer { server.stop() }
         _ = server.beginPairing()
         try await Task.sleep(for: .milliseconds(150))
+        // The expiry task closes the gate once it runs, which a busy main actor can put off:
+        // wait for that, not for a fixed time.
+        #expect(await eventually { server.pairingSecretSpent })
         #expect(await refusedAtTLS("phone", port: port))
         #expect(await eventually { log.contains(.rejected(.notPairedCertificate)) })
     }
@@ -383,8 +386,9 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
         let phone = try await TestPhone.connect("phone", port: port)
         try await phone.sendHello()
         _ = await phone.next()
-        #expect(await eventually { server.state != .idle })
-        #expect(await phone.ended(timeout: .seconds(2)))
+        // It was connected: read from the log, as the 200 ms rule may already have ended it.
+        #expect(await eventually { log.events.contains { if case .connected(known, _) = $0 { true } else { false } } })
+        #expect(await phone.ended())
         #expect(await eventually { server.state == .idle })
         #expect(log.contains(.disconnected(known)))
     }
@@ -445,7 +449,7 @@ func pair(_ phone: TestPhone, server: MacServer, uri: PairingURI) async throws -
 
         server.handleWake()
         #expect(await phone.ended())
-        #expect(await eventually(timeout: .seconds(5)) { server.port == port && server.isListening })
+        #expect(await eventually { server.port == port && server.isListening })
         let back = try await TestPhone.connect("phone", port: port)
         try await back.sendHello()
         #expect(try #require(await back.next()).type == MessageType.hello.rawValue)

@@ -85,6 +85,8 @@ public final class BrowseModel: SessionFeature {
 
     @ObservationIgnored private let engine: TransferEngine
     @ObservationIgnored private let requestTimeout: Duration
+    /// How the request and roots deadlines wait out `requestTimeout` (a test hook).
+    @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
     @ObservationIgnored private let session = Counter()
 
@@ -423,9 +425,9 @@ public final class BrowseModel: SessionFeature {
     private func requestRoots() {
         post(.browseRootsRequest, AMBrowseRootsRequest())
         rootsTimer?.cancel()
-        let timeout = requestTimeout, session = session.value
+        let timeout = requestTimeout, session = session.value, sleep = sleep
         rootsTimer = Task { [weak self] in
-            try? await Task.sleep(for: timeout)
+            try? await sleep(timeout)
             guard !Task.isCancelled, let self, self.session.value == session else { return }
             self.rootsTimer = nil
             guard !self.rootsLoaded else { return }
@@ -575,9 +577,9 @@ public final class BrowseModel: SessionFeature {
         let id = engine.nextRequestID()
         let answer = Answer<Reply>()
         waiting[id] = answer
-        let timeout = requestTimeout
+        let timeout = requestTimeout, sleep = sleep
         let timer = Task { [weak self] in
-            try? await Task.sleep(for: timeout)
+            try? await sleep(timeout)
             guard !Task.isCancelled, let self, let answer = self.waiting.removeValue(forKey: id) else { return }
             Self.log.info("\(type.rawValue, privacy: .public) \(id, privacy: .public) timed out")
             answer.resolve(.timedOut)

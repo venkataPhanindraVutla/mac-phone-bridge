@@ -315,8 +315,15 @@ private final class Rig {
 
     @Test func runningSessionDoesNotTimeOut() async throws {
         let rig = Rig(startDeadline: .milliseconds(300))
+        // The deadline passes when the test says, once the session runs: a busy runner cannot
+        // make it pass while the session is still starting.
+        let sleeps = ManualSleeps()
+        rig.model.startSleep = sleeps.sleep
         _ = try await rig.running()
-        try await Task.sleep(for: .milliseconds(450))
+        #expect(sleeps.requested == [.milliseconds(300)])
+        // Whether running already cancelled its wait or not, the deadline passing now changes nothing.
+        sleeps.fire()
+        try await Task.sleep(for: .milliseconds(150))
         #expect(rig.model.phase == .running(width: 320, height: 640))
         #expect(rig.stops.isEmpty)
     }
@@ -370,14 +377,18 @@ private final class Rig {
     @Test func linkEndedThenStateWithinGraceUsesTheState() async throws {
         let rig = Rig()
         rig.model.linkGrace = .milliseconds(300)
+        // The grace ends when the test says: the state always comes within it, however slow the runner.
+        let sleeps = ManualSleeps()
+        rig.model.graceSleep = sleeps.sleep
         let links = try await rig.running()
         links.video.phone.close()
         try await until("link end seen") { rig.model.linkEndPending }
         await rig.state(1, .failed, .helperFailed)
         #expect(rig.model.phase == .ended(.phone(.helperFailed)))
         #expect(!rig.model.linkEndPending) // the grace timer is cancelled
-        // Well past the grace: still the phone's reason, and no stop went out.
-        try await Task.sleep(for: .milliseconds(500))
+        // Past the grace: still the phone's reason, and no stop went out.
+        sleeps.fire()
+        try await Task.sleep(for: .milliseconds(150))
         #expect(rig.model.phase == .ended(.phone(.helperFailed)))
         #expect(rig.stops.isEmpty)
     }
@@ -759,9 +770,11 @@ private final class Rig {
     @Test func measureDelayRunsThePatternsAndTaps() async throws {
         let rig = Rig()
         let links = try await rig.running()
-        rig.model.delayHarness = DelayHarness(trials: 3, timeout: .seconds(2), pause: .zero, markerTimeout: .seconds(2),
+        // Generous waits: on a busy runner the fake phone's pictures can come seconds late. The
+        // frame count runs on wall time, so its window is long enough to see some.
+        rig.model.delayHarness = DelayHarness(trials: 3, timeout: .seconds(30), pause: .zero, markerTimeout: .seconds(30),
                                               settle: .milliseconds(100), fpsSettle: .milliseconds(50),
-                                              fpsDuration: .milliseconds(200))
+                                              fpsDuration: .seconds(2))
         let session = try #require(rig.model.session)
         let phone = FakeDelayPhone(session: session, control: links.control.phone)
         defer { phone.stop() }
@@ -775,7 +788,7 @@ private final class Rig {
         #expect(result.testScreenOpened)
         #expect(result.trials == 3)
         #expect(result.misses == 0)
-        #expect(result.medianMs >= 0 && result.medianMs < 1_000)
+        #expect(result.medianMs >= 0 && result.medianMs < 30_000, "an answer, inside the trial timeout")
         #expect(result.fpsMean > 0)
         let patterns = rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self)
         #expect(patterns.map(\.mode) == [.delay, .fps, .off])
@@ -831,12 +844,16 @@ private final class Rig {
     @Test func measureDelayStopsWhenTheSessionEnds() async throws {
         let rig = Rig()
         _ = try await rig.running()
-        let started = ContinuousClock.now
+        // Every wait of the probe is a minute: "promptly" is far from all of them.
+        rig.model.delayHarness = DelayHarness(trials: 50, timeout: .seconds(60), pause: .zero,
+                                              markerTimeout: .seconds(60), settle: .zero,
+                                              fpsSettle: .zero, fpsDuration: .seconds(60))
         let measuring = Task { await rig.model.measureDelay() }
         try await until("DELAY sent") { rig.sent.of(.mirrorTestPattern, AMMirrorTestPattern.self).count == 1 }
+        let stopped = ContinuousClock.now
         await rig.phoneStop(1, .user)
         #expect(await measuring.value == nil)
-        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(ContinuousClock.now - stopped < .seconds(30))
         #expect(!rig.model.measuringDelay)
     }
 

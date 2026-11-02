@@ -87,22 +87,22 @@ private final class Rig {
         let key = SymmetricKey(size: .bits256)
         contacts = ContactsSession(
             enabled: true,
-            open: { [unowned self] id in ContactsStore(file: EncryptedFile(url: self.url(id), key: key)) },
-            remove: { [unowned self] id in
-                self.removedStores.append(id)
-                try? FileManager.default.removeItem(at: self.url(id))
+            open: { [dir] id in ContactsStore(file: EncryptedFile(url: ContactsStore.fileURL(phoneID: id, in: dir), key: key)) },
+            remove: { [weak self, dir] id in
+                self?.removedStores.append(id)
+                try? FileManager.default.removeItem(at: ContactsStore.fileURL(phoneID: id, in: dir))
             },
             pairedPhoneIDs: { ["P1", "P2"] },
-            requestSync: { [unowned self] _ in self.sent.append(.contactsSync) })
+            requestSync: { [weak self] _ in self?.sent.append(.contactsSync) })
         notifications = NotificationsModel(
             presenter: presenter, icons: IconCache(directory: dir.appendingPathComponent("icons")),
             load: { _ in NotifySettings() }, save: { _, _ in }, copy: { _ in },
-            nameFor: { [unowned self] in self.contacts.name(forNumber: $0) },
+            nameFor: { [weak self] in self?.contacts.name(forNumber: $0) },
             attachmentDirectory: dir.appendingPathComponent("att"),
-            send: { [unowned self] type, _ in self.sent.append(type) })
+            send: { [weak self] type, _ in self?.sent.append(type) })
         calls = CallModel(
-            nameFor: { [unowned self] in self.contacts.name(forNumber: $0) }, presenter: presenter,
-            send: { [unowned self] type, _ in self.sent.append(type) })
+            nameFor: { [weak self] in self?.contacts.name(forNumber: $0) }, presenter: presenter,
+            send: { [weak self] type, _ in self?.sent.append(type) })
         queue = NotifyWorkQueue(notifications: notifications, calls: calls, contacts: contacts)
     }
 
@@ -186,7 +186,8 @@ private final class Rig {
     r.queue.handle(.connected(phone("P1"), shared: everything))
     r.queue.handle(message: ringing("c1"))
     // Wait (bounded) for the call: it must not wait for the user to answer the prompt.
-    for _ in 0..<200 where r.calls.ringing.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while r.calls.ringing.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(r.calls.ringing.map(\.callID) == ["c1"])
     #expect(r.sent.contains(.notifyFilter))
     r.presenter.release()

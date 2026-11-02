@@ -67,6 +67,8 @@ public final class TransferEngine: SessionFeature {
     /// The clock idle time is measured on, against `acceptTimeout` and `stallTimeout` (internal,
     /// so tests can move it; read on the byte loops' threads too).
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
+    /// How a request's deadline waits (a test hook).
+    @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
     /// Where the paths of live part files are kept (`openPartsKey`), so a crash or a force quit
@@ -772,8 +774,9 @@ public final class TransferEngine: SessionFeature {
             deadlines[id] = nil
             return
         }
+        let sleep = sleep
         deadlines[id] = Task { [weak self] in
-            try? await Task.sleep(for: deadline)
+            try? await sleep(deadline)
             guard !Task.isCancelled, let self else { return }
             self.deadlines[id] = nil
             Self.log.info("request \(id, privacy: .public) timed out")

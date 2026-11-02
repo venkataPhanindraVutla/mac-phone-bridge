@@ -57,26 +57,49 @@ private func tool(_ body: String) throws -> URL {
     #expect(await shortcuts.run("Android Mirroring Focus On") == .failed(-1))
 }
 
+/// A tool that would run for a minute ends in `.timedOut` at the timeout, not at its own end. The
+/// upper bound is half the tool's run, far from the timeout, so a slow runner cannot break it.
 @Test func hangingShortcutTimesOutAfter10s() async throws {
     #expect(SystemShortcuts().timeout == .seconds(10))
-    let url = try tool("sleep 5")
+    let url = try tool("exec sleep 60")
     let shortcuts = SystemShortcuts(tool: url, timeout: .milliseconds(300))
     let clock = ContinuousClock()
     let start = clock.now
     let result = await shortcuts.run("Android Mirroring Focus On")
     #expect(result == .timedOut)
-    #expect(clock.now - start < .seconds(1))
+    #expect(clock.now - start >= .milliseconds(300))
+    #expect(clock.now - start < .seconds(30))
     let listStart = clock.now
     #expect(await shortcuts.list() == nil)
-    #expect(clock.now - listStart < .seconds(1))
+    #expect(clock.now - listStart >= .milliseconds(300))
+    #expect(clock.now - listStart < .seconds(30))
 }
 
+/// A tool that ignores SIGTERM: the run still ends at the timeout, while the tool is still there,
+/// and does not wait for the SIGKILL that follows (`killAfter`, a minute here).
 @Test func ignoredTerminateStillTimesOut() async throws {
-    let url = try tool("trap '' TERM; sleep 5")
-    let clock = ContinuousClock()
-    let start = clock.now
-    #expect(await SystemShortcuts(tool: url, timeout: .milliseconds(300)).run("x") == .timedOut)
-    #expect(clock.now - start < .seconds(1))
+    // The pid file is written once the trap is set. A shell that a loaded machine kept from
+    // getting that far within the 2 s timeout ended at the SIGTERM instead, which proves nothing
+    // about a tool that ignores it: such a run is tried again, at most three times.
+    for attempt in 1...3 {
+        let url = try tool("trap '' TERM; echo $$ > \"$0.pid\"; exec sleep 60")
+        var shortcuts = SystemShortcuts(tool: url, timeout: .seconds(2))
+        shortcuts.killAfter = .seconds(60)
+        let clock = ContinuousClock()
+        let start = clock.now
+        #expect(await shortcuts.run("x") == .timedOut)
+        #expect(clock.now - start >= .seconds(2))
+        #expect(clock.now - start < .seconds(30))
+        guard let text = try? String(contentsOf: url.appendingPathExtension("pid"), encoding: .utf8) else {
+            if attempt < 3 { continue }
+            Issue.record("the shell never set its trap within the timeout")
+            return
+        }
+        let pid = try #require(pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(kill(pid, 0) == 0, "the result came while the tool still ran")
+        kill(pid, SIGKILL)
+        return
+    }
 }
 
 /// Called from the main actor: the termination and readability handlers run on Foundation's own

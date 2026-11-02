@@ -16,8 +16,9 @@ private final class Rig {
     let engine: TransferEngine
     let model: PhotosModel
 
-    init(requestTimeout: Duration = .seconds(5), fetchTimeout: Duration = .seconds(5),
-         stallTimeout: Duration = .seconds(5)) {
+    /// Deadlines a minute off unless a test sets them: a busy runner must not make them pass.
+    init(requestTimeout: Duration = .seconds(60), fetchTimeout: Duration = .seconds(60),
+         stallTimeout: Duration = .seconds(60)) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-photos-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         downloads = dir
@@ -27,7 +28,7 @@ private final class Rig {
             send: { type, message in sent.all.append((type, message)) },
             destination: { _ in .refuse(.disabled) },
             freeBytes: { _ in nil },
-            timing: TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .seconds(5),
+            timing: TransferTiming(acceptTimeout: .seconds(60), stallTimeout: .seconds(60),
                                    progressInterval: .zero, freeMargin: 0)
         )
         model = PhotosModel(
@@ -140,9 +141,16 @@ private final class Rig {
 }
 
 @MainActor @Test func listWithNoAnswerStopsLoading() async throws {
-    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    let r = Rig(); defer { r.cleanUp() }
+    // The first list's deadline passes when the test says, and the second's never does: a busy
+    // runner cannot time out the answered refresh below.
+    let sleeps = ManualSleeps()
+    r.model.sleep = sleeps.sleep
     await r.connect()
-    await r.model.refresh()
+    let refresh = Task { await r.model.refresh() }
+    try await until("the list's deadline") { sleeps.pending == 1 }
+    sleeps.fire()
+    await refresh.value
     #expect(!r.model.loading)
     #expect(r.model.items.isEmpty)
     #expect(r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).isEmpty)

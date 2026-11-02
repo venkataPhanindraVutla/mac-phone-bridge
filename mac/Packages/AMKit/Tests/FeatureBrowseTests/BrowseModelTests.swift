@@ -16,7 +16,8 @@ private final class Rig {
     let engine: TransferEngine
     let model: BrowseModel
 
-    init(requestTimeout: Duration = .seconds(5)) {
+    /// Deadlines a minute off unless a test sets them: a busy runner must not make them pass.
+    init(requestTimeout: Duration = .seconds(60)) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("am-browse-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.dir = dir
@@ -26,7 +27,7 @@ private final class Rig {
             send: { type, message in sent.all.append((type, message)) },
             destination: { _ in .refuse(.disabled) },
             freeBytes: { _ in nil },
-            timing: TransferTiming(acceptTimeout: .seconds(5), stallTimeout: .seconds(5),
+            timing: TransferTiming(acceptTimeout: .seconds(60), stallTimeout: .seconds(60),
                                    progressInterval: .zero, freeMargin: 0)
         )
         model = BrowseModel(engine: engine, send: { type, message in sent.all.append((type, message)) },
@@ -189,12 +190,17 @@ private func entry(_ name: String, dir: Bool = false, size: UInt64 = 10) -> AMBr
 }
 
 @MainActor @Test func refreshRootsWaitsForTheOutstandingRequest() async throws {
-    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    let r = Rig(); defer { r.cleanUp() }
+    // The roots deadline passes when the test says: a busy runner cannot end the wait early.
+    let sleeps = ManualSleeps()
+    r.model.sleep = sleeps.sleep
     await r.connect()
     try await until("first request") { r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 1 }
+    try await until("its deadline") { sleeps.pending == 1 }
     r.model.refreshRoots()
     try await Task.sleep(for: .milliseconds(30))
     #expect(r.sent.of(.browseRootsRequest, AMBrowseRootsRequest.self).count == 1, "one is already waiting")
+    sleeps.fire()
     try await until("timed out") { r.model.notice == .timedOut }
     // Try Again: asked once more, and the notice goes while it waits.
     r.model.refreshRoots()

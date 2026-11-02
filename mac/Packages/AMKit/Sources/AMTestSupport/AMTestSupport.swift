@@ -172,6 +172,11 @@ public struct TimedOut: Error, CustomStringConvertible {
     public let description: String
 }
 
+/// The pause before poll number `n` (from 0): 1 ms, then doubling up to 20 ms. A condition that
+/// holds soon is seen soon, and hundreds of tests polling at once (every suite in one process on a
+/// CI runner) do not flood the main actor they share.
+public func pollPause(_ n: Int) -> Duration { .milliseconds(min(1 << min(n, 5), 20)) }
+
 /// Polls `condition` on the main actor until it holds, or throws `TimedOut` after `timeout`.
 /// The bound only matters when the test is failing anyway, so it is generous: on a CI runner every
 /// suite shares one busy main actor, and a step that takes microseconds here can take seconds there.
@@ -179,31 +184,94 @@ public struct TimedOut: Error, CustomStringConvertible {
 public func until(_ what: String = "condition", timeout: Duration = .seconds(30),
                   _ condition: @MainActor () -> Bool) async throws {
     let deadline = ContinuousClock.now + timeout
+    var polls = 0
     while !condition() {
         if ContinuousClock.now >= deadline { throw TimedOut(description: "timed out waiting for \(what)") }
-        try await Task.sleep(for: .milliseconds(2))
+        try await Task.sleep(for: pollPause(polls))
+        polls += 1
     }
 }
 
-/// Polls `condition` on the main actor until it holds or `timeout` passes; whether it held.
+/// Polls `condition` on the main actor until it holds or `timeout` passes; whether it held. Like
+/// `until`, the bound only matters when the test is failing, so it is generous.
 @MainActor
-public func eventually(timeout: Duration = .seconds(3), _ condition: @MainActor () -> Bool) async -> Bool {
+public func eventually(timeout: Duration = .seconds(30), _ condition: @MainActor () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
+    var polls = 0
     while ContinuousClock.now < deadline {
         if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        try? await Task.sleep(for: pollPause(polls))
+        polls += 1
     }
     return condition()
 }
 
-/// Reads exactly `count` bytes from `pipe` (or stops after 5 s without a byte).
+/// Sleeps that end only when the test says (`fire()`), whatever duration they were asked for: for
+/// a timeout seam, so a busy runner can never make a deadline pass while the test is mid-step.
+/// A cancelled sleep throws `CancellationError`, as `Task.sleep` does.
+public final class ManualSleeps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sleepers: [Int: CheckedContinuation<Void, Error>] = [:]
+    private var lastID = 0
+    private var asked: [Duration] = []
+
+    public init() {}
+
+    /// Every duration asked for so far, in order.
+    public var requested: [Duration] { lock.withLock { asked } }
+
+    /// The value to give the seam, e.g. `model.sleep = sleeps.sleep`.
+    public var sleep: @Sendable (Duration) async throws -> Void {
+        { [self] duration in
+            lock.withLock { asked.append(duration) }
+            try await wait()
+        }
+    }
+
+    /// How many sleeps are waiting.
+    public var pending: Int { lock.withLock { sleepers.count } }
+
+    /// Ends every sleep waiting now.
+    public func fire() {
+        let due = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
+            defer { sleepers = [:] }
+            return Array(sleepers.values)
+        }
+        for c in due { c.resume() }
+    }
+
+    private func wait() async throws {
+        let id: Int = lock.withLock {
+            lastID += 1
+            return lastID
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if Task.isCancelled {
+                    lock.unlock()
+                    c.resume(throwing: CancellationError())
+                } else {
+                    sleepers[id] = c
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            let c = lock.withLock { sleepers.removeValue(forKey: id) }
+            c?.resume(throwing: CancellationError())
+        }
+    }
+}
+
+/// Reads exactly `count` bytes from `pipe` (or stops after 30 s without a byte; a generous bound,
+/// as for `until`).
 public func readAll(_ pipe: MemoryPipe, _ count: Int) async throws -> Data {
     var out = Data()
     while out.count < count {
         let chunk = try await withThrowingTaskGroup(of: Data?.self) { group in
             group.addTask { try await pipe.receive(maximum: 1 << 20) }
             group.addTask {
-                try await Task.sleep(for: .seconds(5))
+                try await Task.sleep(for: .seconds(30))
                 pipe.close()
                 return nil
             }
