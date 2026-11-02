@@ -97,6 +97,9 @@ private struct IncomingCallView: View {
                         button(action)
                     }
                 }
+                if let message = model.errorMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
             }
             .padding(14)
             .frame(width: 320, alignment: .leading)

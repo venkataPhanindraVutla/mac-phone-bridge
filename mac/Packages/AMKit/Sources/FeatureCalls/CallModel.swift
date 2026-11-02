@@ -23,16 +23,30 @@ public enum CallPanelAction: Equatable, Sendable {
 public final class CallModel {
     private static let log = Logger(subsystem: "io.github.anmirror.mac", category: "calls")
 
-    /// Incoming calls that are ringing, newest last. Drives the panels.
-    public private(set) var ringing: [AMCallState] = []
-    public private(set) var active: AMCallState?
+    /// Incoming calls that are ringing, newest last. Drives the panels. Empty while the switch is off.
+    public var ringing: [AMCallState] { enabled ? trackedRinging : [] }
+    public var active: AMCallState? { enabled ? trackedActive : nil }
     /// "02:13" for the active call, refreshed every second while a call is active; nil otherwise. The menu reads this.
-    public private(set) var elapsedText: String?
+    public var elapsedText: String? { enabled ? trackedElapsedText : nil }
     public private(set) var lastError: CallError?
-    /// The "Show phone calls" switch. Off: call states and missed calls are ignored.
+    /// The "Show phone calls" switch. Off: nothing shows and missed calls are ignored, but call states are
+    /// still followed, so switching it on mid-call shows the call.
     public var enabled: Bool = true {
-        didSet { if !enabled { reset() } }
+        didSet { if !enabled { lastError = nil } }
     }
+    /// A short line for a refused Answer, Decline, Mute or Hang up; nil when there is nothing to say.
+    public var errorMessage: String? {
+        guard enabled, lastError == .notAllowed || lastError == .failed else { return nil }
+        switch lastAction {
+        case .answer: return String(localized: "Couldn't answer on the phone.", bundle: .main)
+        case .decline: return String(localized: "Couldn't decline on the phone.", bundle: .main)
+        default: return String(localized: "Couldn't do that on the phone.", bundle: .main)
+        }
+    }
+
+    private var trackedRinging: [AMCallState] = []
+    private var trackedActive: AMCallState?
+    private var trackedElapsedText: String?
 
     @ObservationIgnored private let nameFor: (String) -> String?
     @ObservationIgnored private let presenter: NotificationPresenter
@@ -43,6 +57,10 @@ public final class CallModel {
     @ObservationIgnored private var activeSince: Date?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var phoneID: String?
+    @ObservationIgnored private var lastAction: AMCallAction?
+    /// The call that was active when the phone disconnected, so a reconnect mid-call keeps its timer
+    /// (the phone keeps call ids).
+    @ObservationIgnored private var resumable: (callID: String, since: Date)?
     /// Calls whose panel the user closed with "Close"; they stay closed until the call ends.
     @ObservationIgnored private var closed: Set<String> = []
 
@@ -61,19 +79,24 @@ public final class CallModel {
 
     // MARK: Connection
 
-    public func connected(phoneID: String) { self.phoneID = phoneID }
+    public func connected(phoneID: String) {
+        if phoneID != self.phoneID { resumable = nil }
+        self.phoneID = phoneID
+    }
 
     /// On disconnect: nothing of the call survives.
     public func reset() {
-        ringing = []
+        trackedRinging = []
         setActive(nil)
         lastError = nil
         closed = []
     }
 
     public func disconnected() {
+        let remembered = trackedActive.flatMap { call in activeSince.map { (callID: call.callID, since: $0) } }
         reset()
-        phoneID = nil
+        resumable = remembered ?? resumable
+        // The phone id is kept, so reconnecting to the same phone resumes the timer.
     }
 
     // MARK: Display
@@ -98,7 +121,7 @@ public final class CallModel {
     /// "02:13" for the active call, "1:02:05" past an hour; nil when no call is active.
     /// Measured on the Mac's clock from when the call was first seen active.
     public func elapsed(now: Date) -> String? {
-        guard active != nil, let activeSince else { return nil }
+        guard trackedActive != nil, let activeSince else { return nil }
         let total = max(0, Int(now.timeIntervalSince(activeSince)))
         let (h, m, s) = (total / 3600, total % 3600 / 60, total % 60)
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
@@ -106,15 +129,22 @@ public final class CallModel {
 
     /// Keeps `active` and its timer together: a tick loop runs only while a call is active.
     private func setActive(_ s: AMCallState?) {
-        if s?.callID != active?.callID { activeSince = s == nil ? nil : now() }
-        active = s
+        if s?.callID != trackedActive?.callID {
+            if let s {
+                if let resumable, resumable.callID == s.callID { activeSince = resumable.since } else { activeSince = now() }
+                resumable = nil
+            } else {
+                activeSince = nil
+            }
+        }
+        trackedActive = s
         guard s != nil else {
             tickTask?.cancel()
             tickTask = nil
-            elapsedText = nil
+            trackedElapsedText = nil
             return
         }
-        elapsedText = elapsed(now: now())
+        trackedElapsedText = elapsed(now: now())
         guard tickTask == nil else { return }
         let ticker = ticker
         tickTask = Task { @MainActor [weak self] in
@@ -122,7 +152,7 @@ public final class CallModel {
                 await ticker()
                 if Task.isCancelled { break }
                 guard let self else { return }
-                self.elapsedText = self.elapsed(now: self.now())
+                self.trackedElapsedText = self.elapsed(now: self.now())
             }
         }
     }
@@ -130,23 +160,23 @@ public final class CallModel {
     // MARK: From the phone
 
     public func apply(_ s: AMCallState) {
-        guard enabled else { return }
         switch s.phase {
         case .ringing where s.incoming:
             guard !closed.contains(s.callID) else { return }
-            if let i = ringing.firstIndex(where: { $0.callID == s.callID }) {
-                ringing[i] = s
+            if let i = trackedRinging.firstIndex(where: { $0.callID == s.callID }) {
+                trackedRinging[i] = s
             } else {
-                ringing.append(s)
+                trackedRinging.append(s)
             }
         case .ringing, .active:
             // An outgoing call that is still ringing is shown like an active one: the menu offers Hang up.
-            ringing.removeAll { $0.callID == s.callID }
+            trackedRinging.removeAll { $0.callID == s.callID }
             setActive(s)
         case .ended:
-            ringing.removeAll { $0.callID == s.callID }
+            trackedRinging.removeAll { $0.callID == s.callID }
             closed.remove(s.callID)
-            if active?.callID == s.callID { setActive(nil) }
+            if resumable?.callID == s.callID { resumable = nil }
+            if trackedActive?.callID == s.callID { setActive(nil) }
         default:
             break
         }
@@ -158,8 +188,8 @@ public final class CallModel {
             lastError = nil
         case .noSuchCall:
             lastError = .noSuchCall
-            ringing.removeAll { $0.callID == r.callID }
-            if active?.callID == r.callID { setActive(nil) }
+            trackedRinging.removeAll { $0.callID == r.callID }
+            if trackedActive?.callID == r.callID { setActive(nil) }
         case .notAllowed:
             lastError = .notAllowed
         case .failed:
@@ -206,10 +236,12 @@ public final class CallModel {
     /// Closes a panel on this Mac only; the phone keeps ringing.
     public func close(_ id: String) {
         closed.insert(id)
-        ringing.removeAll { $0.callID == id }
+        trackedRinging.removeAll { $0.callID == id }
     }
 
     private func command(_ action: AMCallAction, _ id: String) async {
+        lastError = nil
+        lastAction = action
         var c = AMCallCommand()
         c.callID = id
         c.action = action

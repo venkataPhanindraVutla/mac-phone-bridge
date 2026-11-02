@@ -229,4 +229,76 @@ struct CallModelTests {
         await settle { false }
         #expect(h.model.elapsedText == nil)
     }
+
+    @Test func refusedCommandsHaveAShortMessage() async {
+        let h = Harness()
+        #expect(h.model.errorMessage == nil)
+        h.model.apply(call("c1"))
+        await h.model.answer("c1")
+        var r = AMCallCommandResult()
+        r.callID = "c1"; r.outcome = .notAllowed
+        h.model.result(r)
+        #expect(h.model.errorMessage == "Couldn't answer on the phone.")
+        await h.model.decline("c1")                    // a new command clears the old message
+        #expect(h.model.errorMessage == nil)
+        r.outcome = .failed
+        h.model.result(r)
+        #expect(h.model.errorMessage == "Couldn't decline on the phone.")
+        h.model.apply(call("c2", .active))
+        await h.model.toggleMute()
+        r.callID = "c2"; r.outcome = .failed
+        h.model.result(r)
+        #expect(h.model.errorMessage == "Couldn't do that on the phone.")
+        r.outcome = .ok
+        h.model.result(r)
+        #expect(h.model.errorMessage == nil)
+    }
+
+    @Test func timerContinuesAfterReconnectMidCall() {
+        let h = Harness()
+        h.model.apply(call("c1", .active))
+        h.clock = h.clock.addingTimeInterval(60)
+        h.model.disconnected()
+        #expect(h.model.active == nil)
+        h.clock = h.clock.addingTimeInterval(30)
+        h.model.connected(phoneID: "P1")
+        h.model.apply(call("c1", .active))
+        #expect(h.model.elapsed(now: h.clock) == "01:30")
+    }
+
+    @Test func timerStartsFreshForADifferentCallAfterReconnect() {
+        let h = Harness()
+        h.model.apply(call("c1", .active))
+        h.clock = h.clock.addingTimeInterval(60)
+        h.model.disconnected()
+        h.model.connected(phoneID: "P1")
+        h.model.apply(call("c2", .active))
+        h.clock = h.clock.addingTimeInterval(5)
+        #expect(h.model.elapsed(now: h.clock) == "00:05")
+        h.model.apply(call("c1", .active))              // the old id is not revived later
+        #expect(h.model.elapsed(now: h.clock) == "00:00")
+    }
+
+    @Test func switchingCallsBackOnShowsTheCurrentCall() {
+        let h = Harness()
+        h.model.enabled = false
+        h.model.apply(call("c1"))
+        h.model.apply(call("c2", .active))
+        #expect(h.model.ringing.isEmpty)
+        #expect(h.model.active == nil)
+        #expect(h.model.elapsedText == nil)
+        h.model.enabled = true
+        #expect(h.model.ringing.map(\.callID) == ["c1"])
+        #expect(h.model.active?.callID == "c2")
+        #expect(h.model.elapsedText == "00:00")
+    }
+
+    @Test func callThatEndedWhileOffStaysGone() {
+        let h = Harness()
+        h.model.enabled = false
+        h.model.apply(call("c1"))
+        h.model.apply(call("c1", .ended))
+        h.model.enabled = true
+        #expect(h.model.ringing.isEmpty)
+    }
 }
