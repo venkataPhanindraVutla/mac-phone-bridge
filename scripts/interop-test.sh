@@ -299,9 +299,19 @@ case10() {
   start_phone c10 pair "$pstate" "$IDS/phone.p12" --uri "$URI" --auto-confirm --liveness
   need "$PHONE_LOG" '^EVENT connected shared=find\.v1,liveness\.v1,status\.v1$' "phone EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
   need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,liveness\.v1,status\.v1$' "mac EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
-  sleep 3
+  # The Mac pings every 200 ms and drops the phone after 3 silent intervals (600 ms). For 3 s, five
+  # drop windows, the phone must stay connected and keep answering: pings answered in each half,
+  # not only at the start. The count is loose (2 of the ~7 sent per half): a busy runner delays
+  # pings (once 9 of 15 in 3 s), but a Mac that stopped pinging leaves a half with none, and a
+  # phone that stopped answering is dropped, which the disconnect check below catches.
+  sleep 1.5
+  first="$(grep -c '^EVENT mac-ping$' "$PHONE_LOG" || true)"
+  sleep 1.5
   pings="$(grep -c '^EVENT mac-ping$' "$PHONE_LOG" || true)"
-  [[ "$pings" -ge 10 ]] || { fail_reason="phone answered $pings Mac pings in 3 s, expected >= 10"; return 1; }
+  [[ "$first" -ge 2 && $((pings - first)) -ge 2 ]] || {
+    fail_reason="phone answered $first Mac pings in the first 1.5 s and $((pings - first)) in the next, expected >= 2 in each"
+    return 1
+  }
   if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped a phone that answers its pings"; return 1; fi
 }
 
@@ -314,9 +324,11 @@ case11() {
   need "$MAC_LOG" '^EVENT connected [0-9a-f]+ shared=find\.v1,liveness\.v1,status\.v1$' "mac EVENT connected shared=find.v1,liveness.v1,status.v1" || return 1
   need "$PHONE_LOG" '^EVENT mac-ping$' "phone EVENT mac-ping before the freeze" || return 1
   if grep -Eq '^EVENT disconnected' "$MAC_LOG"; then fail_reason="mac dropped the phone before the freeze"; return 1; fi
-  # The socket stays open and the kernel still ACKs, but nothing answers the Mac's pings.
+  # The socket stays open and the kernel still ACKs, but nothing answers the Mac's pings. The drop
+  # rule takes 3 x 200 ms plus the TLS close; nothing else would drop a frozen phone for minutes,
+  # so the 10 s bound still shows the rule at work while leaving a busy runner room.
   kill -STOP "$PHONE_PID"
-  need "$MAC_LOG" '^EVENT disconnected [0-9a-f]+$' "mac EVENT disconnected <phone id> within 3 s of the freeze (3 x 200 ms plus TLS close)" 3 || rc=1
+  need "$MAC_LOG" '^EVENT disconnected [0-9a-f]+$' "mac EVENT disconnected <phone id> within 10 s of the freeze (3 x 200 ms plus TLS close)" 10 || rc=1
   kill -CONT "$PHONE_PID" 2>/dev/null || true
   return $rc
 }
