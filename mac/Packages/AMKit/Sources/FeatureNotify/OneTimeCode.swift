@@ -40,15 +40,13 @@ public enum OneTimeCode {
         let joiners: Set<Character> = [":", "/", ".", ","]
         let isGoogle = c[start] == "G"
         if start > 0, c[start - 1].isLetter || c[start - 1].isNumber { return false }  // "XX1234", inside a longer run
+        if end < c.count, c[end].isLetter { return false }                           // "4821ms"
         if start > 0, joiners.contains(c[start - 1]) { return false }                // "12:3045", "1.2345"
         if end + 1 < c.count, joiners.contains(c[end]), c[end + 1].isNumber { return false }  // "1234/56"
         if !isGoogle {
-            // Neighbouring digit group joined by one space/dash: "98765 43210", "2026-10-28".
-            let plain = !c[start..<end].contains { $0 == " " || $0 == "-" }
-            if plain {
-                if end + 1 < c.count, c[end] == " " || c[end] == "-", c[end + 1].isNumber { return false }
-                if start > 1, c[start - 1] == " " || c[start - 1] == "-", c[start - 2].isNumber { return false }
-            }
+            // Neighbouring digit group joined by one space/dash: "98765 43210", "2026-10-28", "123-456-7890".
+            if end + 1 < c.count, c[end] == " " || c[end] == "-", c[end + 1].isNumber { return false }
+            if start > 1, c[start - 1] == " " || c[start - 1] == "-", c[start - 2].isNumber { return false }
         }
         // Currency marker within 2 characters before the amount ("Rs 4500", "$4500").
         // Letter markers must start a word, so "Mars 4821" / "Verify" are not amounts.
@@ -62,7 +60,7 @@ public enum OneTimeCode {
         }
         // A year next to a month name ("28 Oct 2026") is a date, not a code.
         if end - start == 4, c[start...].prefix(2).elementsEqual(["1", "9"]) || c[start...].prefix(2).elementsEqual(["2", "0"]),
-           isMonth(wordBefore(c, start)) || isMonth(wordAfter(c, end)) { return false }
+           isMonth(wordBefore(c, start)) || isMonth(wordAfter(c, end)) || followsMonthAndDay(c, start) { return false }
         return true
     }
 
@@ -80,6 +78,17 @@ public enum OneTimeCode {
         var word: [Character] = []
         while i > 0, c[i - 1].isLetter { word.insert(c[i - 1], at: 0); i -= 1 }
         return String(word)
+    }
+
+    /// "<month> <1-2 digit day>[,] " right before `start`: "Oct 28, 2026".
+    private static func followsMonthAndDay(_ c: [Character], _ start: Int) -> Bool {
+        var i = start
+        while i > 0, c[i - 1] == " " { i -= 1 }
+        if i > 0, c[i - 1] == "," { i -= 1 }
+        var digits = 0
+        while i > 0, c[i - 1].isNumber { i -= 1; digits += 1 }
+        guard (1...2).contains(digits) else { return false }
+        return isMonth(wordBefore(c, i))
     }
 
     private static func wordAfter(_ c: [Character], _ end: Int) -> String {

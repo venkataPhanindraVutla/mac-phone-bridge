@@ -22,6 +22,13 @@ import Testing
     ("Ana", "login 1234 then 5678 code", "1234"),
     ("Calendar", "Meeting 28 Oct 2026 login link", nil),
     ("Ana", "Your login code 2026", "2026"),
+    ("Ana", "call 123-456-7890 code", nil),
+    ("Ana", "code 987 654 3210", nil),
+    ("Ana", "Your code is 4821ms", nil),
+    ("Ana", "Your code is 4821.", "4821"),
+    ("Calendar", "Meeting Oct 28, 2026 login link", nil),
+    ("Calendar", "Meeting Oct 28 2026 login link", nil),
+    ("Calendar", "Meeting October 5, 2026 login link", nil),
 ] as [(String, String, String?)])
 func detectsCodes(title: String, text: String, expected: String?) {
     #expect(OneTimeCode.detect(title: title, text: text) == expected)
