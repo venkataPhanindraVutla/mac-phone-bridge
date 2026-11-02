@@ -34,7 +34,6 @@ export function Wallpaper({ className }: { className?: string }) {
       <circle cx="285" cy="150" r="92" fill="#ff2dab" />
       <path d="M0 205 C90 170 170 175 250 200 S360 185 400 192 V300 H0Z" fill="#d4ff3f" />
       <path d="M0 238 C100 214 190 222 270 238 S370 226 400 230 V300 H0Z" fill="#0b0b0b" />
-      <path d="M40 60h70M40 72h44" stroke="#2a2a2a" strokeWidth="4" strokeLinecap="round" />
     </svg>
   )
 }

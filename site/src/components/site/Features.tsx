@@ -4,9 +4,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react"
 import {
   IconBattery3,
-  IconBellOff,
-  IconCheck,
-  IconCopy,
   IconDeviceMobile,
   IconLock,
   IconLockOpen,
@@ -14,7 +11,6 @@ import {
   IconPlayerPauseFilled,
   IconPlayerPlayFilled,
   IconPlayerSkipForwardFilled,
-  IconPhone,
   IconWifi,
   IconAntennaBars4,
   IconFileTypePdf,
@@ -22,8 +18,7 @@ import {
 } from "@tabler/icons-react"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { cn } from "@/lib/utils"
-import { CrossStage } from "./CrossStage"
-import { Avatar, Photo, Wallpaper } from "./parts"
+import { Photo, Wallpaper } from "./parts"
 
 function useLoop(ms: number) {
   const ref = useRef<HTMLDivElement>(null)
@@ -57,133 +52,8 @@ function Tile({ title, text, children, className, desktop }: { title: string; te
 }
 
 /* Notifications: a live feed, with per-app filters you can switch. */
-const feed = [
-  { app: "Messages", who: "Priya", text: "Running a bit late, start without me?", tint: "bg-lime" },
-  { app: "Calendar", who: "Design review", text: "In 10 minutes, Room 4", tint: "bg-pink" },
-  { app: "Deliveries", who: "Your order is out", text: "Arriving between 2 and 3 pm", tint: "bg-[#f2f2f2]" },
-  { app: "Messages", who: "Dev", text: "Pushed the fix, can you check?", tint: "bg-lime" },
-  { app: "Calendar", who: "Gym", text: "Tomorrow at 7:00", tint: "bg-pink" },
-]
 
-function NotificationsDemo() {
-  const { ref, tick } = useLoop(2200)
-  const [muted, setMuted] = useState<string[]>([])
-  const allowed = feed.filter((n) => !muted.includes(n.app))
-  // Entry number tick is the newest; each tick pushes the others down one place.
-  const n = allowed.length
-  const shown = n ? [0, 1, 2].slice(0, Math.min(3, n)).map((i) => ({ id: tick - i, item: allowed[(((tick - i) % n) + n) % n] })) : []
-  return (
-    <div ref={ref} className="flex w-full max-w-[28rem] flex-col items-stretch gap-4">
-      <div className="relative h-[13.5rem]">
-        <AnimatePresence initial={false}>
-          {shown.map(({ id, item }, i) => (
-            <motion.div
-              key={`${id}-${item.who}`}
-              layout
-              initial={{ opacity: 0, y: -24, scale: 0.96 }}
-              animate={{ opacity: 1 - i * 0.28, y: i * 70, scale: 1 - i * 0.04 }}
-              exit={{ opacity: 0, y: 230, scale: 0.9 }}
-              transition={{ type: "spring", stiffness: 260, damping: 30 }}
-              className="absolute inset-x-0 top-0 flex gap-3 rounded-2xl bg-[#1c1c1c]/90 p-3.5 ring-1 ring-white/10 backdrop-blur"
-              style={{ zIndex: 10 - i }}
-            >
-              <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl text-sm font-semibold text-night", item.tint)}>{item.who[0]}</span>
-              <div className="min-w-0 flex-1 leading-snug">
-                <div className="flex justify-between gap-2 text-[0.88rem]">
-                  <span className="truncate font-semibold">{item.who}</span>
-                  <span className="shrink-0 text-[0.75rem] text-white/45">{item.app}</span>
-                </div>
-                <p className="truncate text-[0.86rem] text-white/75">{item.text}</p>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        {!shown.length && <p className="grid h-full place-items-center text-sm text-haze">Every app is off. Turn one back on.</p>}
-      </div>
-      <div className="flex flex-wrap justify-center gap-2" role="group" aria-label="Apps that come through">
-        {["Messages", "Calendar", "Deliveries"].map((app) => {
-          const on = !muted.includes(app)
-          return (
-            <button
-              key={app}
-              type="button"
-              aria-pressed={on}
-              onClick={() => setMuted((m) => (on ? [...m, app] : m.filter((a) => a !== app)))}
-              className={cn(
-                "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[0.82rem] ring-1 transition-colors ring-inset",
-                on ? "bg-[#141414]/80 text-lime ring-lime/40 backdrop-blur" : "bg-[#141414]/60 text-haze ring-white/15 backdrop-blur hover:text-mist",
-              )}
-            >
-              {on ? <IconCheck size={14} aria-hidden="true" /> : <IconBellOff size={14} aria-hidden="true" />}
-              {app}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
 
-function CodeDemo() {
-  const [copied, setCopied] = useState(false)
-  return (
-    <div className="w-full max-w-[17rem] rounded-2xl bg-[#1c1c1c]/90 p-4 ring-1 ring-white/10">
-      <p className="text-[0.82rem] text-white/55">Kestrel Bank</p>
-      <p className="mt-1 text-[0.9rem] text-white/85">
-        Your code is{" "}
-        <span className="relative inline-block font-semibold text-mist">
-          482913
-          <motion.span
-            aria-hidden="true"
-            className="absolute inset-x-[-3px] inset-y-0 -z-0 rounded bg-pink/25"
-            initial={{ scaleX: 0 }}
-            whileInView={{ scaleX: 1 }}
-            viewport={{ once: true, amount: 1 }}
-            transition={{ duration: 0.6, delay: 0.3 }}
-            style={{ originX: 0 }}
-          />
-        </span>
-      </p>
-      <button
-        type="button"
-        onClick={() => {
-          navigator.clipboard?.writeText("482913").catch(() => {})
-          setCopied(true)
-          setTimeout(() => setCopied(false), 1600)
-        }}
-        className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-white/10 text-[0.86rem] font-medium transition-colors hover:bg-white/15"
-      >
-        {copied ? <IconCheck size={15} aria-hidden="true" /> : <IconCopy size={15} aria-hidden="true" />}
-        {copied ? "Copied" : "Copy code"}
-      </button>
-    </div>
-  )
-}
-
-/* Calls: the number resolves to a contact name. */
-function CallsDemo() {
-  const { ref, tick } = useLoop(2600)
-  const named = tick % 2 === 1
-  return (
-    <div ref={ref} className="flex w-full max-w-[17rem] items-center gap-3 rounded-full bg-[#1c1c1c]/90 p-2 pr-2.5 ring-1 ring-white/10">
-      <span className="relative">
-        <span className="absolute inset-0 animate-ping rounded-full bg-lime/25" aria-hidden="true" />
-        <Avatar letter={named ? "P" : "#"} className="relative h-10 w-10 text-sm" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.p key={String(named)} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className="truncate text-[0.9rem] font-semibold">
-            {named ? "Priya" : "+44 7700 900123"}
-          </motion.p>
-        </AnimatePresence>
-        <p className="text-[0.75rem] text-white/50">{named ? "From your contacts" : "Incoming call"}</p>
-      </div>
-      <span className="grid h-9 w-9 place-items-center rounded-full bg-[#30d158] text-[#06210f]" aria-hidden="true">
-        <IconPhone size={17} />
-      </span>
-    </div>
-  )
-}
 
 /* Clipboard: copied on one side, there on the other; secrets stay put. */
 const clips = ["Meet at Sable & Rye, 7pm", "https://example.com/tickets/4471", "••••••••••"]
@@ -439,51 +309,39 @@ export function Features() {
       <div className="wrap">
         <div className="grid items-end gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
           <h2 id="features-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
-            Everything your phone does, on the Mac you're already using.
+            And everything else your phone does, on the Mac.
           </h2>
           <p className="max-w-[30rem] text-lg text-haze lg:justify-self-end">
-            Every feature here is built and in testing. None of them needs developer settings on the phone, except Full mode. Press a button below and watch it cross over.
+            Notifications, codes, calls, photos and Full mode are in the day above. These are the rest, all built and in testing. Try them.
           </p>
         </div>
 
-        <CrossStage />
-
-        <h3 className="mt-28 font-display text-[1.6rem] font-semibold tracking-tight">Every feature, one tile each</h3>
-        <ul className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-6 lg:grid-rows-[auto]">
-          <Tile desktop className="md:col-span-2 lg:col-span-4 lg:row-span-2" title="Notifications with actions" text="Real Mac notifications, with their buttons and inline reply. Choose which apps come through, and dismiss on either device to clear both.">
-            <NotificationsDemo />
-          </Tile>
-          <Tile className="lg:col-span-2" title="One-time codes" text="Copy code, straight from the notification. It never reads your SMS.">
-            <CodeDemo />
-          </Tile>
-          <Tile className="lg:col-span-2" title="Calls and caller ID" text="Answer, decline or mute from the Mac; audio stays on the phone. Names come from contacts kept encrypted on the Mac.">
-            <CallsDemo />
-          </Tile>
-          <Tile className="lg:col-span-2" title="Shared clipboard" text="Copy on one, paste on the other. Text a password manager marks as secret is never sent.">
+        <ul className="mt-16 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <Tile title="Shared clipboard" text="Copy on one, paste on the other. Text a password manager marks as secret is never sent.">
             <ClipboardDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Files both ways" text="Drag onto the Phone window, use the Share menu, or Send to Mac. Browse the phone's files and recent photos from the Mac.">
+          <Tile title="Files both ways" text="Drag onto the Phone window, use the Share menu, or Send to Mac. Browse the phone's files and recent photos from the Mac.">
             <FilesDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Instant screenshots" text="Take one on the phone and it lands on the Desktop, in Downloads or on the clipboard.">
+          <Tile title="Instant screenshots" text="Take one on the phone and it lands on the Desktop, in Downloads or on the clipboard.">
             <ScreenshotsDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Music controller" text="Track, artist and artwork, with play, pause, skip and volume.">
+          <Tile title="Music controller" text="Track, artist and artwork, with play, pause, skip and volume.">
             <MusicDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Focus, in sync" text="A Focus on the Mac turns on Do Not Disturb on the phone, and the other way round.">
+          <Tile title="Focus, in sync" text="A Focus on the Mac turns on Do Not Disturb on the phone, and the other way round.">
             <FocusDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Find my phone" text="Ring it at full volume from the Mac, even when it's on silent.">
+          <Tile title="Find my phone" text="Ring it at full volume from the Mac, even when it's on silent.">
             <FindDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Phone status in the menu bar" text="Battery and charging, signal, Wi-Fi or mobile data, and whether it's connected.">
+          <Tile title="Phone status in the menu bar" text="Battery and charging, signal, Wi-Fi or mobile data, and whether it's connected.">
             <StatusDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Auto-lock when you walk away" text="Opt-in. The Mac locks when the phone's Bluetooth signal stays away. It never unlocks it.">
+          <Tile title="Auto-lock when you walk away" text="Opt-in. The Mac locks when the phone's Bluetooth signal stays away. It never unlocks it.">
             <LockDemo />
           </Tile>
-          <Tile className="lg:col-span-2" title="Trackpad and remote" text="Move the Mac's pointer from the phone, or change slides with a laser dot.">
+          <Tile title="Trackpad and remote" text="Move the Mac's pointer from the phone, or change slides with a laser dot.">
             <TrackpadDemo />
           </Tile>
         </ul>

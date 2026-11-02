@@ -1,38 +1,38 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react"
 import { cn } from "@/lib/utils"
-import { CallScene, CodeScene, FullModeScene, MessageScene, PhotosScene } from "./scenes"
+import { DuoStage, type Scene } from "./DuoStage"
 
-type Moment = { time: string; title: string; body: ReactNode; try: string; scene: () => ReactNode }
+type Moment = { time: string; title: string; body: ReactNode; try: string; scene: Scene }
 
 const moments: Moment[] = [
   {
     time: "9:02",
     title: "A message, answered from the Mac.",
     body: "Phone notifications show up as real Mac notifications, with their buttons and inline reply. You pick which apps come through. Dismiss one on either device and it's gone on both.",
-    try: "Type a reply to Priya and send it.",
-    scene: () => <MessageScene />,
+    try: "Watch it play, or type your own reply.",
+    scene: "message",
   },
   {
     time: "9:40",
     title: "The sign-in code, one click away.",
     body: "When a notification holds a one-time code, the Mac offers Copy code. It reads the notification text only, never your SMS.",
-    try: "Copy the code.",
-    scene: () => <CodeScene />,
+    try: "Press Copy code yourself to put it on your clipboard.",
+    scene: "code",
   },
   {
     time: "11:15",
     title: "The call, taken at your desk.",
     body: "See who's calling, then answer, decline, mute or hang up from the Mac. The audio stays on your phone. Caller names come from your contacts, kept encrypted inside the Mac app.",
-    try: "Answer, then hang up.",
-    scene: () => <CallScene />,
+    try: "Answer, mute or hang up on the Mac.",
+    scene: "call",
   },
   {
     time: "14:30",
     title: "Sunday's photos, already on the Mac.",
     body: "Send to Mac from the phone's share sheet, or drag files onto the phone from the Mac. Screenshots you take on the phone land on the Mac by themselves, and the clipboard goes both ways.",
-    try: "Send the photos to the Mac.",
-    scene: () => <PhotosScene />,
+    try: "Drag a photo from the phone onto Downloads.",
+    scene: "photos",
   },
   {
     time: "16:00",
@@ -43,8 +43,8 @@ const moments: Moment[] = [
         the targets are under 80 ms of delay at 60 frames a second. It needs Android 11 and Wireless debugging, switched on once.
       </>
     ),
-    try: "Type a message with your keyboard.",
-    scene: () => <FullModeScene />,
+    try: "Type into the phone with your keyboard.",
+    scene: "full",
   },
 ]
 
@@ -79,7 +79,7 @@ function Step({ moment, index, active, onActive, inlineScene }: { moment: Moment
       <h3 className={cn("display mt-5 text-[clamp(1.7rem,3vw,2.4rem)] transition-opacity duration-500", active || inlineScene ? "opacity-100" : "opacity-40")}>{moment.title}</h3>
       <p className={cn("mt-4 max-w-[34rem] text-haze transition-opacity duration-500", active || inlineScene ? "opacity-100" : "opacity-40")}>{moment.body}</p>
       <p className="mt-4 text-[0.95rem] text-pink">{moment.try}</p>
-      {inlineScene && <div className="mt-8">{moment.scene()}</div>}
+      {inlineScene && <div className="mt-8"><DuoStage scene={moment.scene} /></div>}
     </div>
   )
 }
@@ -97,11 +97,11 @@ export function Day() {
             Your phone can stay in your bag.
           </h2>
           <p className="mt-6 max-w-[38rem] text-lg text-haze">
-            Here's a working day with it. Every screen below behaves like the apps do, so go ahead and use them.
+            Here's a working day with it. Each moment plays by itself as you reach it, and you can take over at any point.
           </p>
         </header>
 
-        <div className="mt-10 lg:mt-16 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16">
+        <div className="mt-10 lg:mt-16 lg:grid lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:gap-14">
           <div>
             {moments.map((m, i) => (
               <Step key={m.time} moment={m} index={i} active={active === i} onActive={setActive} inlineScene={!desktop} />
@@ -119,7 +119,7 @@ export function Day() {
                     exit={reduce ? { opacity: 0 } : { opacity: 0, y: -16, scale: 0.98, filter: "blur(6px)" }}
                     transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
                   >
-                    {moments[active].scene()}
+                    <DuoStage scene={moments[active].scene} />
                   </motion.div>
                 </AnimatePresence>
               </div>
