@@ -42,7 +42,7 @@ sealed interface PhoneConnectionState {
 
     /**
      * The Mac answered with its pinned certificate but does not know this phone: an explicit
-     * `system.error NOT_PAIRED`, or a TLS refusal on every address in 2 consecutive attempts.
+     * `system.error NOT_PAIRED`, or a TLS refusal on any address tried (with no connection made) in 2 consecutive attempts.
      * Likely it forgot this phone while we were away. Left on [ConnectionManager.kick], on a
      * Bonjour address not tried yet, or after `notRecognizedRetryMs` (15 min). Never forgotten
      * automatically: a refusal is spoofable.
@@ -99,7 +99,8 @@ data class ConnectionTiming(
  * - `BUSY`: retry after 60 s or on [kick]. Protocol mismatch: `Incompatible`, until [kick].
  * - [PhoneConnectionState.NotRecognized] at once on an explicit `system.error NOT_PAIRED`; for a
  *   TLS-level refusal (a heuristic: resets look alike) only after 2 consecutive attempts that
- *   each ended refused on every address. The first such attempt backs off like `Unreachable`.
+ *   each ended without a connection and with at least one address refused. The first such
+ *   attempt backs off like `Unreachable`.
  * - After a session shorter than one ping interval, the backoff wait ignores Bonjour events:
  *   the new subscription replays the visible Mac, which must not cause a hot reconnect loop.
  * - While connected, keep-alive has two modes (SPEC 7, see [PhoneSession]):
