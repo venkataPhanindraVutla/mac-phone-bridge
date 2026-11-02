@@ -57,9 +57,9 @@ class HelperInstallerTest {
         val install = async(Dispatchers.Default) {
             runCatching { HelperInstaller(adb, { jar.inputStream() }, MirrorAdb.SHA).install(path) { synchronized(pipes) { pipes += it }; true } }
         }
-        assertTrue(adb.pushEntered.await(5, TimeUnit.SECONDS))
+        assertTrue(adb.pushEntered.await(30, TimeUnit.SECONDS))
         synchronized(pipes) { pipes.forEach { it.close() } }
-        val result = withTimeout(5_000) { install.await() }
+        val result = withTimeout(30_000) { install.await() }
         assertTrue(result.exceptionOrNull() is IOException, result.toString())
     }
 

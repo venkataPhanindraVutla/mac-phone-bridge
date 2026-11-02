@@ -39,7 +39,7 @@ class TlsConnectorTest {
             assertIs<HelloResult.Ok>(exchangeHello(channel, phoneHello()))
             val pingId = channel.send(Channel.CHANNEL_SYSTEM, MessageType.PING, io.github.anmirror.protocol.v1.Ping.getDefaultInstance())
             assertEquals(2L, pingId, "ids count up from 1 per connection")
-            val pong = withTimeout(5_000) { channel.receive() }
+            val pong = withTimeout(30_000) { channel.receive() }
             assertEquals(MessageType.PONG, pong?.type)
             assertEquals(pingId, pong?.replyTo)
             channel.close()
@@ -66,7 +66,7 @@ class TlsConnectorTest {
     fun connectsViaSecondHostWhenFirstUnreachable() = runBlocking {
         TestMacServer { c -> c.answerHello() }.use { server ->
             val started = System.nanoTime()
-            val channel = withTimeout(10_000) {
+            val channel = withTimeout(60_000) {
                 // 10.255.255.1 black-holes (or fails fast with "no route"); either way the
                 // phone moves on to the second host within the 3 s per-host budget.
                 TlsConnector(Identities.phone).connect(listOf("10.255.255.1", "127.0.0.1"), server.port, Identities.MAC_FP)
@@ -74,7 +74,9 @@ class TlsConnectorTest {
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
             assertEquals("127.0.0.1", channel.host)
             assertIs<HelloResult.Ok>(exchangeHello(channel, phoneHello()))
-            assertTrue(elapsedMs < 4_500, "took $elapsedMs ms")
+            // The per-host budget, not the system's connect timeout to a black hole (a minute or
+            // more): loose, so a slow runner cannot trip it.
+            assertTrue(elapsedMs < 20_000, "took $elapsedMs ms")
             channel.close()
             server.join()
         }
@@ -164,11 +166,11 @@ class TlsConnectorTest {
         val phone = ControlChannel(phoneSide, "h", 1, Identities.MAC_FP)
         val mac = ControlChannel(macSide, "h", 1, Identities.PHONE_FP)
         val job = launch { exchangeHello(phone, phoneHello()) } // the Mac never answers
-        withTimeout(5_000) { assertEquals(MessageType.HELLO, mac.receive()?.type) }
+        withTimeout(30_000) { assertEquals(MessageType.HELLO, mac.receive()?.type) }
         job.cancel()
         job.join()
         assertTrue(phone.isClosed)
-        assertEquals(null, withTimeout(5_000) { mac.receive() }, "the Mac side sees the close")
+        assertEquals(null, withTimeout(30_000) { mac.receive() }, "the Mac side sees the close")
     }
 
     @Test

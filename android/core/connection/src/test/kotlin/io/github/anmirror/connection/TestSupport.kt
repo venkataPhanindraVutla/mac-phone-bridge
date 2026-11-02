@@ -141,7 +141,7 @@ class TestMacServer(
     }
 
     /** Waits for every connection script to finish, then rethrows the first failure. */
-    fun join(timeoutMs: Long = 10_000) {
+    fun join(timeoutMs: Long = 30_000) {
         val deadline = System.currentTimeMillis() + timeoutMs
         for (t in handlers) t.join(maxOf(1, deadline - System.currentTimeMillis()))
         failures.firstOrNull()?.let { throw AssertionError("Mac script failed: $it", it) }
@@ -171,14 +171,14 @@ class MacConn(val socket: SSLSocket) {
         }
     }
 
-    fun expect(type: String, timeoutMs: Int = 5_000): Envelope {
+    fun expect(type: String, timeoutMs: Int = 30_000): Envelope {
         val e = read(timeoutMs) ?: throw AssertionError("EOF while waiting for $type")
         if (e.type != type) throw AssertionError("expected $type, got ${e.type}")
         return e
     }
 
     /** True if the phone closed the connection (EOF) within [timeoutMs]. */
-    fun awaitEof(timeoutMs: Int = 5_000): Boolean = try {
+    fun awaitEof(timeoutMs: Int = 30_000): Boolean = try {
         read(timeoutMs) == null
     } catch (e: SocketTimeoutException) {
         false

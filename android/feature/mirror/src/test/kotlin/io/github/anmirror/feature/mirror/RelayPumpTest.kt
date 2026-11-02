@@ -39,7 +39,7 @@ class RelayPumpTest {
         waitFor { events.size >= 2 }
         source.output.write(ByteArray(5) { 2 })
         source.close()
-        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertTrue(done.await(30, TimeUnit.SECONDS))
         assertEquals(listOf("write 10", "flush", "write 5", "flush"), events)
         assertContentEquals(ByteArray(10) { 1 } + ByteArray(5) { 2 }, written.toByteArray())
     }
@@ -89,13 +89,13 @@ class RelayPumpTest {
         val source = BytePipe()
         val pump = thread { RelayPump.run(source.input, out, meter) {} }
         source.output.write(ByteArray(10))
-        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertTrue(entered.await(30, TimeUnit.SECONDS))
         now = 3_500L
         assertEquals(2_500L, meter.blockedMs())
         release.countDown()
         waitFor { meter.blockedMs() == 0L }
         source.close()
-        pump.join(5_000)
+        pump.join(30_000)
     }
 
     @Test
@@ -122,20 +122,20 @@ class RelayPumpTest {
         }
         val end = CopyOnWriteArrayList<Throwable?>()
         val pump = thread { RelayPump.run(endless, blocked) { end += it } }
-        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertTrue(entered.await(30, TimeUnit.SECONDS))
         Thread.sleep(200)
         assertTrue(read.get() <= RelayPump.BUFFER_BYTES, "read ${read.get()}")
         assertEquals(1, writes.get())
         release.countDown()
-        pump.join(5_000)
+        pump.join(30_000)
         assertEquals(1, end.size)
         assertNull(end.firstOrNull()?.takeIf { it !is RelayPump.WriteFailed })
     }
 }
 
-/** Polls [cond] for up to 5 s. */
+/** Polls [cond] for up to 30 s (generous: the bound only matters when the test fails). */
 fun waitFor(cond: () -> Boolean) {
-    val deadline = System.nanoTime() + 5_000_000_000L
+    val deadline = System.nanoTime() + 30_000_000_000L
     while (!cond()) {
         if (System.nanoTime() > deadline) throw AssertionError("timed out")
         Thread.sleep(5)

@@ -138,7 +138,8 @@ class PhotosServiceTest {
     @After
     fun tearDown() = scope.cancel()
 
-    private fun awaitUntil(what: String, ms: Long = 5_000, condition: () -> Boolean) {
+    /** Polls [condition] for up to [ms]: generous, as the bound only matters when the test fails. */
+    private fun awaitUntil(what: String, ms: Long = 30_000, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + ms
         while (!condition()) {
             if (System.currentTimeMillis() > deadline) throw AssertionError("timed out waiting for $what")
@@ -242,7 +243,7 @@ class PhotosServiceTest {
         nextStream = { FakeStream(BlockingOutput()) }
         val photos = service(FakeLibrary(thumbs = mapOf(1L to byteArrayOf(1))), stallMs = 200)
         val start = System.currentTimeMillis()
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             photos.onThumbs(PhotosThumbsRequest.newBuilder().addIds(1).build())
         }
         assertTrue(streams.single().closed.get())
@@ -256,7 +257,7 @@ class PhotosServiceTest {
         val older = scope.launchThumbs(photos, 1)
         awaitUntil("first stream") { streams.size == 1 }
         photos.onThumbs(PhotosThumbsRequest.newBuilder().addIds(1).build())
-        withTimeout(5_000) { older.join() }
+        withTimeout(30_000) { older.join() }
         assertTrue(streams[0].closed.get())
         assertEquals(listOf(1L, 0L), records((streams[1].output as ByteArrayOutputStream).toByteArray()).map { it.first })
     }
@@ -268,7 +269,7 @@ class PhotosServiceTest {
         val job = scope.launchThumbs(photos, 1)
         awaitUntil("stream") { streams.size == 1 }
         photos.stop()
-        withTimeout(5_000) { job.join() }
+        withTimeout(30_000) { job.join() }
         assertTrue(streams.single().closed.get())
     }
 
@@ -306,14 +307,14 @@ class PhotosServiceTest {
         val newer = scope.launchThumbs(photos, 1)
         awaitUntil("newer stream") { streams.size == 1 }
         firstDial.countDown()
-        withTimeout(5_000) { older.join() }
+        withTimeout(30_000) { older.join() }
         val late = streams[1]
         val current = streams[0]
         assertTrue(late.closed.get(), "the late, older stream is closed unused")
         assertEquals(0, (late.output as ByteArrayOutputStream).size())
         assertTrue(!current.closed.get(), "the newer stream is left alone")
         photos.stop()
-        withTimeout(5_000) { newer.join() }
+        withTimeout(30_000) { newer.join() }
         assertTrue(current.closed.get())
     }
 
