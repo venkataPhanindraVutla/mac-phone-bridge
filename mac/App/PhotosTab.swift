@@ -44,7 +44,8 @@ struct PhotosTab: View {
         .padding(.top, 8)
         // Keyed on the model, not the server: the model learns of a (re)connect later, through
         // the session's work queue, and a refresh before that would find no session.
-        .task(id: RefreshKey(available: photos.available, enabled: photos.phoneAvailability?.enabled ?? true)) {
+        .task(id: RefreshKey(available: photos.available, enabled: photos.phoneAvailability?.enabled ?? true,
+                             connection: photos.connectionCount)) {
             guard photos.available, photos.phoneAvailability?.enabled ?? true else { return }
             await photos.refresh()
         }
@@ -55,6 +56,10 @@ struct PhotosTab: View {
         if photos.items.isEmpty {
             if photos.loading {
                 ProgressView().frame(maxWidth: .infinity)
+            } else if photos.listFailed {
+                Text("Couldn't load photos from the phone.").foregroundStyle(.secondary)
+                Button("Try Again") { Task { await photos.refresh() } }
+                    .accessibilityLabel(Text("Try Again"))
             } else {
                 Text("No photos yet.").foregroundStyle(.secondary)
             }
@@ -97,6 +102,7 @@ struct PhotosTab: View {
     private struct RefreshKey: Equatable {
         let available: Bool
         let enabled: Bool
+        let connection: Int
     }
 }
 

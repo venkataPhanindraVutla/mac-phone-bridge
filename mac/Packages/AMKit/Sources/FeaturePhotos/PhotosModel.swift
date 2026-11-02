@@ -40,6 +40,12 @@ public final class PhotosModel: SessionFeature {
     public private(set) var phoneAvailability: AMFeatureAvailability?
     /// A refresh is waiting for the list.
     public private(set) var loading = false
+    /// The last refresh got no answer to its list request (a slow or silent phone), so an empty
+    /// list means "could not load", not "no photos".
+    public private(set) var listFailed = false
+    /// Counts connects, so a view can refresh even when a disconnect and reconnect pass with no
+    /// render between them.
+    public private(set) var connectionCount = 0
     /// The phone in session shares `photos.v1`: set when the session reaches this model, which
     /// is after the server reports the connection, so the window keys on this, not on the server.
     public private(set) var available = false
@@ -91,6 +97,7 @@ public final class PhotosModel: SessionFeature {
 
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
         let wanted = refreshPending
+        connectionCount += 1
         isConnected = true
         sharesPhotos = shared.contains("photos.v1")
         available = sharesPhotos
@@ -148,6 +155,7 @@ public final class PhotosModel: SessionFeature {
         guard sharesPhotos else { return }
         let gen = restart()
         loading = true
+        listFailed = false
         let requestID = engine.nextRequestID()
         let answer = Answer<AMPhotosList>()
         listWaiter = (requestID, answer)
@@ -168,6 +176,7 @@ public final class PhotosModel: SessionFeature {
         loading = false
         guard let list else {
             Self.log.info("list \(requestID, privacy: .public) got no answer")
+            listFailed = true
             return
         }
         items = Array(list.items.prefix(Int(Self.pageSize)))
@@ -302,6 +311,7 @@ public final class PhotosModel: SessionFeature {
         thumbnails = [:]
         partialAccess = false
         loading = false
+        listFailed = false
     }
 
     // MARK: private

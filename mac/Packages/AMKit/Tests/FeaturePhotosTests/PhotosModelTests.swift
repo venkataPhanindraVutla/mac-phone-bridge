@@ -146,6 +146,29 @@ private final class Rig {
     #expect(!r.model.loading)
     #expect(r.model.items.isEmpty)
     #expect(r.sent.of(.photosThumbs, AMPhotosThumbsRequest.self).isEmpty)
+    #expect(r.model.listFailed)
+    // The next refresh starts clean, and an answer clears the flag.
+    try await r.refreshed([1])
+    #expect(!r.model.listFailed)
+    #expect(r.model.items.map(\.id) == [1])
+}
+
+@MainActor @Test func clearForgetsAFailedList() async throws {
+    let r = Rig(requestTimeout: .milliseconds(100)); defer { r.cleanUp() }
+    await r.connect()
+    await r.model.refresh()
+    #expect(r.model.listFailed)
+    r.model.clear()
+    #expect(!r.model.listFailed)
+}
+
+@MainActor @Test func everyConnectCountsEvenWithNoRenderBetween() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    let first = r.model.connectionCount
+    await r.connect()
+    r.model.disconnected()
+    await r.connect()
+    #expect(r.model.connectionCount == first + 2)
 }
 
 @MainActor @Test func nothingIsSentWithoutPhotosV1() async throws {
