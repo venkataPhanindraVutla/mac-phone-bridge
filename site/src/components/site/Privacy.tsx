@@ -1,8 +1,11 @@
 import { useState } from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
-import { IconCloudOff, IconDeviceLaptop, IconDeviceMobile, IconShieldCheck, IconShieldX, IconCode, IconLock } from "@tabler/icons-react"
+import { IconCloudOff, IconDeviceLaptop, IconShieldCheck, IconShieldX, IconCode, IconLock } from "@tabler/icons-react"
 import { BackgroundBeams } from "@/components/ui/background-beams"
+import { AndroidPhone, MacBook } from "./devices"
+import { LogoMark, Wallpaper } from "./parts"
 import { cn } from "@/lib/utils"
+import { SectionHead, sectionPad } from "./Section"
 
 const path = "M 92 150 C 220 70, 380 70, 508 150"
 const strangerPath = "M 300 262 C 330 220, 420 200, 470 170"
@@ -50,8 +53,8 @@ function Bridge() {
         </AnimatePresence>
       </svg>
 
-      <Node className="top-[51.7%] left-[15.3%]" tone="lime" label="Your phone" icon={<IconDeviceMobile size={28} stroke={1.5} />} />
-      <Node className="top-[51.7%] left-[84.7%]" tone="pink" label="Your Mac" icon={<IconDeviceLaptop size={28} stroke={1.5} />} />
+      <Node className="top-[51.7%] left-[15.3%]" device="phone" label="Your phone" />
+      <Node className="top-[51.7%] left-[84.7%]" device="mac" label="Your Mac" />
       <div className="absolute top-[13.8%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
         <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-night text-haze/70 ring-1 ring-line">
           <IconCloudOff size={21} stroke={1.5} aria-hidden="true" />
@@ -80,13 +83,26 @@ function Bridge() {
   )
 }
 
-function Node({ className, tone, label, icon }: { className: string; tone: "lime" | "pink"; label: string; icon: React.ReactNode }) {
+function Node({ className, device, label }: { className: string; device: "phone" | "mac"; label: string }) {
+  // The same hardware as the day story, drawn small: em sizes scale with this font size.
   return (
-    <div className={cn("absolute -translate-x-1/2 -translate-y-1/2 text-center", className)}>
-      <span className={cn("grid h-14 w-14 place-items-center rounded-2xl bg-deep ring-1 sm:h-16 sm:w-16", tone === "lime" ? "text-lime ring-lime/30" : "text-pink ring-pink/30")} aria-hidden="true">
-        {icon}
-      </span>
-      <p className="mt-2 text-sm whitespace-nowrap text-haze">{label}</p>
+    <div className={cn("absolute -translate-x-1/2 -translate-y-[62%] text-center", className)}>
+      <div aria-hidden="true" className="text-[4px] sm:text-[5.5px]">
+        {device === "phone" ? (
+          <AndroidPhone className="mx-auto w-[11em]">
+            <div className="grid h-full place-items-center bg-lime text-night">
+              <LogoMark className="h-[5em] w-[5em]" />
+            </div>
+          </AndroidPhone>
+        ) : (
+          <MacBook className="mx-auto w-[25em] sm:w-[30em]">
+            <div className="absolute inset-0">
+              <Wallpaper />
+            </div>
+          </MacBook>
+        )}
+      </div>
+      <p className="mt-3 text-sm whitespace-nowrap text-haze">{label}</p>
     </div>
   )
 }
@@ -95,9 +111,9 @@ function PairCodes() {
   return (
     <div className="flex items-center justify-center gap-3 py-2" aria-hidden="true">
       {["Mac", "Phone"].map((d, i) => (
-        <div key={d} className={cn("rounded-xl px-3.5 py-2.5 text-center ring-1", i === 0 ? "bg-[#1c1c1c] ring-white/10" : "bg-[#f2f2f2] text-[#1c1b22] ring-black/5")}>
+        <div key={d} className={cn("rounded-xl px-3 py-2.5 text-center ring-1", i === 0 ? "bg-[#1c1c1c] ring-white/10" : "bg-[#f2f2f2] text-[#1c1b22] ring-black/5")}>
           <p className={cn("text-[0.7rem]", i === 0 ? "text-white/50" : "text-black/45")}>{d}</p>
-          <p className="font-display text-[1.15rem] font-semibold tracking-[0.12em] tabular-nums">418 027</p>
+          <p className="font-display text-[1.05rem] font-semibold tracking-[0.08em] whitespace-nowrap tabular-nums">418 027</p>
         </div>
       ))}
       <motion.span initial={{ scale: 0 }} whileInView={{ scale: 1 }} viewport={{ once: true }} transition={{ delay: 0.4, type: "spring" }} className="grid h-7 w-7 place-items-center rounded-full bg-lime text-night">
@@ -139,19 +155,12 @@ function Struck({ children, delay }: { children: string; delay: number }) {
 
 export function Privacy() {
   return (
-    <section id="privacy" aria-labelledby="privacy-h" className="relative overflow-x-clip py-24 lg:py-36">
+    <section id="privacy" aria-labelledby="privacy-h" className={`relative overflow-x-clip border-t border-line ${sectionPad}`}>
       <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[44rem] opacity-70 [mask-image:linear-gradient(to_bottom,black,transparent)]">
         <BackgroundBeams />
       </div>
       <div className="wrap relative">
-        <div className="mx-auto max-w-[44rem] text-center">
-          <h2 id="privacy-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
-            Phone to Mac, and nothing in between.
-          </h2>
-          <p className="mx-auto mt-6 max-w-[34rem] text-lg text-haze">
-            The two apps find each other on your local network and talk directly. There is no server, so there's nothing to sign in to.
-          </p>
-        </div>
+        <SectionHead id="privacy-h" center title={<>Phone to Mac, and nothing in between.</>} lede={<>The two apps find each other on your local network and talk directly. There is no server, so there's nothing to sign in to.</>} />
 
         <div className="mt-12">
           <Bridge />

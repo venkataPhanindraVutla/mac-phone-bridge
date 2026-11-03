@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react"
 import { cn } from "@/lib/utils"
 import { DuoStage, type Scene } from "./DuoStage"
+import { SectionHead, sectionPad } from "./Section"
 
 type Moment = { time: string; title: string; body: ReactNode; try: string; scene: Scene }
 
@@ -90,16 +91,9 @@ export function Day() {
   const reduce = useReducedMotion()
 
   return (
-    <section id="day" aria-labelledby="day-h" className="relative pt-10 pb-24 lg:pb-40">
+    <section id="day" aria-labelledby="day-h" className={`relative ${sectionPad} pt-16 lg:pt-20`}>
       <div className="wrap">
-        <header className="max-w-[46rem]">
-          <h2 id="day-h" className="display text-[clamp(2.4rem,6vw,4.5rem)]">
-            Your phone can stay in your bag.
-          </h2>
-          <p className="mt-6 max-w-[38rem] text-lg text-haze">
-            Here's a working day with it. Each moment plays by itself as you reach it, and you can take over at any point.
-          </p>
-        </header>
+        <SectionHead id="day-h" title={<>Your phone can stay in your bag.</>} lede={<>Here's a working day with it. Each moment plays by itself as you reach it, and you can take over at any point.</>} />
 
         <div className="mt-10 lg:mt-16 lg:grid lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:gap-14">
           <div>

@@ -19,6 +19,7 @@ import {
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { cn } from "@/lib/utils"
 import { Photo, Wallpaper } from "./parts"
+import { SectionHead, sectionPad } from "./Section"
 
 function useLoop(ms: number) {
   const ref = useRef<HTMLDivElement>(null)
@@ -305,16 +306,9 @@ function TrackpadDemo() {
 
 export function Features() {
   return (
-    <section id="features" aria-labelledby="features-h" className="relative py-24 lg:py-36">
+    <section id="features" aria-labelledby="features-h" className={`relative border-t border-line ${sectionPad}`}>
       <div className="wrap">
-        <div className="grid items-end gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <h2 id="features-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
-            And everything else your phone does, on the Mac.
-          </h2>
-          <p className="max-w-[30rem] text-lg text-haze lg:justify-self-end">
-            Notifications, codes, calls, photos and Full mode are in the day above. These are the rest, all built and in testing. Try them.
-          </p>
-        </div>
+        <SectionHead id="features-h" title={<>And everything else your phone does, on the Mac.</>} lede={<>Notifications, codes, calls, photos and Full mode are in the day above. These are the rest, all built and in testing. Try them.</>} />
 
         <ul className="mt-16 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <Tile title="Shared clipboard" text="Copy on one, paste on the other. Text a password manager marks as secret is never sent.">

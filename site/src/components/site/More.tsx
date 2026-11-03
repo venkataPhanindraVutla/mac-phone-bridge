@@ -4,8 +4,6 @@ import {
   IconBrandGithub,
   IconCheck,
   IconCopy,
-  IconDeviceLaptop,
-  IconDeviceMobile,
   IconMessageCircleQuestion,
   IconPlus,
   IconCamera,
@@ -21,7 +19,9 @@ import { TextHoverEffect } from "@/components/ui/text-hover-effect"
 import { Timeline } from "@/components/ui/timeline"
 import { cn } from "@/lib/utils"
 import { BRAND, REPO, docs } from "@/config"
-import { LogoMark } from "./parts"
+import { AndroidPhone, MacBook } from "./devices"
+import { LogoMark, Wallpaper } from "./parts"
+import { SectionHead, sectionPad } from "./Section"
 
 const commands = [`git clone ${REPO}.git`, "cd mac-phone-bridge"]
 const comment = '# then follow "Build it" in README.md'
@@ -86,11 +86,11 @@ function DeviceCard({ icon, title, rows }: { icon: ReactNode; title: string; row
     <div className="relative rounded-[1.5rem] p-px">
       <GlowingEffect spread={40} glow disabled={false} proximity={64} inactiveZone={0.01} borderWidth={1.5} />
       <div className="relative h-full rounded-[calc(1.5rem-1px)] bg-deep p-7 ring-1 ring-line">
-        <div className="flex items-center gap-3">
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-white/[0.05] text-mist ring-1 ring-white/10" aria-hidden="true">
+        <div className="flex items-end justify-between gap-4">
+          <h3 className="font-display text-[1.5rem] font-semibold tracking-tight">{title}</h3>
+          <div aria-hidden="true" className="text-[3.6px]">
             {icon}
-          </span>
-          <h3 className="font-display text-[1.4rem] font-semibold tracking-tight">{title}</h3>
+          </div>
         </div>
         <dl className="mt-6 divide-y divide-line">
           {rows.map(([k, v]) => (
@@ -107,20 +107,19 @@ function DeviceCard({ icon, title, rows }: { icon: ReactNode; title: string; row
 
 export function Setup() {
   return (
-    <section id="setup" aria-labelledby="setup-h" className="py-24 lg:py-36">
+    <section id="setup" aria-labelledby="setup-h" className={`border-t border-line ${sectionPad}`}>
       <div className="wrap">
-        <div className="grid items-end gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <h2 id="setup-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
-            What you need.
-          </h2>
-          <p className="max-w-[30rem] text-lg text-haze lg:justify-self-end">
-            One Mac and one Android phone on the same network. A 5 GHz Wi-Fi network gives Full mode its best picture.
-          </p>
-        </div>
+<SectionHead id="setup-h" title={<>What you need.</>} lede={<>One Mac and one Android phone on the same network. A 5 GHz Wi-Fi network gives Full mode its best picture.</>} />
 
         <div className="mt-14 grid gap-4 md:grid-cols-2">
           <DeviceCard
-            icon={<IconDeviceLaptop size={22} stroke={1.6} />}
+            icon={
+              <MacBook className="w-[34em]">
+                <div className="absolute inset-0">
+                  <Wallpaper />
+                </div>
+              </MacBook>
+            }
             title="Mac"
             rows={[
               ["System", "macOS 14 Sonoma or later"],
@@ -129,7 +128,13 @@ export function Setup() {
             ]}
           />
           <DeviceCard
-            icon={<IconDeviceMobile size={22} stroke={1.6} />}
+            icon={
+              <AndroidPhone className="w-[12em]">
+                <div className="grid h-full place-items-center bg-lime text-night">
+                  <LogoMark className="h-[5em] w-[5em]" />
+                </div>
+              </AndroidPhone>
+            }
             title="Android phone"
             rows={[
               ["Most features", "Android 10 or later"],
@@ -193,7 +198,7 @@ const built = [
 
 const timeline = [
   {
-    title: "Built",
+    title: <span className="text-mist">Built</span>,
     content: (
       <div>
         <p className="mb-5 max-w-[34rem] text-haze">All five milestones are built and in testing.</p>
@@ -208,7 +213,7 @@ const timeline = [
     ),
   },
   {
-    title: "Beta, now",
+    title: <span className="text-lime">Beta, now</span>,
     content: (
       <div>
         <p className="mb-5 max-w-[34rem] text-haze">A private beta, with testers on several phone models. This is where it is today.</p>
@@ -249,14 +254,9 @@ const timeline = [
 
 export function Status() {
   return (
-    <section id="status" aria-labelledby="status-h" className="py-24 lg:py-32">
+    <section id="status" aria-labelledby="status-h" className={`border-t border-line ${sectionPad}`}>
       <div className="wrap">
-        <div className="grid items-end gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <h2 id="status-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
-            Where it's at.
-          </h2>
-          <p className="max-w-[30rem] text-lg text-haze lg:justify-self-end">Not released yet. Everything is built and being tested in a private beta. The public release follows.</p>
-        </div>
+<SectionHead id="status-h" title={<>Where it's at.</>} lede={<>Not released yet. Everything is built and being tested in a private beta. The public release follows.</>} />
         <div className="mt-6">
           <Timeline data={timeline} />
         </div>
@@ -322,10 +322,10 @@ function Question({ q, a, open, onToggle, id }: { q: string; a: string; open: bo
 export function Faq() {
   const [open, setOpen] = useState(0)
   return (
-    <section id="faq" aria-labelledby="faq-h" className="py-24 lg:py-36">
+    <section id="faq" aria-labelledby="faq-h" className={`border-t border-line ${sectionPad}`}>
       <div className="wrap grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
         <div className="lg:sticky lg:top-28 lg:self-start">
-          <h2 id="faq-h" className="display text-[clamp(2.2rem,5vw,4rem)]">
+          <h2 id="faq-h" className="display text-[clamp(2.4rem,5.4vw,4.4rem)]">
             Questions.
           </h2>
           <div className="mt-8 rounded-[1.4rem] bg-deep p-6 ring-1 ring-line">
@@ -383,7 +383,7 @@ export function Footer() {
             <a className="text-haze hover:text-mist" href={docs("docs/ROADMAP.md")}>Roadmap</a>
           </nav>
         </div>
-        <div className="mt-10 hidden h-[clamp(8rem,16vw,15rem)] md:block" aria-hidden="true">
+        <div className="mt-10 h-[clamp(5rem,16vw,15rem)]" aria-hidden="true">
           <TextHoverEffect text={BRAND} width={760} />
         </div>
         <p className="mt-10 text-[0.82rem] text-haze/70 md:mt-4">
