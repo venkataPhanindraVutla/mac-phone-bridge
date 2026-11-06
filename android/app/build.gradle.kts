@@ -69,7 +69,9 @@ android {
             if (providers.gradleProperty("betaSigning").orNull == "true") {
                 signingConfig = signingConfigs.getByName("debug")
             }
-            isMinifyEnabled = false
+            // R8 shrinks the code and drops unused resources: about 34 MB of dex becomes a few MB.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -91,6 +93,10 @@ android {
     }
 
     packaging {
+        // Compress dex and native libraries inside the APK, so the download is as small as it can be.
+        // (Stored uncompressed they load slightly faster, but the APK is roughly twice the size.)
+        dex { useLegacyPackaging = true }
+        jniLibs { useLegacyPackaging = true }
         resources {
             // bcpkix, bcutil and bcprov (Full mode's ADB identity) each carry the same Bouncy Castle
             // licence; one copy ships, and assets/licenses has it too.

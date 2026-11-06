@@ -9,7 +9,7 @@ export const RELEASE = {
   version: "0.9.0 beta 1",
   page: `${REPO}/releases/tag/${TAG}`,
   dmg: { url: `${REPO}/releases/download/${TAG}/MacPhoneBridge-0.9.0-beta.1.dmg`, size: "7.7 MB" },
-  apk: { url: `${REPO}/releases/download/${TAG}/MacPhoneBridge-0.9.0-beta.1.apk`, size: "43.6 MB" },
+  apk: { url: `${REPO}/releases/download/${TAG}/MacPhoneBridge-0.9.0-beta.1.apk`, size: "5.8 MB" },
 }
 
 /** Paths inside this site, which is served from a sub-folder on GitHub Pages. */
