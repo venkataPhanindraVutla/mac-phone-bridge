@@ -41,6 +41,6 @@ class AndroidClipboard(private val context: Context) : ClipboardAccess {
     }
 
     private companion object {
-        const val LABEL = "Android Mirroring"
+        const val LABEL = "Mac Phone Bridge"
     }
 }

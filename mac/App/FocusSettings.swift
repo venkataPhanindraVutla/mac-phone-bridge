@@ -12,8 +12,8 @@ struct FocusSettings: View {
     static let steps: [LocalizedStringResource] = [
         "Open the Shortcuts app and create a new shortcut.",
         "Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On.",
-        "Name the shortcut “Android Mirroring Focus On”.",
-        "Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”.",
+        "Name the shortcut “Mac Phone Bridge Focus On”.",
+        "Create a second shortcut that turns Do Not Disturb Off, named “Mac Phone Bridge Focus Off”.",
         "Come back here and click Check Again.",
     ]
 
@@ -69,9 +69,9 @@ struct FocusSettings: View {
     private var macToPhone: LocalizedStringResource? {
         switch focus.authorization {
         case .denied, .notDetermined:
-            return "Allow Android Mirroring to read your Focus status in System Settings."
+            return "Allow Mac Phone Bridge to read your Focus status in System Settings."
         case .unavailable:
-            return "This build of Android Mirroring can't read Focus status."
+            return "This build of Mac Phone Bridge can't read Focus status."
         case .authorized:
             guard let applies = focus.phoneAvailability?.applies else { return nil }
             if applies.enabled { return "Focus on this Mac turns on Do Not Disturb on your phone." }

@@ -58,7 +58,7 @@ struct PairingWindow: View {
                 if remaining > 0, !model.server.pairingSecretSpent {
                     VStack(spacing: 12) {
                         QRCodeView(text: uri.string).frame(width: 240, height: 240)
-                        Text("Scan this with the Android Mirroring app on your phone")
+                        Text("Scan this with the Mac Phone Bridge app on your phone")
                             .multilineTextAlignment(.center)
                         Text("Expires in \(Self.format(remaining))")
                             .monospacedDigit()

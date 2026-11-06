@@ -21,7 +21,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val RELATIVE_PATH = "Download/Android Mirroring"
+private const val RELATIVE_PATH = "Download/Mac Phone Bridge"
 
 /**
  * The sweep's selection: pending rows in our folder that this app owns, except [liveIds] (rows
@@ -43,7 +43,7 @@ internal fun leftoverSelection(ownerPackage: String, liveIds: Collection<Long>):
 data class SavedFile(val uri: Uri, val mime: String)
 
 /**
- * Files from the Mac land in `Download/Android Mirroring` through MediaStore (no storage
+ * Files from the Mac land in `Download/Mac Phone Bridge` through MediaStore (no storage
  * permission). A row is inserted pending (`IS_PENDING = 1`) and published by [IncomingFile.commit];
  * MediaStore renames a colliding name to `name (1).ext`. Every failure deletes the row; pending
  * rows left behind (a killed process, a delete that threw) are swept when the connection service

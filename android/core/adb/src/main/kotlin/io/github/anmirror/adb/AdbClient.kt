@@ -146,7 +146,7 @@ class LibAdbClient(
     private val identity: AdbIdentity,
     private val sdk: Int,
     private val proof: AdbPeerProof,
-    private val deviceName: String = "Android Mirroring",
+    private val deviceName: String = "Mac Phone Bridge",
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     private val log: (String) -> Unit = {},
     private val openTimeoutMs: Long = OPEN_TIMEOUT_MS,

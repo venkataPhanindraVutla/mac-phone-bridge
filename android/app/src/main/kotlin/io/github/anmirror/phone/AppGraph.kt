@@ -873,7 +873,7 @@ class AppGraph private constructor(context: Context) {
     private val bulkEndpoint = MutableStateFlow<Endpoint?>(null)
     private val bulkConnector = BulkConnector(connector)
 
-    /** Received files land in Download/Android Mirroring. */
+    /** Received files land in Download/Mac Phone Bridge. */
     val downloads = MediaStoreDownloads(app)
 
     /**

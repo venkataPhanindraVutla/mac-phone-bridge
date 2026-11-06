@@ -1,8 +1,17 @@
-# Android Mirroring
+# Mac Phone Bridge
 
 **Your Android phone, part of your Mac.** An open-source pair of native apps (Swift on macOS, Kotlin on Android) that brings Continuity-style features to Android users on a Mac.
 
 Website: https://venkataphanindravutla.github.io/mac-phone-bridge/
+
+## Download
+
+**Public beta 0.9.0 beta 1.** Free, no account.
+
+- **Mac** (macOS 14 or later, Apple silicon or Intel): [MacPhoneBridge-0.9.0-beta.1.dmg](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/download/v0.9.0-beta.1/MacPhoneBridge-0.9.0-beta.1.dmg)
+- **Android** (Android 10 or later; Full mode needs 11): [MacPhoneBridge-0.9.0-beta.1.apk](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/download/v0.9.0-beta.1/MacPhoneBridge-0.9.0-beta.1.apk)
+
+Then follow the **[Quick Start](docs/quick-start.md)**, or the same steps with pictures on the website's [Get started](https://venkataphanindravutla.github.io/mac-phone-bridge/start/) page. The Mac app isn't signed by Apple yet, so macOS asks you to confirm it once; the guide shows how. Every build and its checksums are on the [release page](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/tag/v0.9.0-beta.1).
 
 > **Status: milestone 0.5 is code-complete and waiting for checks on real devices.** On top of 0.1 (pairing, a secure connection, phone status in the menu bar, find my phone), 0.2 (notifications, one-time codes, contacts, calls) and 0.3 (clipboard, files, screenshots, photos, browsing your phone's files), 0.4 added control and context (a music controller, Do Not Disturb and Focus sync, auto-lock when you walk away, the phone as a trackpad and presentation remote), and 0.5 adds Full mode: the phone's screen in a Mac window, controlled with the Mac's mouse and keyboard. Everything that depends on a real phone or Mac is **unverified** until the owner checks in the results file are done. The other features below are planned. Results so far: [0.1 results](docs/milestones/0.1-results.md), [0.2 results](docs/milestones/0.2-results.md), [0.3 results](docs/milestones/0.3-results.md), [0.4 results](docs/milestones/0.4-results.md), [0.5 results](docs/milestones/0.5-results.md).
 
@@ -26,7 +35,7 @@ Website: https://venkataphanindravutla.github.io/mac-phone-bridge/
 ### What's in 0.3
 
 - **Shared clipboard** for text, both ways. Text that a password manager marks as secret is not sent. On the phone: a Quick Settings tile, a notification action and the Share sheet.
-- **Send files and links both ways:** drop files on the Phone window, use "Send File to Phone…" in the menu, or share from the phone to "Send to Mac". Transfers queue, show progress, can be cancelled, and a failed one is meant to leave no partial file (to be confirmed on devices). Files sent to the Mac land in Downloads; files sent to the phone land in `Download/Android Mirroring`. Links and text arrive as notifications.
+- **Send files and links both ways:** drop files on the Phone window, use "Send File to Phone…" in the menu, or share from the phone to "Send to Mac". Transfers queue, show progress, can be cancelled, and a failed one is meant to leave no partial file (to be confirmed on devices). Files sent to the Mac land in Downloads; files sent to the phone land in `Download/Mac Phone Bridge`. Links and text arrive as notifications.
 - **Screenshots:** a screenshot taken on the phone arrives on the Mac in your Desktop, Downloads or clipboard, with a notification.
 - **Recent photos:** the newest photos and videos as thumbnails on the Mac; drag them out to Finder or Mail.
 - **Files tab:** browse the phone's files from the Mac's Phone window, download, upload, rename and delete. With All files access (open-source build, Android 11+) or with only the folders you pick.
@@ -77,6 +86,8 @@ Website: https://venkataphanindravutla.github.io/mac-phone-bridge/
 You need a Mac (Apple silicon or Intel) to build both apps.
 
 ### Prerequisites
+
+Run `scripts/doctor.sh` first. It checks this Mac for everything below and prints the fix for anything missing (it changes nothing itself).
 
 - **Xcode 26 or later** (Swift 6).
 - **xcodegen:** `brew install xcodegen`
@@ -157,7 +168,7 @@ Install the debug APK on an Android 10+ phone. In the Mac app, open the menu-bar
 Full mode needs Android 11 or later and a one-time setup on the phone; the phone's own **Full mode** screen walks you through it. In short:
 
 1. On the phone's home screen, tap "Set up Full mode" under "Allow your Mac to show this screen".
-2. Turn on Developer options and Wireless debugging, tap "Pair device with pairing code", and type the code into the notification from Android Mirroring when it asks.
+2. Turn on Developer options and Wireless debugging, tap "Pair device with pairing code", and type the code into the notification from Mac Phone Bridge when it asks.
 3. When the screen says "Full mode is ready.", choose "Show Phone Screen" in the Mac menu.
 
 After a reboot or a change of Wi-Fi network, tap "Re-enable Full mode" on the phone. To turn Full mode off, turn off Wireless debugging or Developer options. On some phones (vivo, OPPO, OnePlus, Xiaomi and others) the screen shows one more switch to turn on, or taps and typing from the Mac won't work. Whether it works on your phone is unverified until the owner checks in [the 0.5 results](docs/milestones/0.5-results.md) are done.
@@ -171,15 +182,15 @@ Focus on the Mac and Do Not Disturb on the phone can follow each other. Any Focu
 
 1. Open the Shortcuts app and create a new shortcut.
 2. Add the action “Set Focus”, choose Do Not Disturb, and set it to turn On.
-3. Name the shortcut “Android Mirroring Focus On”.
-4. Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”.
+3. Name the shortcut “Mac Phone Bridge Focus On”.
+4. Create a second shortcut that turns Do Not Disturb Off, named “Mac Phone Bridge Focus Off”.
 5. Come back here and click Check Again.
 
 "Here" is the Focus section of the Mac app's Settings.
 
 On Android 15 and later, the phone's Do Not Disturb from the Mac is an app "mode" that only the app can switch off, so turning Focus off on the Mac is expected to leave a Do Not Disturb you turned on by hand on the phone (unverified on a device: owner check c). Below Android 15 it is meant to clear it.
 
-Whether the ad-hoc signed Contributor build can read Focus status is not yet confirmed (owner check). If it can't, Settings says "This build of Android Mirroring can't read Focus status." and only the phone-to-Mac direction works.
+Whether the ad-hoc signed Contributor build can read Focus status is not yet confirmed (owner check). If it can't, Settings says "This build of Mac Phone Bridge can't read Focus status." and only the phone-to-Mac direction works.
 
 ## Requirements (planned)
 

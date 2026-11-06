@@ -456,7 +456,7 @@ final class AppModel {
     }
 
     var menuBarAccessibilityLabel: LocalizedStringResource {
-        isConnected ? "Android Mirroring, phone connected" : "Android Mirroring, phone not connected"
+        isConnected ? "Mac Phone Bridge, phone connected" : "Mac Phone Bridge, phone not connected"
     }
 
     /// Find my phone is offered only while the connected phone shares `find.v1`.
@@ -662,7 +662,7 @@ final class AppModel {
     /// Spoken label for the menu-bar item when status is showing.
     var menuBarStatusAccessibilityLabel: String? {
         guard isConnected, let status = phoneStatus.status else { return nil }
-        return String(localized: "Android Mirroring, phone connected") + ", " + StatusFormatter.accessibilityLabel(status)
+        return String(localized: "Mac Phone Bridge, phone connected") + ", " + StatusFormatter.accessibilityLabel(status)
     }
 
     // MARK: mirroring

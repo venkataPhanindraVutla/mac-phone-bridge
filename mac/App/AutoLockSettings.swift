@@ -84,13 +84,13 @@ struct AutoLockSettings: View {
         let b = proximity.blockers
         var lines: [LocalizedStringResource] = []
         if b.contains(.bluetoothOff), proximity.scannerState != .unknown { lines.append("Turn on Bluetooth on this Mac.") }
-        if b.contains(.bluetoothUnauthorized) { lines.append("Allow Bluetooth for Android Mirroring in System Settings.") }
+        if b.contains(.bluetoothUnauthorized) { lines.append("Allow Bluetooth for Mac Phone Bridge in System Settings.") }
         if b.contains(.lockUnavailable) { lines.append("Locking isn't available on this macOS version") }
         if b.contains(.scannerStalled) { lines.append("Bluetooth on this Mac stopped reporting nearby devices.") }
         if b.contains(.macInUse) { lines.append("Not locking while a video or call keeps the screen awake.") }
         switch proximity.phoneIssue {
         case .switchOff: lines.append("Turn on “Let your Mac lock when you walk away” in the phone app.")
-        case .needsPermission: lines.append("Allow Nearby devices for Android Mirroring on the phone.")
+        case .needsPermission: lines.append("Allow Nearby devices for Mac Phone Bridge on the phone.")
         case .bluetooth: lines.append("Bluetooth is off on the phone, or it can't advertise.")
         case .needsUpdate: lines.append("Update the phone app to use Auto-Lock.")
         case nil: break

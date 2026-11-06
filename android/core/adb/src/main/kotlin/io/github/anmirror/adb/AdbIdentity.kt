@@ -34,7 +34,7 @@ class AdbIdentity(val privateKey: PrivateKey, val certificate: X509Certificate) 
         private const val VALID_YEARS = 10L
 
         /** RSA-2048 with a self-signed SHA512withRSA certificate, `CN=<name>`, valid for 10 years from [nowMs]. */
-        fun generate(name: String = "Android Mirroring", nowMs: Long = System.currentTimeMillis()): AdbIdentity {
+        fun generate(name: String = "Mac Phone Bridge", nowMs: Long = System.currentTimeMillis()): AdbIdentity {
             val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(KEY_BITS, SecureRandom()) }.generateKeyPair()
             val subject = X500Name("CN=$name")
             val from = Instant.ofEpochMilli(nowMs)

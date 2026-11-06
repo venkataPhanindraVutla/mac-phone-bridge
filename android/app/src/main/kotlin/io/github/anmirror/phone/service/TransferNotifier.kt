@@ -73,7 +73,7 @@ internal fun failureReasonRes(error: TransferError?, direction: Direction): Int 
  *   per direction, sooner when the active transfer changes, so Android's update rate limit never
  *   drops one; a skipped update is posted once the interval is up.
  * - **Results:** what ended since the direction last started: received files ("Saved to
- *   Download/Android Mirroring", a tap opens the file, or the Downloads view for several) and
+ *   Download/Mac Phone Bridge", a tap opens the file, or the Downloads view for several) and
  *   failures with their reason. Re-posted (cancel, then notify) as results arrive.
  * Posts nothing while POST_NOTIFICATIONS is not granted. Never logs names.
  */

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { IconBrandGithub, IconMenu2, IconX } from "@tabler/icons-react"
 import { cn } from "@/lib/utils"
-import { BRAND, REPO } from "@/config"
+import { BRAND, REPO, page } from "@/config"
 import { LogoMark } from "./parts"
 
 const links = [
@@ -14,7 +14,9 @@ const links = [
   ["Questions", "faq"],
 ] as const
 
-export function Nav() {
+/** `home` is false on other pages: section links then go back to the home page. */
+export function Nav({ home = true }: { home?: boolean }) {
+  const to = (id: string) => (home ? `#${id}` : `${page()}#${id}`)
   const [scrolled, setScrolled] = useState(false)
   const [current, setCurrent] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
@@ -23,12 +25,12 @@ export function Nav() {
     const onScroll = () => {
       setScrolled(window.scrollY > 24)
       // The last section is shorter than half a window, so mark it once the page bottoms out.
-      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) setCurrent("faq")
+      if (home && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) setCurrent("faq")
     }
     onScroll()
     window.addEventListener("scroll", onScroll, { passive: true })
     return () => window.removeEventListener("scroll", onScroll)
-  }, [])
+  }, [home])
 
   // The section under the middle of the window is the current one.
   useEffect(() => {
@@ -56,15 +58,15 @@ export function Nav() {
       )}
     >
       <div className="wrap flex h-16 items-center justify-between gap-6">
-        <a href="#top" className="flex items-center gap-2.5 font-display text-[1.05rem] font-semibold tracking-tight" onClick={() => setOpen(false)}>
+        <a href={home ? "#top" : page()} className="flex items-center gap-2.5 font-display text-[1.05rem] font-semibold tracking-tight whitespace-nowrap" onClick={() => setOpen(false)}>
           <LogoMark className="h-7 w-7 text-mist" />
           {BRAND}
         </a>
-        <nav aria-label="Sections" className="hidden items-center gap-1 text-[0.95rem] lg:flex">
+        <nav aria-label="Sections" className="hidden items-center gap-1 text-[0.95rem] whitespace-nowrap xl:flex">
           {links.map(([label, id]) => (
             <a
               key={id}
-              href={`#${id}`}
+              href={to(id)}
               aria-current={current === id ? "location" : undefined}
               className={cn("relative isolate rounded-full px-3.5 py-1.5 transition-colors", current === id ? "text-mist" : "text-haze hover:text-mist")}
             >
@@ -74,6 +76,9 @@ export function Nav() {
           ))}
         </nav>
         <div className="flex items-center gap-2">
+          <a href={page("start/")} className="hidden h-10 items-center rounded-full bg-lime px-4 text-[0.95rem] font-semibold text-night transition-colors hover:bg-[#e2ff7a] sm:inline-flex">
+            Download
+          </a>
           <a
             href={REPO}
             className="inline-flex h-10 items-center gap-2 rounded-full bg-white/[0.06] px-4 text-[0.95rem] font-medium ring-1 ring-white/10 transition-colors ring-inset hover:bg-white/10"
@@ -87,7 +92,7 @@ export function Nav() {
             aria-expanded={open}
             aria-controls="mobile-menu"
             aria-label={open ? "Close menu" : "Open menu"}
-            className="grid h-10 w-10 place-items-center rounded-full ring-1 ring-white/10 ring-inset lg:hidden"
+            className="grid h-10 w-10 place-items-center rounded-full ring-1 ring-white/10 ring-inset xl:hidden"
           >
             {open ? <IconX size={19} aria-hidden="true" /> : <IconMenu2 size={19} aria-hidden="true" />}
           </button>
@@ -102,13 +107,13 @@ export function Nav() {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className="overflow-hidden border-t border-line lg:hidden"
+            className="overflow-hidden border-t border-line xl:hidden"
           >
             <ul className="wrap py-3">
               {links.map(([label, id]) => (
                 <li key={id}>
                   <a
-                    href={`#${id}`}
+                    href={to(id)}
                     onClick={() => setOpen(false)}
                     aria-current={current === id ? "location" : undefined}
                     className={cn("flex items-center justify-between py-3 font-display text-[1.35rem] font-semibold tracking-tight", current === id ? "text-lime" : "text-mist")}

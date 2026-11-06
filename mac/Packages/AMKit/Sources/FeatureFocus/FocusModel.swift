@@ -10,7 +10,7 @@ import SwiftProtobuf
 /// - **Mac to phone:** the Mac's Focus is read every `pollInterval` while connected, enabled and
 ///   authorized. A transition goes through `EchoGuard` and is sent only while the phone's last
 ///   `applies` is enabled (ruling R22: nil is off). One `snapshot` goes on connect.
-/// - **Phone to Mac:** a `USER` transition that is not a snapshot runs the "Android Mirroring
+/// - **Phone to Mac:** a `USER` transition that is not a snapshot runs the "Mac Phone Bridge
 ///   Focus On" or "Off" shortcut, when both are installed and the Mac's Focus differs (or will,
 ///   once the runs already asked for are done). The shortcut runs detached: `message` returns at
 ///   once, so the ordered queue never waits on it. One run at a time: a request that arrives
@@ -21,8 +21,8 @@ import SwiftProtobuf
 @MainActor
 @Observable
 public final class FocusModel: SessionFeature {
-    nonisolated public static let onShortcut = "Android Mirroring Focus On"
-    nonisolated public static let offShortcut = "Android Mirroring Focus Off"
+    nonisolated public static let onShortcut = "Mac Phone Bridge Focus On"
+    nonisolated public static let offShortcut = "Mac Phone Bridge Focus Off"
 
     public let messagePrefixes = ["dnd."]
 

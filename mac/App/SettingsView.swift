@@ -48,7 +48,7 @@ struct SettingsView: View {
                     ))
                     .accessibilityLabel(Text("Allow \(phone.name) to control the pointer"))
                     if model.allowPointerControl, !model.input.trusted {
-                        Text("Allow Android Mirroring in System Settings › Privacy & Security › Accessibility.")
+                        Text("Allow Mac Phone Bridge in System Settings › Privacy & Security › Accessibility.")
                             .foregroundStyle(.secondary)
                         Button("Open System Settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {

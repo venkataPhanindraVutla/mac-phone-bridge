@@ -4,6 +4,7 @@ import {
   IconBrandGithub,
   IconCheck,
   IconCopy,
+  IconDownload,
   IconMessageCircleQuestion,
   IconPlus,
   IconCamera,
@@ -18,12 +19,12 @@ import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { TextHoverEffect } from "@/components/ui/text-hover-effect"
 import { Timeline } from "@/components/ui/timeline"
 import { cn } from "@/lib/utils"
-import { BRAND, REPO, docs } from "@/config"
+import { BRAND, REPO, docs, page } from "@/config"
 import { AndroidPhone, MacBook } from "./devices"
 import { LogoMark, Wallpaper } from "./parts"
 import { SectionHead, sectionPad } from "./Section"
 
-const commands = [`git clone ${REPO}.git`, "cd mac-phone-bridge"]
+const commands = [`git clone ${REPO}.git`, "cd mac-phone-bridge", "scripts/doctor.sh"]
 const comment = '# then follow "Build it" in README.md'
 
 /** Types the commands out once the terminal is on screen. */
@@ -144,12 +145,22 @@ export function Setup() {
           />
         </div>
 
+        <div className="mt-4 flex flex-col gap-6 rounded-[1.5rem] bg-lime p-7 text-night sm:flex-row sm:items-center sm:justify-between sm:p-9">
+          <div>
+            <h3 className="font-display text-[clamp(1.6rem,3vw,2.2rem)] font-semibold tracking-tight">Install the beta</h3>
+            <p className="mt-2 max-w-[30rem] text-night/75">Download both apps and follow the plain steps. About ten minutes, no account.</p>
+          </div>
+          <a href={page("start/")} className="inline-flex h-12 shrink-0 items-center gap-2 self-start rounded-full bg-night px-6 font-semibold text-mist hover:bg-[#1c1c1c] sm:self-auto">
+            <IconDownload size={19} aria-hidden="true" /> Get started
+          </a>
+        </div>
+
         <div className="mt-20 grid items-center gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16">
           <div>
-            <h3 className="display text-[clamp(1.9rem,3.6vw,2.9rem)]">Build it from source today.</h3>
-            <p className="mt-4 text-haze">There's no download yet. To try it now, build both apps on a Mac.</p>
+            <h3 className="display text-[clamp(1.9rem,3.6vw,2.9rem)]">Or build it yourself.</h3>
+            <p className="mt-4 text-haze">For developers. Start with scripts/doctor.sh: it checks your Mac for Xcode, Java and the Android SDK, and says what to fix.</p>
             <p className="mt-3 text-[0.95rem] text-haze">
-              You'll need Xcode, xcodegen, protoc, JDK 21 and the Android SDK. The README's{" "}
+              The README's{" "}
               <a className="text-mist underline decoration-line underline-offset-4 hover:decoration-pink" href={`${REPO}#build-it`}>
                 Build it
               </a>{" "}
@@ -216,7 +227,7 @@ const timeline = [
     title: <span className="text-lime">Beta, now</span>,
     content: (
       <div>
-        <p className="mb-5 max-w-[34rem] text-haze">A private beta, with testers on several phone models. This is where it is today.</p>
+        <p className="mb-5 max-w-[34rem] text-haze">A public beta, with testers on several phone models. This is where it is today.</p>
         <ul className="grid gap-2 sm:grid-cols-2">
           <Chip state="now" icon={<IconDevices size={18} />}>Hardening across phone makers and Android versions</Chip>
           <Chip state="now" icon={<IconBatteryEco size={18} />}>Under 4% battery a day when idle</Chip>
@@ -256,7 +267,7 @@ export function Status() {
   return (
     <section id="status" aria-labelledby="status-h" className={`border-t border-line ${sectionPad}`}>
       <div className="wrap">
-<SectionHead id="status-h" title={<>Where it's at.</>} lede={<>Not released yet. Everything is built and being tested in a private beta. The public release follows.</>} />
+<SectionHead id="status-h" title={<>Where it's at.</>} lede={<>In public beta. Everything is built and being tested on more phones before 1.0. </>} />
         <div className="mt-6">
           <Timeline data={timeline} />
         </div>
@@ -287,7 +298,7 @@ const faqs: [string, string][] = [
   ],
   [
     "Why isn't it on the Play Store or the App Store yet?",
-    "It isn't released yet. The plan for 1.0 is GitHub Releases for both apps and F-Droid for the Android app, with Google Play later. The Mac app won't be on the Mac App Store: controlling the pointer and keyboard doesn't fit the App Store's sandbox, so it will be downloaded directly.",
+    "It's in public beta now, on GitHub Releases. The plan for 1.0 is GitHub Releases for both apps and F-Droid for the Android app, with Google Play later. The Mac app won't be on the Mac App Store: controlling the pointer and keyboard doesn't fit the App Store's sandbox, so it will be downloaded directly.",
   ],
   [
     "Is it safe?",

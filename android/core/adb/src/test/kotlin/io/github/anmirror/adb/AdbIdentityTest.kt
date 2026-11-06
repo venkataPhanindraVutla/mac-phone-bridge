@@ -24,7 +24,7 @@ class AdbIdentityTest {
         val cert = AdbIdentity.generate(nowMs = now).certificate
         cert.verify(cert.publicKey) // throws unless signed by its own key
         assertEquals(cert.subjectX500Principal, cert.issuerX500Principal)
-        assertEquals("CN=Android Mirroring", cert.subjectX500Principal.name)
+        assertEquals("CN=Mac Phone Bridge", cert.subjectX500Principal.name)
         assertEquals(2048, (cert.publicKey as RSAPublicKey).modulus.bitLength())
         assertEquals("SHA512withRSA", cert.sigAlgName)
         assertEquals(Instant.ofEpochMilli(now).epochSecond, cert.notBefore.toInstant().epochSecond)

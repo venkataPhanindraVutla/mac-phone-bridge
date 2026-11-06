@@ -51,7 +51,7 @@ final class ShareViewController: NSViewController {
             detailLabel.isHidden = true
         } else {
             titleLabel.stringValue = String(localized: "Send to Phone")
-            detailLabel.stringValue = String(localized: "Pair a phone in Android Mirroring first.")
+            detailLabel.stringValue = String(localized: "Pair a phone in Mac Phone Bridge first.")
             sendButton.isEnabled = false
         }
     }

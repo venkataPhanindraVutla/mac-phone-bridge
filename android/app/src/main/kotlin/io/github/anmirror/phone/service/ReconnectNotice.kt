@@ -17,7 +17,7 @@ import io.github.anmirror.phone.R
 import io.github.anmirror.phone.diag.KeepAliveEvent
 
 /**
- * "Android Mirroring stopped / Tap to reconnect": posted by the watchdog when Android refuses to
+ * "Mac Phone Bridge stopped / Tap to reconnect": posted by the watchdog when Android refuses to
  * start the service from the background. Tapping opens the app, whose resume starts the
  * service; the service clears this notice when it is created. Silent, on the `connection`
  * channel. Tagged so its id cannot clash with the transfer notifications' ids.

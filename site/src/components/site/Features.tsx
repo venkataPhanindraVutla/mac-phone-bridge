@@ -314,7 +314,7 @@ export function Features() {
           <Tile title="Shared clipboard" text="Copy on one, paste on the other. Text a password manager marks as secret is never sent.">
             <ClipboardDemo />
           </Tile>
-          <Tile title="Files both ways" text="Drag onto the Phone window, use the Share menu, or Send to Mac. Browse the phone's files and recent photos from the Mac.">
+          <Tile title="Files both ways" text="Drag onto the Phone window, or Send to Mac from the phone’s share sheet. Browse the phone's files and recent photos from the Mac.">
             <FilesDemo />
           </Tile>
           <Tile title="Instant screenshots" text="Take one on the phone and it lands on the Desktop, in Downloads or on the clipboard.">

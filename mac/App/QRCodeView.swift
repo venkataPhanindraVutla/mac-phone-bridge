@@ -14,7 +14,7 @@ struct QRCodeView: View {
                 .padding(8)
                 .background(Color.white)
                 .accessibilityLabel(Text("Pairing QR code"))
-                .accessibilityHint(Text("Scan this with the Android Mirroring app on your phone"))
+                .accessibilityHint(Text("Scan this with the Mac Phone Bridge app on your phone"))
         }
     }
 

@@ -54,7 +54,7 @@ struct MenuContent: View {
             .accessibilityLabel(Text("Settings"))
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
-            .accessibilityLabel(Text("Quit Android Mirroring"))
+            .accessibilityLabel(Text("Quit Mac Phone Bridge"))
     }
 
     @ViewBuilder private var featureSection: some View {
@@ -67,7 +67,7 @@ struct MenuContent: View {
         }
         if model.isConnected, model.canNotify {
             if model.notifications.authorized == false {
-                Text("Allow notifications for Android Mirroring in System Settings.")
+                Text("Allow notifications for Mac Phone Bridge in System Settings.")
                 Button("Open System Settings") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
                         NSWorkspace.shared.open(url)

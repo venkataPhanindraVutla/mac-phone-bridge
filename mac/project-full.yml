@@ -40,7 +40,7 @@ targets:
         INFOPLIST_FILE: Extensions/FileProvider/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: Extensions/FileProvider/FileProvider.entitlements
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.9.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
@@ -64,7 +64,7 @@ targets:
         INFOPLIST_FILE: Extensions/Share/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: Extensions/Share/Share.entitlements
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.9.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES

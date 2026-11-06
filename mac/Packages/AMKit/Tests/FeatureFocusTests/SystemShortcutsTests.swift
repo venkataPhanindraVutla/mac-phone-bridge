@@ -15,10 +15,10 @@ private func tool(_ body: String) throws -> URL {
 @Test func listParsesNames() async throws {
     let url = try tool("""
     [ "$1" = list ] || exit 9
-    printf 'Android Mirroring Focus On\\nAndroid Mirroring Focus Off\\n\\nMorning Routine\\n'
+    printf 'Mac Phone Bridge Focus On\\nMac Phone Bridge Focus Off\\n\\nMorning Routine\\n'
     """)
     let names = await SystemShortcuts(tool: url).list()
-    #expect(names == ["Android Mirroring Focus On", "Android Mirroring Focus Off", "Morning Routine"])
+    #expect(names == ["Mac Phone Bridge Focus On", "Mac Phone Bridge Focus Off", "Morning Routine"])
 }
 
 @Test func listOfNothingIsEmpty() async throws {
@@ -37,7 +37,7 @@ private func tool(_ body: String) throws -> URL {
 @Test func runPassesTheNameAndGetsNoInput() async throws {
     // No stdin: `read` sees end of file at once instead of waiting.
     let url = try tool("""
-    [ "$1" = run ] && [ "$2" = "Android Mirroring Focus On" ] || exit 9
+    [ "$1" = run ] && [ "$2" = "Mac Phone Bridge Focus On" ] || exit 9
     if read line; then exit 8; fi
     exit 0
     """)
@@ -47,14 +47,14 @@ private func tool(_ body: String) throws -> URL {
 @Test func nonZeroExitIsFailed() async throws {
     let url = try tool("echo partial; exit 3")
     let shortcuts = SystemShortcuts(tool: url)
-    #expect(await shortcuts.run("Android Mirroring Focus Off") == .failed(3))
+    #expect(await shortcuts.run("Mac Phone Bridge Focus Off") == .failed(3))
     #expect(await shortcuts.list() == nil)
 }
 
 @Test func missingToolCannotRun() async {
     let shortcuts = SystemShortcuts(tool: URL(fileURLWithPath: "/nonexistent/shortcuts"))
     #expect(await shortcuts.list() == nil)
-    #expect(await shortcuts.run("Android Mirroring Focus On") == .failed(-1))
+    #expect(await shortcuts.run("Mac Phone Bridge Focus On") == .failed(-1))
 }
 
 /// A tool that would run for a minute ends in `.timedOut` at the timeout, not at its own end. The
@@ -65,7 +65,7 @@ private func tool(_ body: String) throws -> URL {
     let shortcuts = SystemShortcuts(tool: url, timeout: .milliseconds(300))
     let clock = ContinuousClock()
     let start = clock.now
-    let result = await shortcuts.run("Android Mirroring Focus On")
+    let result = await shortcuts.run("Mac Phone Bridge Focus On")
     #expect(result == .timedOut)
     #expect(clock.now - start >= .milliseconds(300))
     #expect(clock.now - start < .seconds(30))

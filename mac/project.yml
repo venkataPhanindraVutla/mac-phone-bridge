@@ -63,11 +63,12 @@ targets:
         product: AppSession
     settings:
       base:
-        PRODUCT_NAME: Android Mirroring
+        PRODUCT_NAME: Mac Phone Bridge
+        PRODUCT_MODULE_NAME: AndroidMirroring
         PRODUCT_BUNDLE_IDENTIFIER: io.github.anmirror.mac
         INFOPLIST_FILE: App/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.9.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES

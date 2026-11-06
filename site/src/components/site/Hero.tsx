@@ -1,8 +1,8 @@
 import { useRef } from "react"
 import { motion, useReducedMotion, useScroll, useTransform } from "motion/react"
-import { IconBrandGithub } from "@tabler/icons-react"
+import { IconBrandGithub, IconDownload } from "@tabler/icons-react"
 import { MacbookScroll } from "@/components/ui/macbook-scroll"
-import { BRAND, REPO } from "@/config"
+import { BRAND, RELEASE, REPO, page } from "@/config"
 import { MacScreen } from "./MacScreen"
 import { AppIcon, LogoMark } from "./parts"
 
@@ -43,20 +43,21 @@ export function Hero() {
           </p>
           <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
             <a
-              href={REPO}
+              href={page("start/")}
               className="inline-flex h-12 items-center gap-2 rounded-full bg-lime px-6 font-semibold text-night transition-[transform,background-color] hover:bg-[#e2ff7a] active:scale-[0.98]"
+            >
+              <IconDownload size={20} stroke={1.8} aria-hidden="true" />
+              Download the beta
+            </a>
+            <a
+              href={REPO}
+              className="inline-flex h-12 items-center gap-2 rounded-full px-6 font-medium text-mist ring-1 ring-line transition-[background-color,box-shadow] ring-inset hover:bg-white/5 hover:ring-haze/40"
             >
               <IconBrandGithub size={20} stroke={1.8} aria-hidden="true" />
               View on GitHub
             </a>
-            <a
-              href="#setup"
-              className="inline-flex h-12 items-center rounded-full px-6 font-medium text-mist ring-1 ring-line transition-[background-color,box-shadow] ring-inset hover:bg-white/5 hover:ring-haze/40"
-            >
-              Build from source
-            </a>
           </div>
-          <p className="mt-5 text-sm text-haze">Not released yet. It's in private beta, so there's no download.</p>
+          <p className="mt-5 text-sm text-haze">Free public beta, version {RELEASE.version}. For macOS 14 or later and Android 10 or later.</p>
         </motion.div>
       </motion.div>
 

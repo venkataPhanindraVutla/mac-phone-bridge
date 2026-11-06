@@ -23,15 +23,15 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Android Mirroring connects to your paired phone on this network.</string>
+	<string>Mac Phone Bridge connects to your paired phone on this network.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>Android Mirroring saves files from your phone to Downloads.</string>
+	<string>Mac Phone Bridge saves files from your phone to Downloads.</string>
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>Android Mirroring saves phone screenshots to your Desktop.</string>
+	<string>Mac Phone Bridge saves phone screenshots to your Desktop.</string>
 	<key>NSFocusStatusUsageDescription</key>
-	<string>Android Mirroring reads whether a Focus is on, to turn on Do Not Disturb on your phone.</string>
+	<string>Mac Phone Bridge reads whether a Focus is on, to turn on Do Not Disturb on your phone.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Android Mirroring uses Bluetooth to notice when your phone is away, so it can lock this Mac.</string>
+	<string>Mac Phone Bridge uses Bluetooth to notice when your phone is away, so it can lock this Mac.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_anmirror._tcp</string>

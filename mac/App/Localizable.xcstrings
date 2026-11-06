@@ -56,24 +56,24 @@
         }
       }
     },
-    "Android Mirroring, phone connected": {
+    "Mac Phone Bridge, phone connected": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android Mirroring, phone connected"
+            "value": "Mac Phone Bridge, phone connected"
           }
         }
       }
     },
-    "Android Mirroring, phone not connected": {
+    "Mac Phone Bridge, phone not connected": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android Mirroring, phone not connected"
+            "value": "Mac Phone Bridge, phone not connected"
           }
         }
       }
@@ -166,13 +166,13 @@
         }
       }
     },
-    "Quit Android Mirroring": {
+    "Quit Mac Phone Bridge": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quit Android Mirroring"
+            "value": "Quit Mac Phone Bridge"
           }
         }
       }
@@ -199,13 +199,13 @@
         }
       }
     },
-    "Scan this with the Android Mirroring app on your phone": {
+    "Scan this with the Mac Phone Bridge app on your phone": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scan this with the Android Mirroring app on your phone"
+            "value": "Scan this with the Mac Phone Bridge app on your phone"
           }
         }
       }
@@ -705,13 +705,13 @@
         }
       }
     },
-    "Allow notifications for Android Mirroring in System Settings.": {
+    "Allow notifications for Mac Phone Bridge in System Settings.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow notifications for Android Mirroring in System Settings."
+            "value": "Allow notifications for Mac Phone Bridge in System Settings."
           }
         }
       }
@@ -2048,24 +2048,24 @@
         }
       }
     },
-    "Allow Android Mirroring to read your Focus status in System Settings.": {
+    "Allow Mac Phone Bridge to read your Focus status in System Settings.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow Android Mirroring to read your Focus status in System Settings."
+            "value": "Allow Mac Phone Bridge to read your Focus status in System Settings."
           }
         }
       }
     },
-    "This build of Android Mirroring can't read Focus status.": {
+    "This build of Mac Phone Bridge can't read Focus status.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This build of Android Mirroring can't read Focus status."
+            "value": "This build of Mac Phone Bridge can't read Focus status."
           }
         }
       }
@@ -2136,24 +2136,24 @@
         }
       }
     },
-    "Name the shortcut “Android Mirroring Focus On”.": {
+    "Name the shortcut “Mac Phone Bridge Focus On”.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Name the shortcut “Android Mirroring Focus On”."
+            "value": "Name the shortcut “Mac Phone Bridge Focus On”."
           }
         }
       }
     },
-    "Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”.": {
+    "Create a second shortcut that turns Do Not Disturb Off, named “Mac Phone Bridge Focus Off”.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Create a second shortcut that turns Do Not Disturb Off, named “Android Mirroring Focus Off”."
+            "value": "Create a second shortcut that turns Do Not Disturb Off, named “Mac Phone Bridge Focus Off”."
           }
         }
       }
@@ -2334,13 +2334,13 @@
         }
       }
     },
-    "Allow Bluetooth for Android Mirroring in System Settings.": {
+    "Allow Bluetooth for Mac Phone Bridge in System Settings.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow Bluetooth for Android Mirroring in System Settings."
+            "value": "Allow Bluetooth for Mac Phone Bridge in System Settings."
           }
         }
       }
@@ -2378,13 +2378,13 @@
         }
       }
     },
-    "Allow Nearby devices for Android Mirroring on the phone.": {
+    "Allow Nearby devices for Mac Phone Bridge on the phone.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow Nearby devices for Android Mirroring on the phone."
+            "value": "Allow Nearby devices for Mac Phone Bridge on the phone."
           }
         }
       }
@@ -2466,13 +2466,13 @@
         }
       }
     },
-    "Allow Android Mirroring in System Settings › Privacy & Security › Accessibility.": {
+    "Allow Mac Phone Bridge in System Settings › Privacy & Security › Accessibility.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow Android Mirroring in System Settings › Privacy & Security › Accessibility."
+            "value": "Allow Mac Phone Bridge in System Settings › Privacy & Security › Accessibility."
           }
         }
       }
