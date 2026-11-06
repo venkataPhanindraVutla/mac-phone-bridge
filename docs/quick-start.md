@@ -45,7 +45,25 @@ If your Mac asks to allow Mac Phone Bridge to find devices on your local network
 2. When the download finishes, tap **Open**.
 3. If the phone says it isn't allowed to install apps from this source, tap **Settings**, turn on **Allow from this source**, then go back and tap **Install**.
 4. If **Google Play Protect** shows a warning, tap **More details** and then **Install anyway**. It warns because the app isn't from the Play Store yet.
+   If it says **App blocked to protect your device** and the only button is **Got it**, see [Install it over USB](#if-play-protect-blocks-the-app-install-it-over-usb) below.
 5. Some phones (vivo, Xiaomi, OPPO and others) show one more warning. Choose the option to install anyway.
+
+### If Play Protect blocks the app: install it over USB
+
+In some countries, India among them, Google Play Protect blocks the install instead of warning you: **App blocked to protect your device**, with only a **Got it** button. It does this to every app that can read notifications, which Mac Phone Bridge needs, when the app comes from a browser or a file manager. There's no button to get past it, so please don't turn Play Protect off. An install over a USB cable from a Mac isn't blocked. It takes about five minutes, and you need a cable that carries data, not just charge.
+
+1. On the phone, open **Settings › About phone** and tap **Build number** seven times, until it says you're a developer. On some phones it's under Software information.
+2. Go back to Settings, open **Developer options** (on Pixel it's in **System**) and turn on **USB debugging**. On Xiaomi, Redmi and POCO, also turn on **Install via USB**.
+3. On the Mac, open **Terminal** (press Command-Space, type Terminal, press Return), paste this and press Return:
+
+   ```
+   curl -fsSL https://raw.githubusercontent.com/venkataPhanindraVutla/mac-phone-bridge/main/scripts/install-phone.sh | sh
+   ```
+
+4. Plug the phone in. When it asks **Allow USB debugging?**, tick **Always allow from this computer** and tap **Allow**.
+5. When Terminal says **Installed**, unplug the phone and carry on with step 3. You can turn USB debugging off again.
+
+The command runs [`scripts/install-phone.sh`](../scripts/install-phone.sh). It downloads the beta from GitHub, checks it against the release's checksums, and installs it with Google's own Android tools. It changes no settings.
 
 ## 3. Pair your phone and your Mac
 
@@ -96,6 +114,7 @@ After the phone restarts or joins a different Wi-Fi network, tap **Re-enable Ful
 
 ## If something isn't working
 
+- **Play Protect says "App blocked to protect your device":** install it over USB instead ([see above](#if-play-protect-blocks-the-app-install-it-over-usb)).
 - **The phone can't find the Mac:** check that both are on the same Wi-Fi and that no VPN is on. Guest networks and some office networks block devices from seeing each other, so try a home network or your phone's hotspot.
 - **Your Mac asks to allow access to a Keychain item:** click **Always Allow**. This beta asks again after each update. If a message mentions *exporting* a key, click **Deny** and tell us.
 - **Notifications stop when the phone is locked:** go through step 5 again for your phone's brand.

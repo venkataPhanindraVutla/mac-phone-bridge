@@ -3,9 +3,9 @@
 // The same steps live in docs/quick-start.md for GitHub.
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import qrcode from "qrcode-generator"
-import { IconAlertTriangle, IconBrandApple, IconBrandAndroid, IconBrandGithub, IconCheck, IconCopy, IconDownload, IconShieldCheck, IconX } from "@tabler/icons-react"
+import { IconAlertTriangle, IconBrandApple, IconBrandAndroid, IconBrandGithub, IconCheck, IconCopy, IconDownload, IconShieldCheck, IconShieldX, IconX } from "@tabler/icons-react"
 import { cn } from "@/lib/utils"
-import { BRAND, REPO, RELEASE, docs } from "@/config"
+import { BRAND, REPO, RELEASE, docs, INSTALL_OVER_USB } from "@/config"
 import { AndroidPhone, MacBook } from "../site/devices"
 import { LogoMark, Wallpaper } from "../site/parts"
 import { Footer } from "../site/More"
@@ -202,7 +202,7 @@ function UnknownSources() {
 
 function PlayProtect() {
   return (
-    <Figure caption="If Google Play Protect warns you, tap More details, then Install anyway.">
+    <Figure caption="If Google Play Protect only warns you, tap More details, then Install anyway.">
       <div aria-hidden="true" className="mx-auto w-full max-w-[18rem] rounded-2xl bg-[#f2f2f2] p-4 text-[0.85rem] text-night">
         <p className="flex items-center gap-2 font-semibold">
           <IconShieldCheck size={18} className="text-[#1a73e8]" /> Google Play Protect
@@ -218,6 +218,44 @@ function PlayProtect() {
         </div>
       </div>
     </Figure>
+  )
+}
+
+/** The one with no way past it: enhanced fraud protection, in India and some other countries. */
+function PlayProtectBlocked() {
+  return (
+    <Figure caption="If it says App blocked to protect your device, with only Got it, see Install it over USB below.">
+      <div aria-hidden="true" className="mx-auto w-full max-w-[18rem] rounded-2xl bg-[#efe9e3] p-5 text-center text-[0.85rem] text-night">
+        <IconShieldX size={26} className="mx-auto text-black/60" />
+        <p className="mt-1 text-[0.75rem] text-black/55">Google Play Protect</p>
+        <p className="mt-3 text-[1.15rem] leading-tight">App blocked to protect your device</p>
+        <p className="mt-3 text-left leading-snug text-black/65">This app can request access to sensitive data. This can increase the risk of identity theft or financial fraud.</p>
+        <span className="mt-4 block rounded-full bg-[#6b6152] py-2 font-medium text-white">Got it</span>
+      </div>
+    </Figure>
+  )
+}
+
+/** A command to paste into Terminal, with a copy button. */
+function Command({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1800)
+      },
+      () => undefined,
+    )
+  }
+  return (
+    <div className="mt-3 flex items-start gap-3 rounded-xl bg-[#141414] p-3 ring-1 ring-line">
+      <code className="min-w-0 flex-1 select-all break-all font-mono text-[0.8rem] leading-relaxed text-mist">{text}</code>
+      <button type="button" onClick={copy} className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.8rem] font-medium text-night bg-lime">
+        {copied ? <IconCheck size={15} aria-hidden="true" /> : <IconCopy size={15} aria-hidden="true" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
   )
 }
 
@@ -346,6 +384,40 @@ function Guide() {
               <UnknownSources />
               <PlayProtect />
               <p>Some phones, like vivo, Xiaomi and OPPO, show one more warning. Choose the option to install anyway. The warnings appear because the app isn't from the Play Store yet.</p>
+              <PlayProtectBlocked />
+              <Note tone="warn">
+                In some countries, India among them, Play Protect blocks the install instead of warning you. It does this to every app that can read notifications, which {BRAND} needs, when the app comes from a browser or a file manager. There's no button to get past it, so please don't turn Play Protect off. An install over a USB cable from a Mac isn't blocked.
+              </Note>
+
+              <div id="usb" className="mt-10 scroll-mt-24">
+                <h3 className="font-display text-[1.35rem] font-semibold text-mist">Install it over USB instead</h3>
+                <p className="mt-2">It takes about five minutes, on any Mac with internet. You'll need a USB cable that carries data, not just charge.</p>
+                <Ol>
+                  <li>
+                    On the phone, open <B>Settings › About phone</B> and tap <B>Build number</B> seven times, until it says you're a developer. On some phones it's under Software information.
+                  </li>
+                  <li>
+                    Go back to Settings, open <B>Developer options</B> (on Pixel it's in <B>System</B>) and turn on <B>USB debugging</B>. On Xiaomi, Redmi and POCO, also turn on <B>Install via USB</B>.
+                  </li>
+                  <li>
+                    On the Mac, open <B>Terminal</B> (press Command-Space, type Terminal, press Return), paste this and press Return:
+                    <Command text={INSTALL_OVER_USB} />
+                  </li>
+                  <li>
+                    Plug the phone in. When it asks <B>Allow USB debugging?</B>, tick <B>Always allow from this computer</B> and tap <B>Allow</B>.
+                  </li>
+                  <li>
+                    When Terminal says <B>Installed</B>, unplug the phone and carry on with step 3. You can turn USB debugging off again.
+                  </li>
+                </Ol>
+                <p className="mt-4 text-[0.95rem]">
+                  The command downloads the beta from GitHub, checks it against the release's checksums, and installs it with Google's own Android tools. It changes no settings. You can{" "}
+                  <a href={docs("scripts/install-phone.sh")} className="text-mist underline decoration-line underline-offset-4 hover:decoration-lime">
+                    read the script
+                  </a>{" "}
+                  first.
+                </p>
+              </div>
             </Step>
 
             <Step n={3} id="pair" title="Pair them">
@@ -443,6 +515,7 @@ function Guide() {
 /* ------------------------------------------------------------ troubleshooting */
 
 const problems: [string, ReactNode][] = [
+  ["Play Protect says App blocked to protect your device", <>In some countries Android blocks apps that can read notifications when they're downloaded in a browser. Install it over a USB cable from a Mac instead: see <a href="#usb" className="text-mist underline decoration-line underline-offset-4 hover:decoration-lime">Install it over USB</a> in step 2.</>],
   ["The phone can't find the Mac", "Check that both are on the same Wi-Fi and no VPN is on. Guest and some office networks stop devices from seeing each other: try your home Wi-Fi or your phone's hotspot."],
   ["My Mac asks to allow access to a Keychain item", <>Click <B>Always Allow</B>. This beta asks again after each update. If a message mentions exporting a key, click Deny and tell us.</>],
   ["Notifications stop when the phone is locked", "Go through step 5 again for your phone's brand."],

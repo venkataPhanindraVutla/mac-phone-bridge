@@ -14,3 +14,6 @@ export const RELEASE = {
 
 /** Paths inside this site, which is served from a sub-folder on GitHub Pages. */
 export const page = (path = "") => `${import.meta.env.BASE_URL}${path}`
+
+/** Installs the beta over USB, for phones where Play Protect blocks it (scripts/install-phone.sh). */
+export const INSTALL_OVER_USB = "curl -fsSL https://raw.githubusercontent.com/venkataPhanindraVutla/mac-phone-bridge/main/scripts/install-phone.sh | sh"
