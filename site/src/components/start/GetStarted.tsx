@@ -93,7 +93,7 @@ function Downloads() {
             <a href={RELEASE.dmg.url} className="mt-8 inline-flex h-12 items-center justify-center gap-2 self-start rounded-full bg-lime px-6 font-semibold text-night transition-colors hover:bg-[#e2ff7a]">
               <IconDownload size={19} aria-hidden="true" /> Download for Mac
             </a>
-            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.1.dmg, {RELEASE.dmg.size}</p>
+            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.2.dmg, {RELEASE.dmg.size}</p>
           </div>
 
           <div className="flex flex-col rounded-[1.5rem] bg-deep p-7 ring-1 ring-line sm:p-8">
@@ -113,7 +113,7 @@ function Downloads() {
             <a href={RELEASE.apk.url} className="mt-8 inline-flex h-12 items-center justify-center gap-2 self-start rounded-full bg-pink px-6 font-semibold text-night transition-colors hover:bg-[#ff5cbf]">
               <IconDownload size={19} aria-hidden="true" /> Download for Android
             </a>
-            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.1.apk, {RELEASE.apk.size}. On a Mac, scan the code instead.</p>
+            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.2.apk, {RELEASE.apk.size}. On a Mac, scan the code instead.</p>
           </div>
         </div>
 
@@ -522,7 +522,8 @@ const problems: [string, ReactNode][] = [
   ["It says my Mac doesn't recognise this phone any more", "Pair again, as in step 3."],
   ["Full mode stopped working", <>Tap <B>Re-enable Full mode</B> in the phone app.</>],
   ["How do I update?", "Download the new versions from this page and install them the same way. Your pairing is kept."],
-  ["How do I remove it?", <>On the Mac, choose <B>Forget</B> your phone from the phone icon, quit the app and move it to the Trash. On the phone, uninstall it like any app. When 1.0 comes out, uninstall this beta from the phone first, then pair again.</>],
+  ["I had beta 1 and the phone says the app isn't installed", "Beta 1 was signed with a temporary key, and Android won't update an app signed with a different key. Uninstall Mac Phone Bridge from the phone, install this version, and pair again. Later updates install over it normally."],
+  ["How do I remove it?", <>On the Mac, choose <B>Forget</B> your phone from the phone icon, quit the app and move it to the Trash. On the phone, uninstall it like any app.</>],
 ]
 
 function Trouble() {

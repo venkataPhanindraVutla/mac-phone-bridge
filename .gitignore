@@ -8,3 +8,4 @@ DerivedData/
 .superpowers/
 .DS_Store
 mac/build-fix/
+dist/

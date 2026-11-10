@@ -92,7 +92,7 @@ case "$out" in
     say "Installed. Open Mac Phone Bridge on the phone and carry on with step 3, Pair them."
     say "You can turn USB debugging off again: Full mode doesn't need it." ;;
   *UPDATE_INCOMPATIBLE*)
-    stop "The phone has a copy of Mac Phone Bridge signed by someone else. Uninstall it from the phone, then run this again (you'll pair again afterwards)." ;;
+    stop "The phone has a copy of Mac Phone Bridge signed with a different key (beta 1 used a temporary one). Uninstall it from the phone, then run this again, and pair again afterwards." ;;
   *USER_RESTRICTED*)
     stop "The phone blocked installs over USB. On Xiaomi, Redmi and POCO, turn on Install via USB in Developer options, then run this again." ;;
   *VERSION_DOWNGRADE*)

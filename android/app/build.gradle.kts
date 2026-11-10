@@ -37,8 +37,8 @@ android {
         applicationId = "io.github.anmirror.phone"
         minSdk = libs.versions.androidMinSdk.get().toInt()
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
-        versionCode = 9001
-        versionName = "0.9.0-beta.1"
+        versionCode = 9002
+        versionName = "0.9.0-beta.2"
         // 5.0.1-am1: the helper's own versionName, from the same catalog entry.
         buildConfigField("String", "HELPER_VERSION", "\"${libs.versions.helperVersion.get()}\"")
     }
@@ -63,12 +63,8 @@ android {
 
     buildTypes {
         getByName("release") {
-            // Beta builds for GitHub Releases: `-PbetaSigning=true` signs with this machine's
-            // debug key so testers can install the APK. Without it the release APK stays
-            // unsigned, as F-Droid expects; 1.0 moves to a real release key.
-            if (providers.gradleProperty("betaSigning").orNull == "true") {
-                signingConfig = signingConfigs.getByName("debug")
-            }
+            // Release APKs come out unsigned (as F-Droid expects). scripts/release-apk.sh signs the
+            // GitHub build with the project's release key; the key never enters Gradle.
             // R8 shrinks the code and drops unused resources: about 34 MB of dex becomes a few MB.
             isMinifyEnabled = true
             isShrinkResources = true
