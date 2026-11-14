@@ -46,3 +46,10 @@ message InputKey {
 message InputLaser {
   bool on = 1;
 }
+
+// A key on the phone's Mac keyboard (`keyboard.v1`): a macOS virtual key code (kVK_*) with the
+// modifiers held for it. The Mac posts key down then key up.
+message InputKeyCode {
+  uint32 code = 1;
+  uint32 modifiers = 2;       // bits: 1 shift, 2 control, 4 option, 8 command, 16 fn
+}

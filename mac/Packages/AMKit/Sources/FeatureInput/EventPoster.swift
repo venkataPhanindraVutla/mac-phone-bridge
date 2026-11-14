@@ -18,6 +18,10 @@ public protocol EventPoster: AnyObject {
     func scroll(pixelsX: Int32, pixelsY: Int32)
     /// Key down, then key up.
     func key(_ code: CGKeyCode)
+    /// Key down, then key up, with modifier flags (the phone's Mac keyboard).
+    func key(_ code: CGKeyCode, flags: CGEventFlags)
+    /// A media or brightness key down, then up (`NX_KEYTYPE_*`).
+    func systemKey(_ type: Int32)
 }
 
 /// The real poster: CGEvents to the HID event tap. Needs Accessibility; without it macOS drops
@@ -107,9 +111,27 @@ public final class CGEventPoster: EventPoster {
         event?.post(tap: .cghidEventTap)
     }
 
-    public func key(_ code: CGKeyCode) {
-        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
-        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+    public func key(_ code: CGKeyCode) { key(code, flags: []) }
+
+    public func key(_ code: CGKeyCode, flags: CGEventFlags) {
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+            // Set even when empty, so a modifier held on the Mac's own keyboard doesn't leak in.
+            event?.flags = flags
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    public func systemKey(_ type: Int32) {
+        for down in [true, false] {
+            // NX_SYSDEFINED subtype 8 (aux control button): key type in the high 16 bits, 0xA down / 0xB up.
+            let state = down ? 0xA : 0xB
+            NSEvent.otherEvent(with: .systemDefined, location: .zero,
+                               modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)),
+                               timestamp: 0, windowNumber: 0, context: nil, subtype: 8,
+                               data1: Int(type) << 16 | state << 8, data2: -1)?
+                .cgEvent?.post(tap: .cghidEventTap)
+        }
     }
 }
 

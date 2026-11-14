@@ -98,6 +98,9 @@ class MacInputAvailability(val session: PhoneConnectionState.Connected, val avai
 /** The Mac shares input.v1 in [state]. */
 fun inputShared(state: PhoneConnectionState): Boolean = state is PhoneConnectionState.Connected && "input.v1" in state.shared
 
+/** The Mac has the Mac keyboard (`keyboard.v1`) in [state]. */
+fun keyboardShared(state: PhoneConnectionState): Boolean = state is PhoneConnectionState.Connected && "keyboard.v1" in state.shared
+
 /**
  * The trackpad may send: connected, the Mac shares input.v1, and its last `input.availability`
  * in this very session is enabled. Nothing heard yet, or heard in an earlier session, is closed.

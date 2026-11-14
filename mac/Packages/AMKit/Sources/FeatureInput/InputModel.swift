@@ -153,6 +153,13 @@ public final class InputModel: SessionFeature {
             case .nextSlide: poster.key(124) // Right arrow
             default: break
             }
+        case .inputKeyCode:
+            guard let m = try? AMInputKeyCode(serializedBytes: envelope.payload), admit(),
+                  let action = MacKeyboard.action(code: m.code, modifiers: m.modifiers) else { return }
+            switch action {
+            case let .key(code, flags): poster.key(code, flags: flags)
+            case let .system(type): poster.systemKey(type)
+            }
         case .inputLaser:
             guard let m = try? AMInputLaser(serializedBytes: envelope.payload), admit(always: !m.on) else { return }
             if m.on {

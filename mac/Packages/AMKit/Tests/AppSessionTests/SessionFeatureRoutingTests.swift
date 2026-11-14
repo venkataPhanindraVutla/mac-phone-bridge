@@ -193,6 +193,8 @@ private final class MovePoster: EventPoster {
     func button(_ b: AMMouseButton, down: Bool, at p: CGPoint, clickCount: Int) {}
     func scroll(pixelsX: Int32, pixelsY: Int32) {}
     func key(_ code: CGKeyCode) {}
+    func key(_ code: CGKeyCode, flags: CGEventFlags) {}
+    func systemKey(_ type: Int32) {}
 }
 
 @MainActor

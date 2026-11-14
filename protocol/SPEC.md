@@ -615,6 +615,12 @@ Channel `INPUT`.
   was hidden.
 - The Mac drops frames beyond 240 in any 1 s window, except button-up and laser-off.
 - `REMOTE_KEY_PREV_SLIDE` and `REMOTE_KEY_NEXT_SLIDE` are the Left and Right arrow keys.
+- `input.keycode` (only when both sides have `keyboard.v1`) is one key of the phone's Mac
+  keyboard: `code` is a macOS virtual key code and `modifiers` the keys held with it (1 shift,
+  2 control, 4 option, 8 command, 16 fn). The Mac posts key down then key up with those flags.
+  Caps Lock stays on the phone, which sends shift with letters while it is on. Without fn, the
+  function row acts like the Mac's own: F1/F2 brightness, F3 Mission Control, F4 Spotlight,
+  F7–F9 previous/play/next, F10 mute, F11/F12 volume; F5 and F6 stay plain F5 and F6.
 
 Vectors: `framing.json` `input_move`.
 

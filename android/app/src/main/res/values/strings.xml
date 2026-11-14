@@ -100,6 +100,13 @@
     <string name="trackpad_next">Next</string>
     <string name="trackpad_laser">Laser</string>
     <string name="trackpad_volume_keys">Volume keys change slides</string>
+    <string name="keyboard_hide_trackpad">Hide trackpad</string>
+    <string name="keyboard_hide_keyboard">Hide keyboard</string>
+    <string name="keyboard_show_trackpad">Show trackpad</string>
+    <string name="keyboard_show_keyboard">Keyboard</string>
+    <string name="keyboard_rail_hint">Swipe up with two fingers on the sides for the trackpad</string>
+    <string name="keyboard_sounds">Key sounds</string>
+    <string name="keyboard_haptics">Key vibration</string>
     <string name="trackpad_mac_off">Turn on pointer control in Mac Phone Bridge\'s settings on your Mac.</string>
     <string name="trackpad_mac_needs_accessibility">Allow Mac Phone Bridge in your Mac\'s Accessibility settings.</string>
     <!-- TalkBack label of the trackpad surface. -->

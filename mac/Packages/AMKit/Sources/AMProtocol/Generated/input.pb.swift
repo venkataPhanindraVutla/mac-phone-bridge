@@ -180,6 +180,23 @@ public nonisolated struct AMInputLaser: Sendable {
   public init() {}
 }
 
+/// A key on the phone's Mac keyboard (`keyboard.v1`): a macOS virtual key code (kVK_*) with the
+/// modifiers held for it. The Mac posts key down then key up.
+public nonisolated struct AMInputKeyCode: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var code: UInt32 = 0
+
+  /// bits: 1 shift, 2 control, 4 option, 8 command, 16 fn
+  public var modifiers: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
@@ -387,6 +404,41 @@ nonisolated extension AMInputLaser: SwiftProtobuf.Message, SwiftProtobuf._Messag
 
   public static func ==(lhs: AMInputLaser, rhs: AMInputLaser) -> Bool {
     if lhs.on != rhs.on {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension AMInputKeyCode: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".InputKeyCode"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}code\0\u{1}modifiers\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.code) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.modifiers) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.code != 0 {
+      try visitor.visitSingularUInt32Field(value: self.code, fieldNumber: 1)
+    }
+    if self.modifiers != 0 {
+      try visitor.visitSingularUInt32Field(value: self.modifiers, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: AMInputKeyCode, rhs: AMInputKeyCode) -> Bool {
+    if lhs.code != rhs.code {return false}
+    if lhs.modifiers != rhs.modifiers {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

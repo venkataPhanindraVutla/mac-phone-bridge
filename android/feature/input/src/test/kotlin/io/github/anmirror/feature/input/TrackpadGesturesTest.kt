@@ -4,6 +4,7 @@ import io.github.anmirror.feature.input.InputEvent.Button
 import io.github.anmirror.feature.input.InputEvent.Click
 import io.github.anmirror.feature.input.InputEvent.Move
 import io.github.anmirror.feature.input.InputEvent.Scroll
+import io.github.anmirror.feature.input.InputEvent.Swipe
 import io.github.anmirror.protocol.v1.MouseButton.MOUSE_BUTTON_LEFT
 import io.github.anmirror.protocol.v1.MouseButton.MOUSE_BUTTON_RIGHT
 import kotlin.test.Test
@@ -36,6 +37,41 @@ class TrackpadGesturesTest {
         assertTrue(held.dx > 12f * TrackpadMath.POINTS_PER_DP) // the held 4 dp and this frame's 8 dp, accelerated
         assertEquals(0f, held.dy)
         assertEquals(2, started.size)
+    }
+
+    private fun c(x: Float, y: Float = 0f) = Touch(3, x, y)
+
+    @Test fun longPressThenMoveDrags() {
+        frame(0, a(0f))
+        frame(100, a(3f)) // jitter inside the slop
+        assertEquals(TrackpadGestures.LONG_PRESS_MS, g.longPressDueAt)
+        assertEquals(emptyList(), g.tick(TrackpadGestures.LONG_PRESS_MS - 1))
+        assertEquals(listOf(Button(MOUSE_BUTTON_LEFT, down = true)), g.tick(TrackpadGestures.LONG_PRESS_MS))
+        assertEquals(null, g.longPressDueAt)
+        assertIs<Move>(frame(500, a(30f)).single())
+        assertEquals(listOf(Button(MOUSE_BUTTON_LEFT, down = false)), frame(600))
+    }
+
+    @Test fun movedFingerIsNotALongPress() {
+        frame(0, a(0f))
+        frame(50, a(12f))
+        assertEquals(null, g.longPressDueAt)
+        assertEquals(emptyList(), g.tick(1_000))
+    }
+
+    @Test fun twoFingersAreNotALongPress() {
+        frame(0, a(0f), b(20f))
+        assertEquals(null, g.longPressDueAt)
+    }
+
+    @Test fun threeFingerSwipesOncePerGesture() {
+        frame(0, a(100f), b(120f), c(140f))
+        assertEquals(emptyList(), frame(30, a(90f), b(110f), c(130f))) // 10 dp: not yet
+        assertEquals(listOf(Swipe(Swipe.Direction.LEFT)), frame(60, a(50f), b(70f), c(90f)))
+        assertEquals(emptyList(), frame(90, a(0f), b(20f), c(40f)))
+        assertEquals(emptyList(), frame(120)) // a swipe is not a click
+        frame(1_000, a(0f, 100f), b(20f, 100f), c(40f, 100f))
+        assertEquals(listOf(Swipe(Swipe.Direction.UP)), frame(1_050, a(5f, 40f), b(25f, 40f), c(45f, 40f)))
     }
 
     @Test fun oneFingerMoveSendsMoves() {

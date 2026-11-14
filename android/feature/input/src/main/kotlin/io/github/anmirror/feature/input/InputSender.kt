@@ -5,6 +5,7 @@ import io.github.anmirror.protocol.MessageType
 import io.github.anmirror.protocol.v1.InputButton
 import io.github.anmirror.protocol.v1.InputClick
 import io.github.anmirror.protocol.v1.InputKey
+import io.github.anmirror.protocol.v1.InputKeyCode
 import io.github.anmirror.protocol.v1.InputLaser
 import io.github.anmirror.protocol.v1.InputMove
 import io.github.anmirror.protocol.v1.InputScroll
@@ -92,6 +93,11 @@ class InputSender(
 
     fun key(k: RemoteKey) = update {
         enqueue(MessageType.INPUT_KEY, InputKey.newBuilder().setKey(k).build())
+    }
+
+    /** One key of the Mac keyboard: a macOS virtual key code and [KeyModifiers] bits (SPEC 23). */
+    fun keyCode(code: Int, modifiers: Int) = update {
+        enqueue(MessageType.INPUT_KEYCODE, InputKeyCode.newBuilder().setCode(code).setModifiers(modifiers).build())
     }
 
     fun laser(on: Boolean) = update {

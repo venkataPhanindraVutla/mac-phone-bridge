@@ -14,6 +14,8 @@ private final class FakePoster: EventPoster {
         case button(AMMouseButton, down: Bool, CGPoint, count: Int)
         case scroll(Int32, Int32)
         case key(CGKeyCode)
+        case keyFlags(CGKeyCode, CGEventFlags.RawValue)
+        case system(Int32)
     }
 
     var calls: [Call] = []
@@ -36,6 +38,8 @@ private final class FakePoster: EventPoster {
     }
     func scroll(pixelsX: Int32, pixelsY: Int32) { calls.append(.scroll(pixelsX, pixelsY)) }
     func key(_ code: CGKeyCode) { calls.append(.key(code)) }
+    func key(_ code: CGKeyCode, flags: CGEventFlags) { calls.append(.keyFlags(code, flags.rawValue)) }
+    func systemKey(_ type: Int32) { calls.append(.system(type)) }
 }
 
 @MainActor
@@ -144,6 +148,13 @@ private final class Rig {
         var m = AMInputKey()
         m.key = k
         await send(.inputKey, m)
+    }
+
+    func keyCode(_ code: UInt32, _ modifiers: UInt32 = 0) async {
+        var m = AMInputKeyCode()
+        m.code = code
+        m.modifiers = modifiers
+        await send(.inputKeyCode, m)
     }
 
     func laserFrame(_ on: Bool) async {
@@ -334,6 +345,34 @@ private func reason(_ a: AMFeatureAvailability?) -> AMAvailabilityReason? {
     await r.key(.nextSlide)
     await r.key(.unspecified)
     #expect(r.poster.calls == [.key(123), .key(124)])
+}
+
+@MainActor @Test func keyCodesPostWithModifiersAndTopRow() async {
+    let r = Rig()
+    await r.connect()
+    await r.keyCode(8, MacKeyboard.command)                  // ⌘C
+    await r.keyCode(21, MacKeyboard.option | MacKeyboard.shift)
+    await r.keyCode(111)                                     // F12 alone: volume up
+    await r.keyCode(111, MacKeyboard.fn)                     // fn+F12: plain F12
+    await r.keyCode(200)                                     // not a key code: dropped
+    #expect(r.poster.calls == [
+        .keyFlags(8, CGEventFlags.maskCommand.rawValue),
+        .keyFlags(21, CGEventFlags([.maskAlternate, .maskShift]).rawValue),
+        .system(0),
+        .keyFlags(111, CGEventFlags.maskSecondaryFn.rawValue),
+    ])
+}
+
+@MainActor @Test func keyCodeTopRowMatchesTheMac() {
+    #expect(MacKeyboard.action(code: 122, modifiers: 0) == .system(3))
+    #expect(MacKeyboard.action(code: 118, modifiers: 0) == .key(49, .maskCommand))
+    #expect(MacKeyboard.action(code: 99, modifiers: 0) == .key(160, []))
+    #expect(MacKeyboard.action(code: 96, modifiers: 0) == .key(96, []))
+    #expect(MacKeyboard.action(code: 0, modifiers: MacKeyboard.control) == .key(0, .maskControl))
+    #expect(MacKeyboard.action(code: 128, modifiers: 0) == nil)
+    // Arrows carry fn and keypad, as the built-in keyboard sends them: ⌃→ must match the Spaces shortcut.
+    #expect(MacKeyboard.action(code: 124, modifiers: MacKeyboard.control) == .key(124, [.maskControl, .maskSecondaryFn, .maskNumericPad]))
+    #expect(MacKeyboard.action(code: 123, modifiers: 0) == .key(123, [.maskSecondaryFn, .maskNumericPad]))
 }
 
 @MainActor @Test func laserFollowsPointerAndHides() async {

@@ -447,7 +447,7 @@ private struct FilenamesFile: Decodable {
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 81)
+    #expect(MessageType.allCases.count == 82)
     let expected: [MessageType: String] = [
         .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
         .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
@@ -496,6 +496,7 @@ private struct FilenamesFile: Decodable {
         .proximityAvailability: "proximity.availability",
         .inputMove: "input.move", .inputButton: "input.button", .inputClick: "input.click",
         .inputScroll: "input.scroll", .inputKey: "input.key", .inputLaser: "input.laser",
+        .inputKeyCode: "input.keycode",
         .inputAvailability: "input.availability",
         .mirrorAvailability: "mirror.availability", .mirrorStart: "mirror.start",
         .mirrorState: "mirror.state", .mirrorStop: "mirror.stop",

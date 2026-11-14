@@ -1,6 +1,9 @@
 package io.github.anmirror.phone.remote
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.HapticFeedbackConstants
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
@@ -21,6 +24,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import io.github.anmirror.feature.input.InputEvent
 import io.github.anmirror.feature.input.InputSender
+import io.github.anmirror.feature.input.KeyModifiers
 import io.github.anmirror.feature.input.TouchFrame
 import io.github.anmirror.feature.input.TrackpadGestures
 import io.github.anmirror.feature.input.TrackpadMath
@@ -28,6 +32,8 @@ import io.github.anmirror.phone.AppGraph
 import io.github.anmirror.phone.AppTheme
 import io.github.anmirror.phone.TAG
 import io.github.anmirror.phone.inputOpen
+import io.github.anmirror.phone.keyboardShared
+import io.github.anmirror.phone.ui.KeyboardHooks
 import io.github.anmirror.phone.trackpadLine
 import io.github.anmirror.phone.ui.TrackpadScreen
 import io.github.anmirror.phone.ui.TrackpadTab
@@ -47,6 +53,15 @@ class TrackpadActivity : ComponentActivity() {
     private lateinit var graph: AppGraph
     private val gestures = TrackpadGestures()
     private var sender: InputSender? = null
+    private var sounds: KeySounds? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** A still finger's long press comes due: nothing else moves then, so a timer asks. */
+    private val longPress = Runnable {
+        val events = gestures.tick(SystemClock.uptimeMillis())
+        dispatch(events)
+        if (events.isNotEmpty()) window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+    }
     private var tab by mutableStateOf(TrackpadTab.TRACKPAD)
     private var laserOn = false
     private var wasOpen = false
@@ -62,6 +77,20 @@ class TrackpadActivity : ComponentActivity() {
                 val state by graph.manager.state.collectAsStateWithLifecycle()
                 val mac by graph.macInputAvailability.collectAsStateWithLifecycle()
                 val volumeKeysOn by graph.volumeKeysOn.collectAsStateWithLifecycle()
+                val keySoundsOn by graph.keySoundsOn.collectAsStateWithLifecycle()
+                val keyHapticsOn by graph.keyHapticsOn.collectAsStateWithLifecycle()
+                val keyboard = if (keyboardShared(state)) {
+                    KeyboardHooks(
+                        onKey = { code, bits -> sender?.keyCode(code, bits) },
+                        playSound = { down -> if (keySoundsOn) sounds?.play(down) },
+                        soundOn = keySoundsOn,
+                        onSound = graph::setKeySoundsOn,
+                        hapticsOn = keyHapticsOn,
+                        onHaptics = graph::setKeyHapticsOn,
+                    )
+                } else {
+                    null
+                }
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     TrackpadScreen(
                         open = inputOpen(state, mac),
@@ -76,6 +105,7 @@ class TrackpadActivity : ComponentActivity() {
                         onLaserMove = { dx, dy, dt -> TrackpadMath.move(dx, dy, dt).let { (x, y) -> sender?.move(x, y) } },
                         volumeKeysOn = volumeKeysOn,
                         onVolumeKeysToggle = graph::setVolumeKeysOn,
+                        keyboard = keyboard,
                     )
                 }
             }
@@ -100,6 +130,7 @@ class TrackpadActivity : ComponentActivity() {
             clock = SystemClock::uptimeMillis,
             log = { Log.w(TAG, it) },
         )
+        sounds = runCatching { KeySounds() }.getOrNull() // no audio track: typing still works, silently
     }
 
     override fun onPause() {
@@ -111,6 +142,8 @@ class TrackpadActivity : ComponentActivity() {
         letGo()
         sender?.close()
         sender = null
+        sounds?.release()
+        sounds = null
         super.onStop()
     }
 
@@ -135,10 +168,16 @@ class TrackpadActivity : ComponentActivity() {
     private fun onFrame(frame: TouchFrame): Boolean {
         val events = gestures.onFrame(frame)
         dispatch(events)
-        return events.any { it is InputEvent.Click }
+        handler.removeCallbacks(longPress)
+        // Frames carry SystemClock.uptimeMillis times, so the due time posts as is.
+        gestures.longPressDueAt?.let { handler.postAtTime(longPress, it) }
+        return events.any { it is InputEvent.Click || it is InputEvent.Swipe }
     }
 
-    private fun cancelGesture() = dispatch(gestures.cancel())
+    private fun cancelGesture() {
+        handler.removeCallbacks(longPress)
+        dispatch(gestures.cancel())
+    }
 
     private fun laser(on: Boolean) {
         if (on == laserOn) return
@@ -159,6 +198,16 @@ class TrackpadActivity : ComponentActivity() {
             is InputEvent.Scroll -> s.scroll(e.dx, e.dy)
             is InputEvent.Button -> s.button(e.button, e.down)
             is InputEvent.Click -> s.click(e.button, e.count)
+            // The Mac's own three-finger swipes: ⌃← ⌃→ switch Spaces, ⌃↑ Mission Control, ⌃↓ App Exposé.
+            is InputEvent.Swipe -> s.keyCode(
+                when (e.direction) {
+                    InputEvent.Swipe.Direction.LEFT -> 124 // fingers left: the Space to the right
+                    InputEvent.Swipe.Direction.RIGHT -> 123
+                    InputEvent.Swipe.Direction.UP -> 126
+                    InputEvent.Swipe.Direction.DOWN -> 125
+                },
+                KeyModifiers.CONTROL,
+            )
         }
     }
 

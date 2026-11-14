@@ -15,6 +15,10 @@ sealed interface InputEvent {
     data class Scroll(val dx: Float, val dy: Float) : InputEvent
     data class Button(val button: MouseButton, val down: Boolean) : InputEvent
     data class Click(val button: MouseButton, val count: Int) : InputEvent
+    /** Three fingers swiped, in the fingers' direction (the Mac's Spaces and Mission Control). */
+    data class Swipe(val direction: Direction) : InputEvent {
+        enum class Direction { LEFT, RIGHT, UP, DOWN }
+    }
 }
 
 /**
@@ -25,7 +29,10 @@ sealed interface InputEvent {
  * - a two-finger tap is a right click; a two-finger drag scrolls by the centroid's movement
  *   ([TrackpadMath.SCROLL_POINTS_PER_DP], not accelerated);
  * - a tap, then down again within [DOUBLE_TAP_MS] and moved past the slop, is a drag: the left
- *   button goes down, the pointer follows, and the button comes up when that finger lifts.
+ *   button goes down, the pointer follows, and the button comes up when that finger lifts;
+ * - one finger held still for [LONG_PRESS_MS] is a drag too ([longPressDueAt], [tick]): the
+ *   button goes down, and up when it lifts;
+ * - three fingers moved [SWIPE_DP] one way are one [InputEvent.Swipe] for the whole gesture.
  *
  * A held button always gets its up: when its finger lifts, whatever else is going on, and on [cancel].
  * Not thread-safe: feed it from one thread (the UI's).
@@ -51,6 +58,26 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
 
     /** When the last single click's finger lifted, while a second tap can still follow it. */
     private var lastTapUpMs: Long? = null
+
+    /** This gesture already swiped with three fingers. */
+    private var swiped = false
+
+    /**
+     * When one still finger becomes a drag, if nothing else happens first; null when it can't.
+     * Nothing moves while a finger is still, so the caller calls [tick] at this time.
+     */
+    val longPressDueAt: Long?
+        get() = if (last.size == 1 && maxFingers == 1 && !pastSlop && dragFinger == null) downMs + LONG_PRESS_MS else null
+
+    /** The time has come for a still finger: the left button goes down, and the finger drags. */
+    fun tick(timeMs: Long): List<InputEvent> {
+        val due = longPressDueAt ?: return emptyList()
+        if (timeMs < due) return emptyList()
+        dragFinger = last.keys.first()
+        heldDx = 0f
+        heldDy = 0f
+        return listOf(InputEvent.Button(MouseButton.MOUSE_BUTTON_LEFT, down = true))
+    }
 
     fun onFrame(f: TouchFrame): List<InputEvent> {
         val now = f.touches.associateBy { it.id }
@@ -97,6 +124,11 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
             // The centroid moves by half the sum of the fingers' movements.
             val scale = TrackpadMath.SCROLL_POINTS_PER_DP / 2
             if (dx != 0.0 || dy != 0.0) events += InputEvent.Scroll((dx * scale).toFloat(), (dy * scale).toFloat())
+        } else if (now.size == 3 && !swiped) {
+            swipe(now.values)?.let {
+                swiped = true
+                events += it
+            }
         }
 
         if (now.isEmpty() && last.isNotEmpty()) end(f.timeMs)?.let(events::add)
@@ -113,6 +145,7 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
         starts.clear()
         afterTap = false
         lastTapUpMs = null
+        swiped = false
         return events
     }
 
@@ -121,6 +154,7 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
         starts.clear()
         maxFingers = 0
         pastSlop = false
+        swiped = false
         heldDx = 0f
         heldDy = 0f
         afterTap = lastTapUpMs?.let { timeMs - it <= DOUBLE_TAP_MS } == true
@@ -142,6 +176,19 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
         }
     }
 
+    /** The three fingers' average travel from where each came down, once it passes [SWIPE_DP]. */
+    private fun swipe(fingers: Collection<Touch>): InputEvent.Swipe? {
+        val dx = fingers.sumOf { (it.x - starts.getValue(it.id).x).toDouble() } / fingers.size
+        val dy = fingers.sumOf { (it.y - starts.getValue(it.id).y).toDouble() } / fingers.size
+        if (maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy)) < SWIPE_DP) return null
+        val d = when {
+            kotlin.math.abs(dx) >= kotlin.math.abs(dy) -> if (dx < 0) InputEvent.Swipe.Direction.LEFT else InputEvent.Swipe.Direction.RIGHT
+            dy < 0 -> InputEvent.Swipe.Direction.UP
+            else -> InputEvent.Swipe.Direction.DOWN
+        }
+        return InputEvent.Swipe(d)
+    }
+
     private fun move(dxDp: Float, dyDp: Float, dtMs: Long): InputEvent.Move? {
         if (dxDp == 0f && dyDp == 0f) return null
         val (dx, dy) = math.move(dxDp, dyDp, dtMs)
@@ -152,5 +199,7 @@ class TrackpadGestures(private val math: TrackpadMath = TrackpadMath) {
         const val TAP_MAX_MS = 250L
         const val SLOP_DP = 8f
         const val DOUBLE_TAP_MS = 300L
+        const val LONG_PRESS_MS = 400L
+        const val SWIPE_DP = 40f
     }
 }

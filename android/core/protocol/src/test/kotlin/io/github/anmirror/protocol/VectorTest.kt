@@ -293,8 +293,8 @@ class VectorTest {
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
-        assertEquals(81, MessageType.ALL.size)
-        assertEquals(81, MessageType.ALL.toSet().size)
+        assertEquals(82, MessageType.ALL.size)
+        assertEquals(82, MessageType.ALL.toSet().size)
         val expected = mapOf(
             MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
             MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",
@@ -344,6 +344,7 @@ class VectorTest {
             MessageType.INPUT_MOVE to "input.move", MessageType.INPUT_BUTTON to "input.button",
             MessageType.INPUT_CLICK to "input.click", MessageType.INPUT_SCROLL to "input.scroll",
             MessageType.INPUT_KEY to "input.key", MessageType.INPUT_LASER to "input.laser",
+            MessageType.INPUT_KEYCODE to "input.keycode",
             MessageType.INPUT_AVAILABILITY to "input.availability",
             MessageType.MIRROR_AVAILABILITY to "mirror.availability", MessageType.MIRROR_START to "mirror.start",
             MessageType.MIRROR_STATE to "mirror.state", MessageType.MIRROR_STOP to "mirror.stop",

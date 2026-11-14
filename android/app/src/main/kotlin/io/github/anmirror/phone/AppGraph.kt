@@ -504,6 +504,23 @@ class AppGraph private constructor(context: Context) {
         _volumeKeysOn.value = on
     }
 
+    private val _keySoundsOn = MutableStateFlow(inputPrefs.getBoolean(KEY_KEY_SOUNDS_ON, true))
+    private val _keyHapticsOn = MutableStateFlow(inputPrefs.getBoolean(KEY_KEY_HAPTICS_ON, true))
+
+    /** The Mac keyboard's key sounds and key vibration switches. On until turned off. */
+    val keySoundsOn: StateFlow<Boolean> = _keySoundsOn.asStateFlow()
+    val keyHapticsOn: StateFlow<Boolean> = _keyHapticsOn.asStateFlow()
+
+    fun setKeySoundsOn(on: Boolean) {
+        inputPrefs.edit { putBoolean(KEY_KEY_SOUNDS_ON, on) }
+        _keySoundsOn.value = on
+    }
+
+    fun setKeyHapticsOn(on: Boolean) {
+        inputPrefs.edit { putBoolean(KEY_KEY_HAPTICS_ON, on) }
+        _keyHapticsOn.value = on
+    }
+
     private val mirrorPrefs = app.getSharedPreferences("mirror", Context.MODE_PRIVATE)
     private val _mirrorOn = MutableStateFlow(mirrorPrefs.getBoolean(KEY_MIRROR_ON, false))
 
@@ -1324,7 +1341,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY)
         const val MIRROR_CAPABILITY = "mirror.v1"
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
@@ -1337,6 +1354,8 @@ class AppGraph private constructor(context: Context) {
         private const val KEY_DND_ON = "sync_with_mac"
         private const val KEY_PROXIMITY_ON = "lock_when_away"
         private const val KEY_VOLUME_KEYS_ON = "volume_keys_change_slides"
+        private const val KEY_KEY_SOUNDS_ON = "key_sounds"
+        private const val KEY_KEY_HAPTICS_ON = "key_haptics"
         private const val KEY_MAKER_STEP_DONE = "maker_step_done"
         private const val KEY_MIRROR_ON = "allow_mirror"
 
