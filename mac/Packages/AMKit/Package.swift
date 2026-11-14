@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "FeatureCalls", targets: ["FeatureCalls"]),
         .library(name: "FeatureFiles", targets: ["FeatureFiles"]),
         .library(name: "FeatureClipboard", targets: ["FeatureClipboard"]),
+        .library(name: "FeatureHotspot", targets: ["FeatureHotspot"]),
         .library(name: "FeatureShare", targets: ["FeatureShare"]),
         .library(name: "FeatureScreenshots", targets: ["FeatureScreenshots"]),
         .library(name: "FeaturePhotos", targets: ["FeaturePhotos"]),
@@ -66,6 +67,10 @@ let package = Package(
         ),
         .target(
             name: "FeatureFiles",
+            dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
+        .target(
+            name: "FeatureHotspot",
             dependencies: ["AMProtocol", "ConnectionCore", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .target(
@@ -172,6 +177,10 @@ let package = Package(
                 "FeatureFiles", "AMProtocol", "ConnectionCore", "AMTestSupport",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
+        ),
+        .testTarget(
+            name: "FeatureHotspotTests",
+            dependencies: ["FeatureHotspot", "AMProtocol", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
         .testTarget(
             name: "FeatureClipboardTests",

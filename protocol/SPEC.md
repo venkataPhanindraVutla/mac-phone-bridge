@@ -139,6 +139,9 @@ message Envelope {
 | `mirror.state` | phone to Mac | `MirrorState` | MIRROR |
 | `mirror.stop` | both | `MirrorStop` | MIRROR |
 | `mirror.test_pattern` | Mac to phone | `MirrorTestPattern` | MIRROR |
+| `hotspot.availability` | phone to Mac | `FeatureAvailability` | HOTSPOT |
+| `hotspot.request` | Mac to phone | `HotspotRequest` | HOTSPOT |
+| `hotspot.state` | phone to Mac (`reply_to` = request id) | `HotspotState` | HOTSPOT |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -151,7 +154,8 @@ encoded, so `0` and `-1` stay distinct.
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
 Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23).
-Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14) and `files.resume.v1` (section 16). A side MUST
+Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14), `files.resume.v1` (section 16) and
+`hotspot.v1` (section 25). A side MUST
 NOT send messages of a feature the peer did not list.
 The 0.1 keep-alive patch adds `liveness.v1` (section 7). It is a property of the connection, not a
 feature channel: it carries no messages of its own and changes who sends `system.ping`.
@@ -731,3 +735,27 @@ Channel `MIRROR`.
 Vectors: `framing.json` `mirror_start_minimal`; `scrcpy.json` `control`, `device` and `stream`.
 The canned stream `testdata/mirror/sample-h264-320x640.scrcpy` holds the video socket bytes after
 the dummy byte (made by `scripts/make-mirror-sample.swift`).
+
+## 25. Hotspot (`hotspot.v1`)
+
+Channel `HOTSPOT`. The Mac turns the phone's Wi-Fi hotspot on (or off) and joins it.
+
+- The phone sends `hotspot.availability` on connect and on change. Turning the hotspot on needs
+  the Full-mode shell helper (section 24), so it is enabled only while Full mode is set up, with
+  the reasons of `mirror.availability`: `NEEDS_SETUP` or `UNAVAILABLE` (Android 10).
+- The Mac sends `hotspot.request{on}` only when the user asks, and `on = true` only while the
+  last `hotspot.availability` is enabled. Each request is answered by one `hotspot.state` with
+  `reply_to` set to the request's `id`.
+- After `on = true` succeeds, the state carries `on = true`, the hotspot's `ssid`, its
+  `passphrase` (empty for `OPEN`) and its `security`. The phone uses the hotspot settings the
+  user set on the phone; it never changes them. On failure `on = false` and `failure` says why:
+  `NEEDS_SETUP` (Full mode is not ready), `REFUSED` (the phone did not allow tethering: its maker,
+  no mobile data, a policy) or `FAILED`.
+- The Mac keeps the last `ssid`, `passphrase` and `security` per phone, in the Keychain, so it can
+  join the hotspot later when the two share no network (the user turned the hotspot on at the
+  phone). It deletes them when the phone is forgotten.
+- Joining moves the Mac to the phone's network, so the control connection usually drops and comes
+  back over the hotspot (section 6). A request that was answered before the drop needs nothing more.
+- `on = false` turns the hotspot off; the answer has `on = false` and no credentials.
+- The passphrase is never logged on either side.
+

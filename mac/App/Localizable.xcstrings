@@ -3334,6 +3334,149 @@
           }
         }
       }
+    },
+    "Using %@'s hotspot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Using %@'s hotspot"
+          }
+        }
+      }
+    },
+    "Turn Off Hotspot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn Off Hotspot"
+          }
+        }
+      }
+    },
+    "Use Phone Hotspot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Phone Hotspot"
+          }
+        }
+      }
+    },
+    "Set up Full mode on the phone to start its hotspot from here.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set up Full mode on the phone to start its hotspot from here."
+          }
+        }
+      }
+    },
+    "Join %@'s Hotspot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Join %@'s Hotspot"
+          }
+        }
+      }
+    },
+    "Turn on the hotspot on the phone first.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on the hotspot on the phone first."
+          }
+        }
+      }
+    },
+    "Turning on the hotspot…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning on the hotspot…"
+          }
+        }
+      }
+    },
+    "Joining the hotspot…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Joining the hotspot…"
+          }
+        }
+      }
+    },
+    "Turning off the hotspot…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning off the hotspot…"
+          }
+        }
+      }
+    },
+    "Full mode isn't ready on the phone. Open the phone app to set it up.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full mode isn't ready on the phone. Open the phone app to set it up."
+          }
+        }
+      }
+    },
+    "The phone didn't turn on its hotspot. Check its mobile data.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The phone didn't turn on its hotspot. Check its mobile data."
+          }
+        }
+      }
+    },
+    "Couldn't turn on the phone's hotspot.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't turn on the phone's hotspot."
+          }
+        }
+      }
+    },
+    "Couldn't join the phone's hotspot. Is it on, and is Location allowed in System Settings?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't join the phone's hotspot. Is it on, and is Location allowed in System Settings?"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

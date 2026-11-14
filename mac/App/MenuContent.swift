@@ -25,6 +25,7 @@ struct MenuContent: View {
 
         // Feature items (phone status, Ring phone) are added to this section.
         featureSection
+        HotspotMenu(model: model)
 
         Divider()
         Button("Pair a phone…") {

@@ -447,7 +447,7 @@ private struct FilenamesFile: Decodable {
 @Test func messageTypeRawValues() {
     #expect(MessageType.hello.rawValue == "system.hello")
     #expect(MessageType.findState.rawValue == "find.state")
-    #expect(MessageType.allCases.count == 82)
+    #expect(MessageType.allCases.count == 85)
     let expected: [MessageType: String] = [
         .notifyPosted: "notify.posted", .notifyRemoved: "notify.removed",
         .notifySnapshot: "notify.snapshot", .notifyDismiss: "notify.dismiss",
@@ -501,6 +501,8 @@ private struct FilenamesFile: Decodable {
         .mirrorAvailability: "mirror.availability", .mirrorStart: "mirror.start",
         .mirrorState: "mirror.state", .mirrorStop: "mirror.stop",
         .mirrorTestPattern: "mirror.test_pattern",
+        .hotspotAvailability: "hotspot.availability", .hotspotRequest: "hotspot.request",
+        .hotspotState: "hotspot.state",
     ]
     for (type, raw) in expected { #expect(type.rawValue == raw) }
     #expect(AMChannel.notify.rawValue == 5)

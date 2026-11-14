@@ -82,4 +82,7 @@ public enum MessageType: String, CaseIterable, Sendable {
     case mirrorState = "mirror.state"
     case mirrorStop = "mirror.stop"
     case mirrorTestPattern = "mirror.test_pattern"
+    case hotspotAvailability = "hotspot.availability"
+    case hotspotRequest = "hotspot.request"
+    case hotspotState = "hotspot.state"
 }

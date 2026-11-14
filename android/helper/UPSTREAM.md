@@ -58,9 +58,20 @@ is unchanged. The unreadable case logs one debug line, with no content.
   clipboard listener, before `Device.getClipboardText()`):
   `if (com.genymobile.scrcpy.anmirror.SensitiveClip.isPrimaryClipSensitive()) return;`
 
+## Additions (no upstream file changed)
+
+### A1: hotspot on/off (`hotspot.v1`, SPEC 25)
+
+- New: `src/main/java/com/genymobile/scrcpy/anmirror/Hotspot.java`, its own entry point:
+  `CLASSPATH=<jar> app_process / com.genymobile.scrcpy.anmirror.Hotspot on|off`. As the shell user it calls
+  `TetheringManager.startTethering(TETHERING_WIFI)` / `stopTethering`, reads the user's
+  `SoftApConfiguration`, prints one line (`ok <ssid hex> <passphrase hex> <security>`, `off` or
+  `fail refused|failed <detail>`) and exits. It never changes the hotspot settings.
+
 ## Our tests
 
 - `src/test/java/com/genymobile/scrcpy/anmirror/PeerCheckTest.java`
+- `src/test/java/com/genymobile/scrcpy/anmirror/HotspotTest.java`
 - `src/test/java/com/genymobile/scrcpy/anmirror/ScrcpyFixturesTest.java`: checks `protocol/vectors/scrcpy.json`
   against the vendored `ControlMessageReader`, `DeviceMessageWriter`, `Streamer` and `DesktopConnection`.
 

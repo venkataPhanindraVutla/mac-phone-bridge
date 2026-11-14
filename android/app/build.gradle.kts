@@ -6,7 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// Full mode's helper: scrcpy-server 5.0.1-am1, built from source by :helper (android/helper/UPSTREAM.md).
+// Full mode's helper: scrcpy-server 5.0.1-am2, built from source by :helper (android/helper/UPSTREAM.md).
 // Its unsigned release APK is the jar the app pushes to the phone; the app checks the pushed copy
 // against BuildConfig.HELPER_SHA256.
 val helperApk = rootProject.layout.projectDirectory.file("helper/build/outputs/apk/release/helper-release-unsigned.apk")
@@ -39,7 +39,7 @@ android {
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
         versionCode = 9002
         versionName = "0.9.0-beta.2"
-        // 5.0.1-am1: the helper's own versionName, from the same catalog entry.
+        // 5.0.1-am2: the helper's own versionName, from the same catalog entry.
         buildConfigField("String", "HELPER_VERSION", "\"${libs.versions.helperVersion.get()}\"")
     }
 

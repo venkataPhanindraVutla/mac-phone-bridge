@@ -48,6 +48,12 @@ import io.github.anmirror.feature.mirror.connectFailureReason
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.feature.mirror.SetupStore
 import io.github.anmirror.feature.clipboard.ClipImage
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
+import io.github.anmirror.protocol.v1.HotspotFailure
+import io.github.anmirror.protocol.v1.HotspotState
+import io.github.anmirror.protocol.v1.HotspotRequest
+import io.github.anmirror.feature.mirror.HotspotRunner
 import io.github.anmirror.feature.clipboard.ClipImageInbox
 import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
@@ -643,6 +649,53 @@ class AppGraph private constructor(context: Context) {
      */
     suspend fun sendMirror(type: String, payload: MessageLite): Boolean =
         mirrorShared() && manager.send(ProtoChannel.CHANNEL_MIRROR, type, payload)
+
+    /** The connected Mac shares hotspot.v1 (SPEC 25). */
+    fun hotspotShared(): Boolean = shares(HOTSPOT_CAPABILITY)
+
+    /** The hotspot needs Full mode only (not the mirroring switch): its setup and Wireless debugging. */
+    fun hotspotAvailabilityNow(): FeatureAvailability {
+        val setup = mirrorSetup.snapshot.value
+        return mirrorAvailability(Build.VERSION.SDK_INT, true, setup.paired, _wirelessDebugging.value, setup.lastConnectFailed)
+    }
+
+    /** [hotspotAvailabilityNow] as it changes, for `hotspot.availability`. */
+    val hotspotAvailabilities: Flow<FeatureAvailability> =
+        combine(mirrorSetup.snapshot, wirelessDebugging) { setup, wd ->
+            mirrorAvailability(Build.VERSION.SDK_INT, true, setup.paired, wd, setup.lastConnectFailed)
+        }.distinctUntilChanged()
+
+    /** Sends a `hotspot.*` message while the Mac shares hotspot.v1. */
+    suspend fun sendHotspot(type: String, payload: MessageLite, replyTo: Long = 0): Boolean =
+        hotspotShared() && manager.send(ProtoChannel.CHANNEL_HOTSPOT, type, payload, replyTo)
+
+    private val hotspotMutex = Mutex()
+
+    /**
+     * A `hotspot.request` from the Mac: turns the hotspot on or off through the helper (one at a
+     * time) and answers with `hotspot.state`. Logs the outcome only, never the name or passphrase.
+     */
+    suspend fun onHotspotRequest(env: Envelope) {
+        if (!hotspotShared()) return
+        val on = HotspotRequest.parseFrom(env.payload).on
+        val state = hotspotMutex.withLock { runHotspot(on) }
+        Log.i(MIRROR_TAG, "hotspot: on=$on -> on=${state.on} failure=${state.failure}")
+        sendHotspot(MessageType.HOTSPOT_STATE, state, env.id)
+    }
+
+    private suspend fun runHotspot(on: Boolean): HotspotState {
+        val needsSetup = HotspotRunner.failed(HotspotFailure.HOTSPOT_FAILURE_NEEDS_SETUP)
+        if (!hotspotAvailabilityNow().enabled) return needsSetup
+        return try {
+            if (!fullModeSetup.ensureConnected()) return needsSetup
+            val adb = adbClient()
+            HotspotRunner(adb, HelperInstaller(adb, { app.assets.open(HELPER_ASSET) }, BuildConfig.HELPER_SHA256)).run(on)
+        } catch (e: IOException) {
+            needsSetup // no ADB identity
+        } finally {
+            adbIdle.connected() // the link closes after the idle time unless a mirror session holds it
+        }
+    }
 
     /** The phone's ADB link closes 10 min after the last mirror session (or a setup connect), and at disconnect. */
     private val adbIdle = AdbIdleClose(scope, close = ::closeAdb)
@@ -1384,7 +1437,10 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY, RESUME_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY, RESUME_CAPABILITY, HOTSPOT_CAPABILITY)
+
+        /** The Mac turns the hotspot on and joins it (SPEC 25). */
+        const val HOTSPOT_CAPABILITY = "hotspot.v1"
 
         /** Resumable transfers (SPEC 16). */
         const val RESUME_CAPABILITY = "files.resume.v1"

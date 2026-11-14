@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone Hotspot Demo</title>
+<style>
+  :root { --bg: #0b0b0b; --line: #262626; --text: #f2f2f2; --muted: #8a8a8a; --accent: #d4ff3f;
+          --win-text: #1d1d1f; --win-muted: #6e6e73; --win-line: #dedee3; --sel: #0a63e0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; }
+  body { padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 16px; max-width: 74ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; align-items: center; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--text); border: 0; padding: 7px 12px; font: inherit; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #0b0b0b; }
+  .controls .lbl { color: var(--muted); font-size: 12px; margin-right: 2px; }
+  .stage { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .label { color: var(--muted); font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+
+  .desk { width: 420px; max-width: 100%; height: 400px; border-radius: 14px; border: 1px solid #2a2a2e; position: relative; overflow: hidden;
+          background: radial-gradient(120% 90% at 80% 0%, #3a3424 0%, #1d1c22 55%, #121317 100%); }
+  .bar { height: 26px; background: rgba(30,30,34,.72); display: flex; justify-content: flex-end; align-items: center; gap: 14px; padding: 0 12px; font-size: 12.5px; color: #eee; }
+  .bar .wifi { display: flex; align-items: center; gap: 4px; }
+  .menu { position: absolute; right: 54px; top: 30px; width: 290px; background: rgba(246,246,248,.97); color: var(--win-text); border-radius: 10px; padding: 6px; font-size: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+  .menu .hdr { padding: 4px 10px; color: var(--win-muted); font-size: 12px; }
+  .menu .item { padding: 4px 10px; border-radius: 5px; cursor: default; display: flex; justify-content: space-between; gap: 10px; }
+  .menu .item.btn { cursor: pointer; }
+  .menu .item.btn:hover { background: var(--sel); color: #fff; }
+  .menu .item.dim { color: var(--win-muted); }
+  .menu .sep { height: 1px; background: var(--win-line); margin: 5px 8px; }
+  .menu .note { padding: 2px 10px 4px; color: var(--win-muted); font-size: 12px; }
+  .spin { display: inline-block; width: 10px; height: 10px; border: 1.5px solid #9a9aa0; border-top-color: transparent; border-radius: 50%; animation: s .8s linear infinite; vertical-align: -1px; margin-right: 6px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+
+  .phone { width: 300px; height: 400px; background: #000; border: 9px solid #222; border-radius: 38px; overflow: hidden; position: relative; }
+  .shade { position: absolute; inset: 0; background: linear-gradient(#20242c, #15171c); padding: 26px 10px 10px; }
+  .sb { position: absolute; top: 7px; right: 16px; left: 16px; display: flex; justify-content: space-between; font-size: 11px; color: #c3c7d0; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0 12px; }
+  .tile { border-radius: 16px; padding: 10px 12px; background: #2a2e37; color: #e9e9ef; font-size: 12.5px; cursor: pointer; user-select: none; }
+  .tile b { display: block; font-size: 13px; }
+  .tile.on { background: #c8dcff; color: #10213f; }
+  .note { background: #2a2e37; border-radius: 18px; padding: 10px 12px; color: #e9e9ef; margin-top: 8px; }
+  .note .app { font-size: 11px; color: #a8adb8; }
+  .note .t { font-size: 13.5px; font-weight: 600; margin-top: 3px; }
+  .note .s { font-size: 12.5px; color: #c3c7d0; }
+  .note .acts { margin-top: 8px; font-size: 12.5px; color: #8ab4ff; font-weight: 600; cursor: pointer; }
+
+  .notes { max-width: 430px; color: var(--muted); font-size: 13px; }
+  .notes b { color: var(--text); font-weight: 600; }
+  .notes li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <h1>One-click hotspot</h1>
+  <p class="sub">Turn on the phone's hotspot from the Mac and join it, in one click. Pick where you are, then click in the Mac menu, or on Android's own Hotspot tile when there is no Wi-Fi.</p>
+
+  <div class="controls">
+    <span class="lbl">Where you are</span>
+    <div class="seg" role="group" aria-label="Situation">
+      <button data-where="wifi" aria-pressed="true">Wi-Fi with no internet</button>
+      <button data-where="none" aria-pressed="false">No Wi-Fi at all</button>
+    </div>
+    <span class="lbl" style="margin-left:10px">Phone</span>
+    <div class="seg" role="group" aria-label="Full mode">
+      <button data-full="on" aria-pressed="true">Full mode on</button>
+      <button data-full="off" aria-pressed="false">Basic only</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div>
+      <p class="label">Mac · menu bar</p>
+      <div class="desk">
+        <div class="bar"><span class="wifi" id="macNet"></span><span>20:41</span></div>
+        <div class="menu" id="menu"></div>
+      </div>
+    </div>
+    <div>
+      <p class="label">Phone · Quick Settings</p>
+      <div class="phone"><div class="shade">
+        <div class="sb"><span>20:41</span><span id="phoneNet"></span></div>
+        <div class="tiles">
+          <div class="tile" id="tileHot"><b>Hotspot</b><span id="tileSub">Off</span></div>
+          <div class="tile"><b>Send clipboard</b>to Mac</div>
+        </div>
+        <div class="note" id="note" style="display:none">
+          <div class="app">Mac Phone Bridge</div>
+          <div class="t">Hotspot on for your Mac</div>
+          <div class="s" id="noteSub">Mac Phone Bridge 4F2A · your Mac is joining</div>
+          <div class="acts" id="noteOff">Turn off</div>
+        </div>
+      </div></div>
+    </div>
+    <div class="notes">
+      <p class="label">How it works</p>
+      <ul>
+        <li><b>While the two are connected</b> (for example on Wi-Fi with no internet), the Mac menu's <b>Use Phone Hotspot</b> turns the hotspot on and joins it. The two stay connected over it.</li>
+        <li><b>With no Wi-Fi at all</b>, the Mac can't reach the phone (and Full mode needs Wi-Fi), so you turn the hotspot on with Android's own <b>Hotspot</b> tile. The Mac knows the hotspot from an earlier connect: <b>Join Pixel's Hotspot</b> in its menu.</li>
+        <li>Turning the hotspot on from the Mac needs <b>Full mode</b> (the same one-time setup as mirroring).</li>
+        <li><b>Turn Off Hotspot</b> on either side turns it off; the Mac goes back to its usual Wi-Fi.</li>
+        <li>The Mac asks once for <b>Location</b> access: macOS hides Wi-Fi names from apps without it.</li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+let where = 'wifi', full = true, hot = false, joined = false, busy = '';
+const $ = id => document.getElementById(id);
+const wifiIcon = c => `<svg width="15" height="11" viewBox="0 0 15 11" fill="none" stroke="${c}" stroke-width="1.5"><path d="M1 4a9 9 0 0113 0M3.3 6.3a5.7 5.7 0 018.4 0M5.6 8.6a2.4 2.4 0 013.8 0"/></svg>`;
+const linkIcon = `<svg width="15" height="11" viewBox="0 0 15 11" fill="none" stroke="#eee" stroke-width="1.5"><path d="M5.5 3.5a3 3 0 100 4H7M9.5 7.5a3 3 0 100-4H8M5.5 5.5h4"/></svg>`;
+
+function render() {
+  const connected = joined || where === 'wifi';
+  $('macNet').innerHTML = joined ? linkIcon + ' Pixel' : where === 'wifi' ? wifiIcon('#eee') + ' Cafe' : wifiIcon('#777') + ' Not connected';
+  $('phoneNet').textContent = hot ? 'Hotspot · 1 device' : where === 'wifi' ? 'Wi-Fi · 5G' : '5G';
+  let m = `<div class="hdr">Pixel · ${connected ? 'Connected' : 'Not connected'}</div><div class="sep"></div>`;
+  if (busy) {
+    m += `<div class="item dim"><span><span class="spin"></span>${busy}</span></div>`;
+  } else if (joined) {
+    m += `<div class="item dim">Using Pixel's hotspot</div><div class="item btn" id="off">Turn Off Hotspot</div>`;
+  } else if (connected) {
+    m += full ? `<div class="item btn" id="use">Use Phone Hotspot</div>`
+              : `<div class="item dim">Use Phone Hotspot</div><div class="note">Turn on Full mode on the phone to start the hotspot from here.</div>`;
+  } else {
+    m += `<div class="item btn" id="join">Join Pixel's Hotspot</div><div class="note">${hot ? 'The hotspot is on.' : 'Turn on the hotspot on the phone first.'}</div>`;
+  }
+  m += `<div class="sep"></div><div class="item">Settings…</div>`;
+  $('menu').innerHTML = m;
+  $('tileHot').classList.toggle('on', hot);
+  $('tileSub').textContent = hot ? 'On' : 'Off';
+  $('note').style.display = hot ? '' : 'none';
+  $('noteSub').textContent = joined ? 'Mac Phone Bridge 4F2A · your Mac is connected' : 'Mac Phone Bridge 4F2A · your Mac is joining';
+  const use = $('use'), off = $('off'), join = $('join');
+  if (use) use.onclick = () => step('Turning on the hotspot…', () => { hot = true; step('Joining Pixel’s hotspot…', () => { joined = true; }); });
+  if (join) join.onclick = () => hot && step('Joining Pixel’s hotspot…', () => { joined = true; });
+  if (off) off.onclick = turnOff;
+}
+function step(label, then) { busy = label; render(); setTimeout(() => { busy = ''; then(); render(); }, 1100); }
+function turnOff() { hot = false; joined = false; render(); }
+$('tileHot').onclick = () => { hot = !hot; if (!hot) joined = false; render(); };
+$('noteOff').onclick = turnOff;
+document.querySelectorAll('[data-where]').forEach(b => b.onclick = () => {
+  where = b.dataset.where; hot = joined = false; busy = '';
+  document.querySelectorAll('[data-where]').forEach(x => x.setAttribute('aria-pressed', x === b)); render();
+});
+document.querySelectorAll('[data-full]').forEach(b => b.onclick = () => {
+  full = b.dataset.full === 'on';
+  document.querySelectorAll('[data-full]').forEach(x => x.setAttribute('aria-pressed', x === b)); render();
+});
+render();
+</script>
+</body>
+</html>

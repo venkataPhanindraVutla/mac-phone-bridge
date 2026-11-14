@@ -10,6 +10,7 @@ import FeatureContacts
 import FeatureFiles
 import FeatureFind
 import FeatureFocus
+import FeatureHotspot
 import FeatureInput
 import FeatureMedia
 import FeatureMirror
@@ -33,7 +34,7 @@ final class AppModel {
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
         "proximity.v1", "input.v1", "keyboard.v1", "liveness.v1", "mirror.v1", "clipboard-image.v1",
-        "files.resume.v1",
+        "files.resume.v1", "hotspot.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -48,6 +49,8 @@ final class AppModel {
     var phoneTab: PhoneTab = .send
     let calls: CallModel
     let clipboard: ClipboardModel
+    /// One-click hotspot: the phone turns its hotspot on, this Mac joins it.
+    let hotspot: HotspotModel
     /// File transfers both ways; received files go to Downloads.
     let transfers: TransferEngine
     /// Links and text shared both ways.
@@ -250,6 +253,21 @@ final class AppModel {
             }
         )
         self.clipboard = clipboard
+        hotspot = HotspotModel(
+            send: { type, message in
+                // Only a phone that shares hotspot.v1 gets hotspot messages.
+                guard server.activePhone?.shared.contains(HotspotModel.capability) == true else { return }
+                try? await server.send(type, message, channel: .hotspot)
+            },
+            joiner: LocationGatedJoiner(),
+            load: { id in
+                (try? Self.hotspotItem(phoneID: id).read()).flatMap { $0 }.flatMap { try? JSONDecoder().decode(HotspotNetwork.self, from: $0) }
+            },
+            store: { id, network in
+                let item = Self.hotspotItem(phoneID: id)
+                if let network, let data = try? JSONEncoder().encode(network) { try? item.write(data) } else { try? item.delete() }
+            }
+        )
         // Clipboard-mode files and thumbnail copies a previous run left behind.
         let folders = Self.makeScreenshotFolders()
         screenshotFolders = folders
@@ -395,6 +413,7 @@ final class AppModel {
         )
         self.input = input
         notifyWork.register(clipboard)
+        notifyWork.register(hotspot)
         notifyWork.register(transfers)
         notifyWork.register(share)
         notifyWork.register(screenshots)
@@ -985,6 +1004,11 @@ final class AppModel {
     // MARK: contacts
 
     /// Deletes a phone's store file and its key.
+    /// The phone's hotspot network, kept in the Keychain (it holds the passphrase).
+    private static func hotspotItem(phoneID: String) -> KeychainItem {
+        KeychainItem(service: KeychainPairedPhoneStore.defaultService, account: "hotspot-" + phoneID)
+    }
+
     private static func removeContacts(phoneID: String) {
         try? FileManager.default.removeItem(at: ContactsStore.fileURL(phoneID: phoneID, in: ContactsStore.defaultDirectory))
         try? ContactsKey.delete(phoneID: phoneID)
