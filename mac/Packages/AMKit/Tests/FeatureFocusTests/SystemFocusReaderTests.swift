@@ -20,3 +20,12 @@ import Testing
     }
     #expect(status == .denied)
 }
+
+/// Without the Communication Notifications entitlement (the ad-hoc Contributor build) macOS still
+/// says "authorized" but every read fails and logs an error: the reader says unavailable, so
+/// nothing polls.
+@MainActor @Test func missingEntitlementReadsAsUnavailable() {
+    let reader = SystemFocusReader(hasEntitlement: { false })
+    #expect(reader.authorization == .unavailable)
+    #expect(reader.isFocused() == nil)
+}

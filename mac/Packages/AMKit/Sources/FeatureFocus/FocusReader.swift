@@ -1,5 +1,6 @@
 import Foundation
 import Intents
+import Security
 
 /// Whether this app may read Focus status.
 public enum FocusAuthorization: Equatable, Sendable {
@@ -20,26 +21,37 @@ public protocol FocusReader: AnyObject {
 
 /// Focus status from `INFocusStatusCenter.default`.
 ///
-/// A build that can't use it (the class is missing, or the entitlement is: macOS then reports
-/// `.restricted`) reads as `.unavailable`, and Settings says so. Whether the ad-hoc signed
-/// Contributor build can read Focus status at all is an owner check.
+/// A build that can't use it reads as `.unavailable`, and Settings says so: the class is missing,
+/// macOS reports `.restricted`, or the app lacks the Communication Notifications entitlement (the
+/// ad-hoc Contributor build; only the Full build has it). Without the entitlement macOS still
+/// says "authorized", but every read fails and logs an error, so it must not count.
 ///
 /// Intents calls the authorization completion on a queue of its own, so that closure is made in
 /// a `nonisolated` helper: one formed in this main-actor class would be main-actor isolated, and
 /// Swift 6 traps when it runs anywhere else.
 @MainActor
 public final class SystemFocusReader: FocusReader {
-    public init() {}
+    private let hasEntitlement: () -> Bool
+
+    public init(hasEntitlement: @escaping () -> Bool = SystemFocusReader.signedWithEntitlement) {
+        self.hasEntitlement = hasEntitlement
+    }
 
     private static var isPresent: Bool { NSClassFromString("INFocusStatusCenter") != nil }
 
+    /// Whether this app's own signature carries the Communication Notifications entitlement.
+    nonisolated public static func signedWithEntitlement() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil) else { return false }
+        return SecTaskCopyValueForEntitlement(task, "com.apple.developer.usernotifications.communication" as CFString, nil) as? Bool == true
+    }
+
     public var authorization: FocusAuthorization {
-        guard Self.isPresent else { return .unavailable }
+        guard Self.isPresent, hasEntitlement() else { return .unavailable }
         return Self.map(INFocusStatusCenter.default.authorizationStatus)
     }
 
     public func requestAuthorization() async -> FocusAuthorization {
-        guard Self.isPresent else { return .unavailable }
+        guard Self.isPresent, hasEntitlement() else { return .unavailable }
         return Self.map(await Self.request())
     }
 
