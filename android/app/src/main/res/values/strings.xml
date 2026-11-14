@@ -183,6 +183,10 @@
     <string name="transfer_send_failed">Couldn\'t send %1$s</string>
     <string name="transfer_receive_failed">Couldn\'t receive %1$s</string>
     <string name="transfer_cancel">Cancel</string>
+    <!-- A transfer that broke off and goes on later from where it stopped. -->
+    <string name="transfer_paused">Paused: %1$s</string>
+    <string name="transfer_paused_send">Goes on when your Mac is back</string>
+    <string name="transfer_paused_receive">Goes on when your Mac sends it again</string>
     <plurals name="transfer_more_waiting">
         <item quantity="one">%1$d more waiting</item>
         <item quantity="other">%1$d more waiting</item>

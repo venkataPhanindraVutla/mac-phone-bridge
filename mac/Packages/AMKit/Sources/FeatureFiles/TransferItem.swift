@@ -11,6 +11,9 @@ public struct TransferItem: Identifiable, Equatable, Sendable {
         /// Offered or accepted; no bytes yet.
         case waiting
         case active
+        /// Broke off and will go on from where it stopped (files.resume.v1): a send waits to be
+        /// offered again; a receive keeps its bytes for the sender's next offer.
+        case paused
         /// Received files carry where they were saved; sent files carry nil.
         case done(URL?)
         case failed(AMTransferError)
@@ -48,7 +51,7 @@ public struct TransferItem: Identifiable, Equatable, Sendable {
     /// Done, failed or cancelled.
     public var isFinal: Bool {
         switch state {
-        case .queued, .waiting, .active: false
+        case .queued, .waiting, .active, .paused: false
         case .done, .failed, .cancelled: true
         }
     }

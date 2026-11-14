@@ -925,13 +925,18 @@ class AppGraph private constructor(context: Context) {
         bulk = BulkOpener(::openBulk),
         // A Mac offer with a browse target is a write into a browse root; a clipboard image goes onto
         // the clipboard (while clipboard images are open); the rest go to Downloads.
-        sinks = IncomingSinks { offer ->
-            when {
+        sinks = object : IncomingSinks {
+            override fun open(offer: TransferOffer): SinkResult = when {
                 offer.kind == TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE ->
                     if (clipboardImagesOpen()) clipImageInbox.open(offer) else SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED)
                 offer.hasTarget() -> browseSink(offer)
                 else -> downloads.open(offer)
             }
+
+            // Only Downloads keeps and resumes (the engine resumes plain files only).
+            override fun resume(offer: TransferOffer) = downloads.resume(offer)
+
+            override fun discard(transferId: String) = downloads.discard(transferId)
         },
         freeBytes = { offer ->
             when {
@@ -940,6 +945,7 @@ class AppGraph private constructor(context: Context) {
                 else -> downloads.freeBytes()
             }
         },
+        resumes = { shares(RESUME_CAPABILITY) },
     )
 
     /** Shared files, screenshots and photos whose descriptors stay open until their transfer ends. */
@@ -1257,6 +1263,11 @@ class AppGraph private constructor(context: Context) {
      * [ended] is over: fail its unfinished transfers and forget its endpoint (an endpoint a newer
      * session already announced stays).
      */
+    /** [started] began: paused sends for this Mac go on (files.resume.v1). */
+    fun onSessionStarted(started: PhoneConnectionState.Connected) {
+        transfers.onConnected(started.mac.fingerprintHex, RESUME_CAPABILITY in started.shared)
+    }
+
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
         // The Mac is gone: its mirror session ends without a message, and the ADB link closes.
         if (mirrorConnection === ended) {
@@ -1373,7 +1384,10 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY, RESUME_CAPABILITY)
+
+        /** Resumable transfers (SPEC 16). */
+        const val RESUME_CAPABILITY = "files.resume.v1"
         const val MIRROR_CAPABILITY = "mirror.v1"
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"

@@ -75,6 +75,20 @@ private class BlockingOutput : OutputStream(), Closeable2 {
     override fun release() = latch.countDown()
 }
 
+/** Serves [first] bytes, then blocks until its stream is closed, and fails like a closed socket. */
+private class ThenBlock(first: ByteArray) : InputStream(), Closeable2 {
+    private val a = ByteArrayInputStream(first)
+    private val latch = CountDownLatch(1)
+    override fun read(): Int = throw UnsupportedOperationException()
+    override fun read(buf: ByteArray, off: Int, len: Int): Int {
+        val n = a.read(buf, off, len)
+        if (n >= 0) return n
+        latch.await()
+        throw IOException("closed")
+    }
+    override fun release() = latch.countDown()
+}
+
 /** Serves [first] bytes, then blocks until [gate] opens, then serves [second]. */
 private class GatedInput(first: ByteArray, second: ByteArray, val gate: CountDownLatch) : InputStream() {
     private val a = ByteArrayInputStream(first)
@@ -145,6 +159,18 @@ private class MemSink(
     override val output: OutputStream get() = out
     override fun commit(): String { if (commitFails) throw IOException("disk"); committed.set(true); return savedName }
     override fun abort() { aborted.set(true) }
+    var canKeep = false
+    val kept = AtomicBoolean(false)
+    override fun keep(): Boolean { if (canKeep) kept.set(true); return canKeep }
+}
+
+/** A source that can be read again from the start (a regular file). */
+private class ResumableSource(override val name: String, private val data: ByteArray) : OutgoingFile {
+    override val size = data.size.toLong()
+    override val mime = "application/octet-stream"
+    override val modifiedMs = 0L
+    override val canResume = true
+    override fun open(): InputStream = ByteArrayInputStream(data)
 }
 
 private class Harness(
@@ -155,7 +181,10 @@ private class Harness(
     val onSend: (String, MessageLite) -> Unit = { _, _ -> },
     val makeStream: (BulkHello) -> BulkStream = { FakeStream() },
     val dial: suspend (BulkHello) -> Unit = {},
+    val resumes: Boolean = false,
+    val resumeFor: (TransferOffer) -> ResumedSink? = { null },
 ) {
+    val discarded = CopyOnWriteArrayList<String>()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val sent = CopyOnWriteArrayList<Pair<String, MessageLite>>()
     val hellos = CopyOnWriteArrayList<BulkHello>()
@@ -179,12 +208,17 @@ private class Harness(
                 override fun close() { if (!s.closed.get()) openNow.decrementAndGet(); s.close() }
             }
         },
-        sinks = { offer -> offersSeen += offer; sinkFor(offer) },
+        sinks = object : IncomingSinks {
+            override fun open(offer: TransferOffer): SinkResult { offersSeen += offer; return sinkFor(offer) }
+            override fun resume(offer: TransferOffer): ResumedSink? = resumeFor(offer)
+            override fun discard(transferId: String) { discarded += transferId }
+        },
         freeBytes = free,
         clock = { clock.get() },
         newId = { "t${ids.incrementAndGet()}" },
         io = Dispatchers.IO,
         timing = timing,
+        resumes = { resumes },
     )
 
     fun env(type: String, msg: MessageLite) = envelope(Channel.CHANNEL_FILES, 1, type, msg)
@@ -751,5 +785,137 @@ class TransferEngineTest {
         h.awaitState(read, TransferState.FAILED)
         Thread.sleep(100)
         assertFalse(MessageType.FILES_FAILED in h.types())
+    }
+
+    // ---- resume (files.resume.v1) ----
+
+    private fun accept(h: Harness, id: String, offset: Long = 0) =
+        h.deliver(MessageType.FILES_ACCEPT, TransferAccept.newBuilder().setTransferId(id).setOffset(offset).setToken(ByteString.copyFrom(byteArrayOf(1))).build())
+
+    @Test
+    fun brokenSendPausesAndGoesOnFromTheMacsOffsetWhenItIsBack() {
+        val data = Random(40).nextBytes(900_000)
+        val second = ByteArrayOutputStream()
+        val made = AtomicInteger()
+        val h = harness(Harness(resumes = true, makeStream = {
+            if (made.incrementAndGet() == 1) FakeStream(output = BlockingOutput()) else FakeStream(output = second)
+        }))
+        h.engine.onConnected("mac1", true)
+        val id = h.engine.send(listOf(ResumableSource("movie.mov", data))).single()
+        h.awaitSent(MessageType.FILES_OFFER)
+        assertTrue(h.last<TransferOffer>(MessageType.FILES_OFFER).resumable)
+        accept(h, id)
+        h.awaitState(id, TransferState.ACTIVE)
+        h.engine.onDisconnected()
+        h.awaitState(id, TransferState.PAUSED)
+        // Back: offered again with the same ID; the Mac kept 300,000 bytes.
+        h.engine.onConnected("mac1", true)
+        awaitUntil(30_000, "second offer") { h.sent.count { it.first == MessageType.FILES_OFFER } == 2 }
+        assertEquals(id, h.last<TransferOffer>(MessageType.FILES_OFFER).transferId)
+        accept(h, id, offset = 300_000)
+        h.awaitSent(MessageType.FILES_COMPLETE)
+        assertContentEquals(data.copyOfRange(300_000, data.size), second.toByteArray())
+        assertContentEquals(sha(data), h.last<TransferComplete>(MessageType.FILES_COMPLETE).sha256.toByteArray())
+        h.deliver(MessageType.FILES_RECEIVED, TransferReceived.newBuilder().setTransferId(id).build())
+        h.awaitState(id, TransferState.DONE)
+    }
+
+    @Test
+    fun pausedSendForAnotherMacEndsAndOneThatCannotResumeFails() {
+        val h = harness(Harness(resumes = true))
+        h.engine.onConnected("mac1", true)
+        val id = h.engine.send(listOf(ResumableSource("a.bin", ByteArray(10)))).single()
+        h.awaitSent(MessageType.FILES_OFFER)
+        h.engine.onDisconnected()
+        h.awaitState(id, TransferState.PAUSED)
+        h.engine.onConnected("mac2", true)
+        h.awaitState(id, TransferState.FAILED)
+        assertEquals(TransferError.TRANSFER_ERROR_INTERRUPTED, h.status(id).error)
+
+        // A source that can't be read twice (a pipe) fails as before.
+        val other = h.engine.send(listOf(MemSource("b.bin", ByteArray(10)))).single()
+        awaitUntil(30_000, "offer b") { h.sent.any { it.first == MessageType.FILES_OFFER && (it.second as TransferOffer).transferId == other } }
+        assertFalse(h.last<TransferOffer>(MessageType.FILES_OFFER).resumable)
+        h.engine.onDisconnected()
+        h.awaitState(other, TransferState.FAILED)
+    }
+
+    @Test
+    fun whileConnectedAPausedSendIsTriedAgainAfterADelay() {
+        val h = harness(Harness(resumes = true, timing = TransferTiming(firstRetryMs = 50)))
+        h.engine.onConnected("mac1", true)
+        val id = h.engine.send(listOf(ResumableSource("a.bin", ByteArray(10)))).single()
+        h.awaitSent(MessageType.FILES_OFFER)
+        h.deliver(MessageType.FILES_FAILED, TransferFailed.newBuilder().setTransferId(id).setReason(TransferError.TRANSFER_ERROR_TIMED_OUT).build())
+        awaitUntil(30_000, "second offer") { h.sent.count { it.first == MessageType.FILES_OFFER } == 2 }
+        // The user's cancel ends a paused one for good and tells the Mac.
+        h.deliver(MessageType.FILES_FAILED, TransferFailed.newBuilder().setTransferId(id).setReason(TransferError.TRANSFER_ERROR_INTERRUPTED).build())
+        h.awaitState(id, TransferState.PAUSED)
+        h.engine.cancel(id)
+        h.awaitState(id, TransferState.CANCELLED)
+        h.awaitSent(MessageType.FILES_CANCEL)
+    }
+
+    @Test
+    fun brokenReceiveKeepsItsBytesAndTheNextOfferGoesOn() {
+        val data = Random(41).nextBytes(1_000)
+        val first = MemSink().apply { canKeep = true }
+        val rest = ByteArrayOutputStream()
+        val second = MemSink(out = rest)
+        val made = AtomicInteger()
+        val h = harness(Harness(
+            resumes = true,
+            sinkFor = { SinkResult.Ready(first) },
+            resumeFor = { ResumedSink(second, 300) { ByteArrayInputStream(data.copyOfRange(0, 300)) } },
+            makeStream = {
+                if (made.incrementAndGet() == 1) FakeStream(input = ThenBlock(data.copyOfRange(0, 300)))
+                else FakeStream(input = ByteArrayInputStream(data.copyOfRange(300, data.size)))
+            },
+        ))
+        h.engine.onConnected("mac1", true)
+        val offer = h.offer("m1", data.size.toLong()).toBuilder().setResumable(true).build()
+        h.deliver(MessageType.FILES_OFFER, offer)
+        awaitUntil(30_000, "300 bytes") { (first.out as ByteArrayOutputStream).size() == 300 }
+        h.engine.onDisconnected()
+        h.awaitState("m1", TransferState.PAUSED)
+        assertTrue(first.kept.get())
+        assertFalse(first.aborted.get())
+
+        h.engine.onConnected("mac1", true)
+        h.deliver(MessageType.FILES_OFFER, offer)
+        awaitUntil(30_000, "second accept") { h.sent.count { it.first == MessageType.FILES_ACCEPT } == 2 }
+        assertEquals(300L, h.last<TransferAccept>(MessageType.FILES_ACCEPT).offset)
+        assertEquals(1, h.engine.transfers.value.count { it.id == "m1" })
+        h.deliver(MessageType.FILES_COMPLETE, h.complete("m1", sha(data)))
+        h.awaitState("m1", TransferState.DONE)
+        assertContentEquals(data.copyOfRange(300, data.size), rest.toByteArray())
+    }
+
+    @Test
+    fun keptBytesGoWhenTooOldOrCancelled() {
+        val clock = AtomicLong(1_000)
+        val sink = MemSink().apply { canKeep = true }
+        val h = harness(Harness(
+            resumes = true, clock = clock, sinkFor = { SinkResult.Ready(sink) },
+            makeStream = { FakeStream(input = ThenBlock(ByteArray(10))) },
+        ))
+        h.engine.onConnected("mac1", true)
+        h.deliver(MessageType.FILES_OFFER, h.offer("m1", 100).toBuilder().setResumable(true).build())
+        awaitUntil(30_000, "10 bytes") { (sink.out as ByteArrayOutputStream).size() == 10 }
+        h.engine.onDisconnected()
+        h.awaitState("m1", TransferState.PAUSED)
+        clock.addAndGet(TransferTiming().keepPausedMs + 1)
+        h.engine.onConnected("mac1", true)
+        h.awaitState("m1", TransferState.FAILED)
+        awaitUntil(30_000, "discarded") { h.discarded == listOf("m1") }
+
+        h.deliver(MessageType.FILES_OFFER, h.offer("m2", 100).toBuilder().setResumable(true).build())
+        awaitUntil(30_000, "10 more bytes") { (sink.out as ByteArrayOutputStream).size() == 20 }
+        h.deliver(MessageType.FILES_FAILED, TransferFailed.newBuilder().setTransferId("m2").setReason(TransferError.TRANSFER_ERROR_INTERRUPTED).build())
+        h.awaitState("m2", TransferState.PAUSED)
+        h.engine.cancel("m2")
+        h.awaitState("m2", TransferState.CANCELLED)
+        awaitUntil(30_000, "m2 discarded") { "m2" in h.discarded }
+        h.awaitSent(MessageType.FILES_CANCEL)
     }
 }

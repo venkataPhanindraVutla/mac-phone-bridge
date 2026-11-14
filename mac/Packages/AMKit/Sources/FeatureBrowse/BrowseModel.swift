@@ -366,7 +366,7 @@ public final class BrowseModel: SessionFeature {
             case .done: waiter.resolve(.success(item))
             case let .failed(reason): waiter.resolve(.failure(.transfer(reason)))
             case .cancelled: waiter.resolve(.failure(.transfer(.cancelled)))
-            case .queued, .waiting, .active: waiter.resolve(.failure(.transfer(.interrupted)))
+            case .queued, .waiting, .active, .paused: waiter.resolve(.failure(.transfer(.interrupted)))
             }
         }
         guard let into = uploads.removeValue(forKey: item.id), case .done = item.state, into == location else { return }

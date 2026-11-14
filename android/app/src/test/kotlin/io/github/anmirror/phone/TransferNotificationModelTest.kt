@@ -175,4 +175,18 @@ class TransferNotificationModelTest {
         )
         assertEquals(setOf(Direction.SEND, Direction.RECEIVE), views.ongoing.keys)
     }
+
+    @Test fun pausedStaysOngoingWithItsProgressAndIsNoResult() {
+        val views = model.update(
+            listOf(
+                t("a", Direction.SEND, TransferState.PAUSED, done = 61),
+                t("c", Direction.RECEIVE, TransferState.PAUSED, done = 30),
+            ),
+            cancelledHere = emptySet(),
+        )
+        assertTrue(views.ongoing.getValue(Direction.SEND).paused)
+        assertEquals(61, views.ongoing.getValue(Direction.SEND).percent)
+        assertTrue(views.ongoing.getValue(Direction.RECEIVE).paused)
+        assertTrue(views.changed.isEmpty())
+    }
 }

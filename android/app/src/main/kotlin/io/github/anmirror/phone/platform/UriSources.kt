@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.system.Os
+import android.system.OsConstants
 import io.github.anmirror.transfer.FileNames
 import io.github.anmirror.transfer.OutgoingFile
 import java.io.Closeable
@@ -14,7 +16,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * A shared file, opened while the share's URI grant was live: the descriptor outlives the
  * activity, so nothing is copied. [open] hands the descriptor to the one stream that reads it;
- * [close] releases it whether or not it was read (call it when the transfer ends).
+ * [close] releases it whether or not it was read (call it when the transfer ends). A regular
+ * file [canResume]: each [open] then reads a duplicate of the descriptor from the start, so a
+ * paused send can read it again.
  */
 class SharedFile(
     private val pfd: ParcelFileDescriptor,
@@ -25,7 +29,16 @@ class SharedFile(
 ) : OutgoingFile, Closeable {
     private val opened = AtomicBoolean(false)
 
+    override val canResume: Boolean =
+        runCatching { OsConstants.S_ISREG(Os.fstat(pfd.fileDescriptor).st_mode) }.getOrDefault(false)
+
     override fun open(): InputStream {
+        if (canResume) {
+            val copy = pfd.dup()
+            // A duplicate shares the position: back to the start for this read.
+            Os.lseek(copy.fileDescriptor, 0, OsConstants.SEEK_SET)
+            return ParcelFileDescriptor.AutoCloseInputStream(copy)
+        }
         if (!opened.compareAndSet(false, true)) throw IOException("already read")
         return ParcelFileDescriptor.AutoCloseInputStream(pfd)
     }

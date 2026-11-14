@@ -14,6 +14,12 @@ interface OutgoingFile {
     val mime: String
     val modifiedMs: Long
     fun open(): InputStream
+
+    /**
+     * True when [open] may be called again, from the start, after an attempt broke: such a
+     * file's send pauses and goes on later (files.resume.v1, SPEC 16).
+     */
+    val canResume: Boolean get() = false
 }
 
 /**
@@ -28,7 +34,19 @@ interface IncomingFile {
 
     /** Discards everything written so far (no partial file may remain). */
     fun abort()
+
+    /**
+     * Keeps what was written so far for [IncomingSinks.resume] (files.resume.v1), instead of
+     * [abort]; false when it can't, and the caller then aborts.
+     */
+    fun keep(): Boolean = false
 }
+
+/**
+ * A kept receive opened again: [file] appends after the [offset] bytes already there, which
+ * [existing] reads back (from the start) so the whole file's hash can be checked.
+ */
+class ResumedSink(val file: IncomingFile, val offset: Long, val existing: () -> InputStream)
 
 sealed interface SinkResult {
     data class Ready(val file: IncomingFile) : SinkResult
@@ -38,6 +56,12 @@ sealed interface SinkResult {
 /** Opens the destination for an incoming offer. The offer's name is already sanitized. */
 fun interface IncomingSinks {
     fun open(offer: TransferOffer): SinkResult
+
+    /** The part kept for [offer]'s transfer ID by [IncomingFile.keep], opened to go on; null if none. */
+    fun resume(offer: TransferOffer): ResumedSink? = null
+
+    /** Deletes the part kept for [transferId], if any. */
+    fun discard(transferId: String) {}
 }
 
 /** Dials a bulk connection (SPEC 13) and writes the hello. */

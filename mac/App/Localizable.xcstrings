@@ -3301,6 +3301,39 @@
           }
         }
       }
+    },
+    "Paused: %@ · %lld%%": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paused: %@ · %lld%%"
+          }
+        }
+      }
+    },
+    "Goes on from here when the phone is back.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goes on from here when the phone is back."
+          }
+        }
+      }
+    },
+    "Goes on from here when the phone sends it again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goes on from here when the phone sends it again."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

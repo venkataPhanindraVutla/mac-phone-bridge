@@ -276,6 +276,9 @@ public nonisolated struct AMTransferOffer: Sendable {
 
   public var modifiedMs: Int64 = 0
 
+  /// files.resume.v1: the receiver keeps what it got if the transfer breaks (SPEC 16)
+  public var resumable: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -292,6 +295,9 @@ public nonisolated struct AMTransferAccept: Sendable {
 
   /// set when the Mac is the receiver
   public var token: Data = Data()
+
+  /// files.resume.v1: bytes the receiver already has; the sender starts there
+  public var offset: UInt64 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -503,7 +509,7 @@ nonisolated extension AMBrowseTarget: SwiftProtobuf.Message, SwiftProtobuf._Mess
 
 nonisolated extension AMTransferOffer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TransferOffer"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}transfer_id\0\u{1}name\0\u{1}size\0\u{1}mime\0\u{1}kind\0\u{1}token\0\u{3}request_id\0\u{1}target\0\u{3}modified_ms\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}transfer_id\0\u{1}name\0\u{1}size\0\u{1}mime\0\u{1}kind\0\u{1}token\0\u{3}request_id\0\u{1}target\0\u{3}modified_ms\0\u{1}resumable\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -520,6 +526,7 @@ nonisolated extension AMTransferOffer: SwiftProtobuf.Message, SwiftProtobuf._Mes
       case 7: try { try decoder.decodeSingularUInt64Field(value: &self.requestID) }()
       case 8: try { try decoder.decodeSingularMessageField(value: &self._target) }()
       case 9: try { try decoder.decodeSingularInt64Field(value: &self.modifiedMs) }()
+      case 10: try { try decoder.decodeSingularBoolField(value: &self.resumable) }()
       default: break
       }
     }
@@ -557,6 +564,9 @@ nonisolated extension AMTransferOffer: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if self.modifiedMs != 0 {
       try visitor.visitSingularInt64Field(value: self.modifiedMs, fieldNumber: 9)
     }
+    if self.resumable != false {
+      try visitor.visitSingularBoolField(value: self.resumable, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -570,6 +580,7 @@ nonisolated extension AMTransferOffer: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if lhs.requestID != rhs.requestID {return false}
     if lhs._target != rhs._target {return false}
     if lhs.modifiedMs != rhs.modifiedMs {return false}
+    if lhs.resumable != rhs.resumable {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -577,7 +588,7 @@ nonisolated extension AMTransferOffer: SwiftProtobuf.Message, SwiftProtobuf._Mes
 
 nonisolated extension AMTransferAccept: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TransferAccept"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}transfer_id\0\u{1}token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}transfer_id\0\u{1}token\0\u{1}offset\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -587,6 +598,7 @@ nonisolated extension AMTransferAccept: SwiftProtobuf.Message, SwiftProtobuf._Me
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.transferID) }()
       case 2: try { try decoder.decodeSingularBytesField(value: &self.token) }()
+      case 3: try { try decoder.decodeSingularUInt64Field(value: &self.offset) }()
       default: break
       }
     }
@@ -599,12 +611,16 @@ nonisolated extension AMTransferAccept: SwiftProtobuf.Message, SwiftProtobuf._Me
     if !self.token.isEmpty {
       try visitor.visitSingularBytesField(value: self.token, fieldNumber: 2)
     }
+    if self.offset != 0 {
+      try visitor.visitSingularUInt64Field(value: self.offset, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: AMTransferAccept, rhs: AMTransferAccept) -> Bool {
     if lhs.transferID != rhs.transferID {return false}
     if lhs.token != rhs.token {return false}
+    if lhs.offset != rhs.offset {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

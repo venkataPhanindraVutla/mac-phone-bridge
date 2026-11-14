@@ -89,7 +89,8 @@ struct TransferRow: View {
                 if !item.isFinal, item.state != .queued {
                     ProgressView(value: TransferText.fraction(item))
                         .accessibilityHidden(true)
-                } else if let reason = TransferText.reason(item) {
+                }
+                if item.isFinal || item.state == .paused, let reason = TransferText.reason(item) {
                     Text(reason)
                         .foregroundStyle(.secondary)
                 }
@@ -127,6 +128,8 @@ enum TransferText {
             return "Sending \(name) · \(percent(item))%"
         case (.waiting, .receive), (.active, .receive):
             return "Receiving \(name) · \(percent(item))%"
+        case (.paused, _):
+            return "Paused: \(name) · \(percent(item))%"
         case (.done, .send):
             return "Sent \(name)"
         case (.done, .receive):
@@ -150,10 +153,13 @@ enum TransferText {
         failure.sameReason ? reason(failure.newest) : nil
     }
 
-    /// Why a transfer did not finish; nil while under way or once done.
+    /// Why a transfer did not finish, or why it is paused; nil while under way or once done.
     static func reason(_ item: TransferItem) -> LocalizedStringResource? {
         switch item.state {
         case .queued, .waiting, .active, .done: return nil
+        case .paused:
+            return item.direction == .send
+                ? "Goes on from here when the phone is back." : "Goes on from here when the phone sends it again."
         case .cancelled: return "Cancelled."
         case let .failed(error):
             let sending = item.direction == .send

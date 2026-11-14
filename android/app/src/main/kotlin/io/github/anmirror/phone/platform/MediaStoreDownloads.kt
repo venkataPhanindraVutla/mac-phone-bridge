@@ -16,6 +16,7 @@ import io.github.anmirror.protocol.v1.TransferError
 import io.github.anmirror.protocol.v1.TransferOffer
 import io.github.anmirror.transfer.IncomingFile
 import io.github.anmirror.transfer.IncomingSinks
+import io.github.anmirror.transfer.ResumedSink
 import io.github.anmirror.transfer.SinkResult
 import java.io.IOException
 import java.io.OutputStream
@@ -49,6 +50,11 @@ data class SavedFile(val uri: Uri, val mime: String)
  * rows left behind (a killed process, a delete that threw) are swept when the connection service
  * starts and before the first open in a process, skipping rows being written. Offers with a
  * browse `target` are not for Downloads (Task 10 routes them). Blocking: call off the main thread.
+ *
+ * Resume (files.resume.v1): [IncomingFile.keep] leaves a broken download's row pending, by
+ * transfer ID, and [resume] appends to it. Kept rows count as being written, so the sweep spares
+ * them. shortcut: kept rows are known to this process only; a restart sweeps them, and the next
+ * offer starts over.
  */
 class MediaStoreDownloads(context: Context) : IncomingSinks {
     private val resolver: ContentResolver = context.contentResolver
@@ -58,6 +64,8 @@ class MediaStoreDownloads(context: Context) : IncomingSinks {
 
     /** Row IDs of downloads being written: the sweep leaves them alone. Also the sweep's lock. */
     private val live = HashSet<Long>()
+    /** Kept rows (resumable downloads that broke), by transfer ID. Guarded by [live]. */
+    private val keptRows = HashMap<String, Download>()
     private val saved = object : LinkedHashMap<String, SavedFile>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SavedFile>?) = size > KEEP_SAVED
     }
@@ -95,13 +103,38 @@ class MediaStoreDownloads(context: Context) : IncomingSinks {
         return SinkResult.Ready(Download(offer.transferId, uri, rowId, mime, out))
     }
 
+    override fun resume(offer: TransferOffer): ResumedSink? {
+        val row = synchronized(live) { keptRows.remove(offer.transferId) } ?: return null
+        return try {
+            val length = resolver.openFileDescriptor(row.uri, "r")?.use { it.statSize } ?: throw IOException("no descriptor")
+            val out = resolver.openOutputStream(row.uri, "wa") ?: throw IOException("no output stream")
+            ResumedSink(Download(row.transferId, row.uri, row.rowId, row.mime, out), length) {
+                resolver.openInputStream(row.uri) ?: throw IOException("no input stream")
+            }
+        } catch (e: Exception) {
+            row.abort()
+            null
+        }
+    }
+
+    override fun discard(transferId: String) {
+        synchronized(live) { keptRows.remove(transferId) }?.abort()
+    }
+
     private inner class Download(
-        private val transferId: String,
-        private val uri: Uri,
-        private val rowId: Long,
-        private val mime: String,
+        val transferId: String,
+        val uri: Uri,
+        val rowId: Long,
+        val mime: String,
         override val output: OutputStream,
     ) : IncomingFile {
+        override fun keep(): Boolean {
+            runCatching { output.close() }
+            // Stays in `live`, so the sweep leaves it.
+            synchronized(live) { keptRows[transferId] = this }
+            return true
+        }
+
         override fun commit(): String {
             output.close()
             val publish = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }

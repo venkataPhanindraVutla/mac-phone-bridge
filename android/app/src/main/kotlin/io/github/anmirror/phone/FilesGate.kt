@@ -64,6 +64,7 @@ fun sharesToRelease(tracked: Collection<String>, fresh: List<TransferStatus>): L
     return tracked.filter { it !in live }
 }
 
-/** Queued, waiting for the peer, or moving bytes. */
+/** Queued, waiting for the peer, moving bytes, or paused (it goes on later; its file stays open). */
 fun TransferState.isOngoing(): Boolean =
-    this == TransferState.QUEUED || this == TransferState.WAITING || this == TransferState.ACTIVE
+    this == TransferState.QUEUED || this == TransferState.WAITING || this == TransferState.ACTIVE ||
+        this == TransferState.PAUSED

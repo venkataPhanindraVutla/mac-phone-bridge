@@ -151,7 +151,7 @@ encoded, so `0` and `-1` stay distinct.
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
 Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23).
-Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14). A side MUST
+Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14) and `files.resume.v1` (section 16). A side MUST
 NOT send messages of a feature the peer did not list.
 The 0.1 keep-alive patch adds `liveness.v1` (section 7). It is a property of the connection, not a
 feature channel: it carries no messages of its own and changes who sends `system.ping`.
@@ -430,7 +430,8 @@ File bytes never travel in control frames. They use separate bulk connections.
   expires after 60 s.
 - An unknown, expired or reused token, or a role that does not match the token, closes the
   connection without a reply.
-- After the hello, the sender writes exactly `size` raw bytes. The receiver reads exactly
+- After the hello, the sender writes exactly `size` raw bytes (`size - offset` when the accept
+  carried an `offset`, section 16). The receiver reads exactly
   `size` bytes and never waits for EOF; extra bytes fail the transfer. The sender closes after
   `files.received` or `files.failed`, or after 30 s.
 - A control disconnect revokes every token and ends every bulk connection.
@@ -490,7 +491,28 @@ transfer serves is shared.
   to the same user.
 - **Free space.** The receiver rejects an offer with `NO_SPACE` when `size + 64 MiB` exceeds
   the free space.
-- **No resume.** An interrupted transfer starts again from the offer.
+- **Resume (`files.resume.v1`).** Without it, an interrupted transfer starts again from the offer.
+  When both sides list it:
+  - The sender sets `TransferOffer.resumable` on offers of plain files the user sent
+    (`TRANSFER_KIND_FILE`, no `request_id`, no `target`). Other offers are never resumable.
+  - A resumable receive that ends `INTERRUPTED` or `TIMED_OUT` (the link broke, the control
+    connection closed, or a `files.failed` with one of those reasons), after some bytes were
+    written, is **paused**: the receiver keeps the bytes it wrote, by `transfer_id`, for **24 hours**.
+    Any other ending (cancel, hash mismatch, IO, no space) deletes them.
+  - The sender pauses the send on the same endings and offers it again with the **same
+    `transfer_id`**, `name`, `size` and `modified_ms`: when the same peer connects again, and while
+    still connected after a delay (5 s, doubling to at most 60 s). It gives up after 24 hours.
+  - An offer whose `transfer_id` matches kept bytes with the same `size` and (sanitized) `name`
+    is accepted with `TransferAccept.offset` = the number of bytes kept (less than `size`). The
+    sender then writes only the bytes from `offset` to `size` on the bulk connection;
+    `files.progress.bytes_done` still counts from the start of the file, and `files.complete`
+    carries the SHA-256 of the **whole** file, which the receiver checks over its kept bytes plus
+    the new ones. Any other offer is accepted with `offset = 0`, and stale kept bytes for that
+    `transfer_id` are dropped.
+  - `files.cancel` from either side ends a paused transfer for good; the receiver deletes what it
+    kept (a cancel for a `transfer_id` it only has kept bytes for counts).
+  - A receiver that does not list the capability ignores `resumable` and sends `offset = 0`, so
+    the sender starts from the first byte.
 - **File-name rule**, applied by the receiver to `TransferOffer.name`:
   1. Take the text after the last `/` or `\`.
   2. Remove C0 controls, DEL (U+007F) and the bidi controls U+202A to U+202E and U+2066 to

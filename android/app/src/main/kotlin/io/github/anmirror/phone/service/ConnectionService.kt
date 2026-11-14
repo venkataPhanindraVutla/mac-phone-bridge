@@ -516,6 +516,7 @@ class ConnectionService : LifecycleService() {
             graph.manager.state.collect { state ->
                 val ended = session.getAndSet(state as? Connected)
                 if (ended != null && state !== ended) graph.onSessionEnded(ended)
+                if (state is Connected && state !== ended) graph.onSessionStarted(state)
             }
         }
     }

@@ -8,7 +8,15 @@ import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
 
 /** The one ongoing notification of a direction: the active transfer, and how many wait behind it. */
-data class OngoingView(val direction: Direction, val id: String, val name: String, val percent: Int, val waiting: Int)
+data class OngoingView(
+    val direction: Direction,
+    val id: String,
+    val name: String,
+    val percent: Int,
+    val waiting: Int,
+    /** Broke off; goes on when the Mac is back (files.resume.v1). */
+    val paused: Boolean = false,
+)
 
 /**
  * The one results notification of a direction: what ended since the direction last started
@@ -58,7 +66,10 @@ class TransferNotificationModel {
             if (live.isNotEmpty()) {
                 // One runs at a time per direction: the one past QUEUED, else the first in line.
                 val active = live.firstOrNull { it.state != TransferState.QUEUED } ?: live.first()
-                ongoing[direction] = OngoingView(direction, active.id, active.name, percent(active), live.size - 1)
+                ongoing[direction] = OngoingView(
+                    direction, active.id, active.name, percent(active), live.size - 1,
+                    paused = active.state == TransferState.PAUSED,
+                )
             }
             // Oldest first, so the "last" fields end on the newest (the engine lists the newest finished first).
             for (t in mine.filter { !it.state.isOngoing() }.asReversed()) {
