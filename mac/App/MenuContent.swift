@@ -185,6 +185,11 @@ struct MenuContent: View {
     @ViewBuilder private var sendSection: some View {
         Button("Show Phone Window") { show(WindowID.phone) }
             .accessibilityLabel(Text("Show Phone Window"))
+        Button("Notification History") {
+            model.phoneTab = .notifications
+            show(WindowID.phone)
+        }
+        .accessibilityLabel(Text("Notification History"))
         if model.canMirror {
             Button("Show Phone Screen") { model.showMirror() }
                 .accessibilityLabel(Text("Show Phone Screen"))

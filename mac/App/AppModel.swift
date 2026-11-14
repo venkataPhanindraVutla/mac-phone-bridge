@@ -41,6 +41,10 @@ final class AppModel {
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
     let notifications: NotificationsModel
+    /// Phone notifications kept after they are gone (Settings: "Keep notification history").
+    let notificationHistory: NotificationHistory
+    /// The Phone window's selected tab, so the menu can open it on Notifications.
+    var phoneTab: PhoneTab = .send
     let calls: CallModel
     let clipboard: ClipboardModel
     /// File transfers both ways; received files go to Downloads.
@@ -202,6 +206,23 @@ final class AppModel {
             }
         )
         notifications = model
+        let historyFile = Self.notificationHistoryFile()
+        let history = NotificationHistory(
+            retentionDays: UserDefaults.standard.object(forKey: Self.historyDaysKey) as? Int ?? 7,
+            load: { historyFile.flatMap { try? $0.read() } },
+            save: { data in
+                guard let historyFile else { return }
+                do {
+                    if let data { try historyFile.write(data) } else { try historyFile.delete() }
+                } catch {
+                    Self.appLog.error("notification history not saved: \(String(describing: type(of: error)), privacy: .public)")
+                }
+            }
+        )
+        // A phone forgotten while the app was not running leaves nothing behind.
+        history.keepOnly(phoneIDs: Set(((try? store.all()) ?? []).map(\.id)))
+        model.history = history
+        notificationHistory = history
         let calls = CallModel(
             nameFor: { contacts.name(forNumber: $0) }, presenter: presenter,
             send: { type, message in
@@ -787,6 +808,7 @@ final class AppModel {
         input.shutdown()
         server.stop()
         transfers.shutdown()
+        notificationHistory.flush()
         bulk.stop()
     }
 
@@ -969,6 +991,35 @@ final class AppModel {
 
     private static func notifySettingsKey(phoneID: String) -> String { "notifySettings." + phoneID }
 
+    private static let historyDaysKey = "notificationHistoryDays"
+
+    /// "Keep notification history" in Settings: days, 0 = off (which deletes it).
+    var notificationHistoryDays: Int { notificationHistory.retentionDays }
+
+    func setNotificationHistoryDays(_ days: Int) {
+        notificationHistory.retentionDays = days
+        UserDefaults.standard.set(days, forKey: Self.historyDaysKey)
+    }
+
+    /// The history file, sealed with its own Keychain key (made on first use); nil when the
+    /// Keychain refuses, and the history then lives in memory only.
+    private static func notificationHistoryFile() -> EncryptedFile? {
+        let item = KeychainItem(service: KeychainPairedPhoneStore.defaultService, account: "notify-history-key")
+        do {
+            let key: SymmetricKey
+            if let data = try item.read(), data.count == 32 {
+                key = SymmetricKey(data: data)
+            } else {
+                key = SymmetricKey(size: .bits256)
+                try item.write(key.withUnsafeBytes { Data($0) })
+            }
+            return EncryptedFile(url: ContactsStore.defaultDirectory.appendingPathComponent("notification-history.sealed"), key: key)
+        } catch {
+            appLog.error("no key for notification history: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+    }
+
     private static func loadNotifySettings(phoneID: String) -> NotifySettings {
         guard let data = UserDefaults.standard.data(forKey: notifySettingsKey(phoneID: phoneID)),
               let settings = try? JSONDecoder().decode(NotifySettings.self, from: data) else { return NotifySettings() }
@@ -1024,4 +1075,9 @@ enum SendNote: Equatable {
 @MainActor
 private final class Later<T: AnyObject> {
     var value: T?
+}
+
+/// The Phone window's tabs.
+enum PhoneTab: Hashable {
+    case send, notifications, photos, files, nowPlaying
 }
