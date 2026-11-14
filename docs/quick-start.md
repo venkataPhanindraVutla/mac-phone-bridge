@@ -14,7 +14,7 @@ You need:
 
 ## 1. Install the app on your Mac
 
-1. Download **MacPhoneBridge-0.9.0-beta.2.dmg** from the [beta release page](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/tag/v0.9.0-beta.2).
+1. Download **MacPhoneBridge-0.9.0-beta.3.dmg** from the [beta release page](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/tag/v0.9.0-beta.3).
 2. Open the downloaded file. A window opens with the app and your Applications folder.
 3. Drag **Mac Phone Bridge** onto **Applications**.
 4. Open your Applications folder and double-click **Mac Phone Bridge**.
@@ -41,7 +41,7 @@ If your Mac asks to allow Mac Phone Bridge to find devices on your local network
 
 ## 2. Install the app on your phone
 
-1. On your phone, open the [beta release page](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/tag/v0.9.0-beta.2) and tap **MacPhoneBridge-0.9.0-beta.2.apk** to download it. (On the Get started page of the website, you can scan a QR code with your phone's camera instead.)
+1. On your phone, open the [beta release page](https://github.com/venkataPhanindraVutla/mac-phone-bridge/releases/tag/v0.9.0-beta.3) and tap **MacPhoneBridge-0.9.0-beta.3.apk** to download it. (On the Get started page of the website, you can scan a QR code with your phone's camera instead.)
 2. When the download finishes, tap **Open**.
 3. If the phone says it isn't allowed to install apps from this source, tap **Settings**, turn on **Allow from this source**, then go back and tap **Install**.
 4. If **Google Play Protect** shows a warning, tap **More details** and then **Install anyway**. It warns because the app isn't from the Play Store yet.
@@ -124,7 +124,7 @@ After the phone restarts or joins a different Wi-Fi network, tap **Re-enable Ful
 ## Updating and removing
 
 - **Update:** download the new DMG and APK from the releases page and install them the same way. Your pairing is kept.
-- **Coming from beta 1:** beta 1's phone app was signed with a temporary key, and Android won't update an app signed with a different key. Uninstall Mac Phone Bridge from the phone first, install beta 2, and pair again. Later updates install over beta 2 normally.
+- **Coming from beta 1:** beta 1's phone app was signed with a temporary key, and Android won't update an app signed with a different key. Uninstall Mac Phone Bridge from the phone first, install the newest beta, and pair again. Later updates install over it normally.
 - **Remove from the Mac:** in the menu bar icon, choose **Forget** your phone, quit the app, then drag Mac Phone Bridge from Applications to the Trash.
 - **Remove from the phone:** uninstall it like any other app.
 

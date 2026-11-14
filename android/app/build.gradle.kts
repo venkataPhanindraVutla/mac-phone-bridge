@@ -37,8 +37,8 @@ android {
         applicationId = "io.github.anmirror.phone"
         minSdk = libs.versions.androidMinSdk.get().toInt()
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
-        versionCode = 9002
-        versionName = "0.9.0-beta.2"
+        versionCode = 9003
+        versionName = "0.9.0-beta.3"
         // 5.0.1-am1: the helper's own versionName, from the same catalog entry.
         buildConfigField("String", "HELPER_VERSION", "\"${libs.versions.helperVersion.get()}\"")
     }

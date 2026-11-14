@@ -93,7 +93,7 @@ function Downloads() {
             <a href={RELEASE.dmg.url} className="mt-8 inline-flex h-12 items-center justify-center gap-2 self-start rounded-full bg-lime px-6 font-semibold text-night transition-colors hover:bg-[#e2ff7a]">
               <IconDownload size={19} aria-hidden="true" /> Download for Mac
             </a>
-            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.2.dmg, {RELEASE.dmg.size}</p>
+            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.3.dmg, {RELEASE.dmg.size}</p>
           </div>
 
           <div className="flex flex-col rounded-[1.5rem] bg-deep p-7 ring-1 ring-line sm:p-8">
@@ -113,7 +113,7 @@ function Downloads() {
             <a href={RELEASE.apk.url} className="mt-8 inline-flex h-12 items-center justify-center gap-2 self-start rounded-full bg-pink px-6 font-semibold text-night transition-colors hover:bg-[#ff5cbf]">
               <IconDownload size={19} aria-hidden="true" /> Download for Android
             </a>
-            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.2.apk, {RELEASE.apk.size}. On a Mac, scan the code instead.</p>
+            <p className="mt-3 text-[0.85rem] text-haze">MacPhoneBridge-0.9.0-beta.3.apk, {RELEASE.apk.size}. On a Mac, scan the code instead.</p>
           </div>
         </div>
 
