@@ -32,7 +32,7 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
-        "proximity.v1", "input.v1", "keyboard.v1", "liveness.v1", "mirror.v1",
+        "proximity.v1", "input.v1", "keyboard.v1", "liveness.v1", "mirror.v1", "clipboard-image.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -212,12 +212,19 @@ final class AppModel {
         )
         self.calls = calls
         notifyWork = NotifyWorkQueue(notifications: model, calls: calls, contacts: contacts)
+        // The engine is made below; a clipboard image waits for it only in theory (no session yet).
+        let transfersLater = Later<TransferEngine>()
+        try? FileManager.default.removeItem(at: Self.clipboardImageFolder)
         let clipboard = ClipboardModel(
             pasteboard: SystemPasteboard(), sendEnabled: Self.savedSendMacClipboard,
             send: { type, message in
                 // Only a phone that shares clipboard.v1 gets clipboard messages.
                 guard server.activePhone?.shared.contains("clipboard.v1") == true else { return }
                 try? await server.send(type, message, channel: .clipboard)
+            },
+            sendImage: { png in
+                guard let transfers = transfersLater.value else { return }
+                transfers.send(files: Self.clipboardImageFile(png).map { [$0] } ?? [], kind: .clipboardImage)
             }
         )
         self.clipboard = clipboard
@@ -247,11 +254,12 @@ final class AppModel {
                       !shared.isDisjoint(with: TransferEngine.bulkCapabilities) else { return }
                 try? await server.send(type, message, channel: .files)
             },
-            destination: { Self.destination(for: $0, screenshots: screenshots) },
+            destination: { Self.destination(for: $0, screenshots: screenshots, clipboard: clipboard) },
             // Part files a crash or force quit left in Downloads or Desktop go at launch.
             partsStore: .standard
         )
         self.transfers = transfers
+        transfersLater.value = transfers
         let browse = BrowseModel(
             engine: transfers,
             send: { type, message in
@@ -265,6 +273,11 @@ final class AppModel {
             // Every ending comes here; the inbox looks at the state (only a done one is saved and shown).
             // An upload from the Files tab reloads the folder it went into.
             browse.transferFinished(item)
+            if item.kind == .clipboardImage, item.direction == .receive, let url {
+                // Received whole: onto the pasteboard, and the file goes.
+                if case .done = item.state, let data = try? Data(contentsOf: url) { clipboard.acceptImageFromPhone(data) }
+                try? FileManager.default.removeItem(at: url)
+            }
             guard item.kind == .screenshot else { return }
             Task { await screenshots.finished(item, at: url) }
         }
@@ -806,7 +819,8 @@ final class AppModel {
     /// Phone files go to Downloads; screenshots where the inbox says (it refuses them unless the
     /// phone shares `screenshots.v1`). Other kinds belong to features this Mac does not have yet,
     /// and are refused.
-    private static func destination(for offer: AMTransferOffer, screenshots: ScreenshotInbox) -> IncomingDestination {
+    private static func destination(for offer: AMTransferOffer, screenshots: ScreenshotInbox,
+                                    clipboard: ClipboardModel) -> IncomingDestination {
         switch offer.kind {
         case .file:
             guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -814,8 +828,36 @@ final class AppModel {
             return .folder(downloads)
         case .screenshot:
             return screenshots.incomingDestination(for: offer)
+        case .clipboardImage:
+            guard clipboard.takesImages else { return .refuse(.disabled) }
+            guard offer.size <= ClipboardModel.maxImageBytes else { return .refuse(.denied) }
+            let folder = clipboardImageFolder.appendingPathComponent("in", isDirectory: true)
+            do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) } catch {
+                return .refuse(.io)
+            }
+            return .folder(folder)
         default:
             return .refuse(.disabled)
+        }
+    }
+
+    /// Where clipboard images wait: Mac copies on their way out (`out/`), phone images on their way in (`in/`).
+    private static let clipboardImageFolder = FileManager.default.temporaryDirectory
+        .appendingPathComponent("io.github.anmirror.mac/clipboard", isDirectory: true)
+
+    /// `png` as a file to send, in a folder of its own. Earlier copies are deleted: one still
+    /// queued then fails, superseded; one being sent keeps its open file.
+    private static func clipboardImageFile(_ png: Data) -> URL? {
+        let out = clipboardImageFolder.appendingPathComponent("out", isDirectory: true)
+        try? FileManager.default.removeItem(at: out)
+        let url = out.appendingPathComponent(UUID().uuidString, isDirectory: true).appendingPathComponent("clipboard.png")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: url)
+            return url
+        } catch {
+            appLog.error("clipboard image not written: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
         }
     }
 
@@ -976,4 +1018,10 @@ enum SendNote: Equatable {
         case .notConnected: "Your phone isn't connected. Nothing was sent."
         }
     }
+}
+
+/// A value set after it is captured (a closure made before the object it needs).
+@MainActor
+private final class Later<T: AnyObject> {
+    var value: T?
 }

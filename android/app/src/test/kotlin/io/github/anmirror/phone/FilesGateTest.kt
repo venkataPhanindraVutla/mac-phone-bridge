@@ -42,10 +42,18 @@ class FilesGateTest {
         photosOpen: Boolean = false,
         browseOpen: Boolean = false,
         filesShared: Boolean = true,
+        clipboardImagesOpen: Boolean = false,
     ) = phoneOfferAllowed(
         kind, requestId,
         screenshotsOpen = screenshotsOpen, photosOpen = photosOpen, browseOpen = browseOpen, filesShared = filesShared,
+        clipboardImagesOpen = clipboardImagesOpen,
     )
+
+    @Test fun clipboardImageNeedsClipboardImagesOpen() {
+        assertFalse(allowed(TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE, screenshotsOpen = true, photosOpen = true, browseOpen = true))
+        assertTrue(allowed(TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE, filesShared = false, clipboardImagesOpen = true))
+        assertTrue(bulkShared(setOf("clipboard-image.v1")))
+    }
 
     @Test fun screenshotOfferNeedsScreenshotsOpen() {
         // files.v1 (or any bulk feature) shared is not enough for a screenshot.

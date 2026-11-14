@@ -1210,3 +1210,30 @@ private func item(_ id: String, _ direction: TransferItem.Direction, _ state: Tr
     #expect(lines.map(\.item.id) == ["s1", "r1"])
     #expect(lines.map(\.waiting) == [0, 0])
 }
+
+// MARK: clipboard images (clipboard-image.v1)
+
+@MainActor @Test func clipboardImageNeedsItsCapabilityAndIsNotListed() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["files.v1"])
+    let refused = r.engine.send(files: [try r.write(randomBytes(10), as: "clipboard.png")], kind: .clipboardImage)
+    // Not listed, so not in `transfers` either.
+    #expect(r.item(refused[0]) == nil)
+    await r.connect(shared: ["clipboard-image.v1"])
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "clipboard.png")], kind: .clipboardImage)
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).map(\.kind) == [.clipboardImage])
+    _ = try await r.phoneTakes(ids[0], size: 10)
+    try await until("finished") { r.finished.contains { $0.item.id == ids[0] } }
+    #expect(r.engine.transfers.isEmpty)
+}
+
+@MainActor @Test func clipboardImageOfferWithoutCapabilityIsRefused() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["files.v1"])
+    var o = r.offer("p1", name: "clipboard.png", size: 4)
+    o.kind = .clipboardImage
+    await r.deliver(.filesOffer, o)
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.disabled] }
+    #expect(r.destinationCalls == 0)
+}

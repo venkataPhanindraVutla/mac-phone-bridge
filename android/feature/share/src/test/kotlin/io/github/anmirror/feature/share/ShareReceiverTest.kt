@@ -17,6 +17,8 @@ private class FakeClipboard : ClipboardAccess {
         writes += text
     }
     override fun read(): String? = writes.lastOrNull()
+    override fun writeImage(file: java.io.File) = Unit
+    override fun readImage(limit: Int): io.github.anmirror.feature.clipboard.ClipImage? = null
 }
 
 private class FakeNotifier : SharedNotifier {

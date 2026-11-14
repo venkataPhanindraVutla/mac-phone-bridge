@@ -150,6 +150,10 @@
     <string name="clipboard_too_long">Text is too long to send</string>
     <string name="clipboard_already_on_mac">Your Mac already has this text</string>
     <string name="clipboard_off">Clipboard sharing is off</string>
+    <string name="clipboard_image_too_large">Image is too large to send</string>
+    <string name="clipboard_image_already_on_mac">Your Mac already has this image</string>
+    <!-- The Mac app is older and takes text only. -->
+    <string name="clipboard_image_not_supported">Update Mac Phone Bridge on your Mac to send images</string>
     <!-- "Sent to %1$s" when the Mac's name is not known. -->
     <string name="clipboard_mac_unnamed">your Mac</string>
 

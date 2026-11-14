@@ -151,7 +151,8 @@ encoded, so `0` and `-1` stay distinct.
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
 Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23).
-Version 0.5 adds `mirror.v1` (section 24). A side MUST NOT send messages of a feature the peer did not list.
+Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14). A side MUST
+NOT send messages of a feature the peer did not list.
 The 0.1 keep-alive patch adds `liveness.v1` (section 7). It is a property of the connection, not a
 feature channel: it carries no messages of its own and changes who sends `system.ping`.
 
@@ -421,7 +422,7 @@ File bytes never travel in control frames. They use separate bulk connections.
 - The Mac runs a second TLS 1.3 listener on an ephemeral port, with the same pinning as
   section 1. It accepts only the certificate of the connected, paired phone.
 - The Mac announces the port with `files.endpoint` right after connect, whenever any of
-  `files.v1`, `screenshots.v1`, `photos.v1` or `browse.v1` is shared.
+  `files.v1`, `screenshots.v1`, `photos.v1`, `browse.v1` or `clipboard-image.v1` is shared.
 - The phone always dials. Its first frame is a normal section 2 frame whose envelope is
   `{channel FILES, id 1, type "bulk.hello"}` carrying `BulkHello`.
 - Tokens are issued by the Mac only: in `files.offer` when the Mac sends, in `files.accept`
@@ -447,6 +448,21 @@ transient and auto-generated pasteboard items are never sent. Neither side sends
 SHA-256 equals the last text it received from the peer. `clipboard.availability` is as in
 section 10.
 
+**Images (`clipboard-image.v1`).** When both sides list `clipboard-image.v1` (and `clipboard.v1`), an
+image on the clipboard travels as a section 16 transfer with `kind = TRANSFER_KIND_CLIPBOARD_IMAGE`,
+over a bulk connection (section 13; `clipboard-image.v1` alone makes the Mac send `files.endpoint`).
+
+- The receiver puts the image on its clipboard instead of saving a file, and shows no "file
+  received" notice. `name` is a plain file name such as `clipboard.png`; `mime` is an `image/*` type.
+- At most 20,971,520 bytes. A larger image is not sent; a larger offer is rejected `DENIED`.
+- The rules for text apply: concealed, transient and auto-generated items are never sent, the
+  same switches and `clipboard.availability` gate it, and neither side sends back an image whose
+  SHA-256 (the `files.complete` hash) equals the last image it received from the peer.
+- When the clipboard holds both text and an image, the text is sent and the image is not. A Mac
+  pasteboard holding file URLs (a Finder copy) sends no image.
+- A receiver that does not share the capability, or whose clipboard switch is off, rejects the
+  offer `DISABLED`.
+
 ## 15. Share (`share.v1`)
 
 Channel `SHARE`.
@@ -460,7 +476,8 @@ Channel `SHARE`.
 ## 16. Files (`files.v1`)
 
 Channel `FILES`. `files.*` messages are the transport for `files.v1`, `browse.v1` (reads and writes),
-`screenshots.v1` and `photos.v1`; a side may send them when the feature the transfer serves is shared.
+`screenshots.v1`, `photos.v1` and `clipboard-image.v1`; a side may send them when the feature the
+transfer serves is shared.
 
 - **Steps.** `files.offer`, then `files.accept` or `files.reject`, then the bulk bytes
   (section 13). During the bytes the receiver sends `files.progress` (at most every 500 ms).

@@ -40,7 +40,8 @@ public final class TransferEngine: SessionFeature {
 
     /// Active and queued transfers first, in arrival order, then the last 20 finished, newest first.
     /// Transfers the Mac refused on its own (a feature off, an answer to no request) are not
-    /// listed: the user did not start them and cannot act on them.
+    /// listed: the user did not start them and cannot act on them. Nor are clipboard images:
+    /// they are the clipboard's, not files.
     public private(set) var transfers: [TransferItem] = []
     /// Listed sends that failed, or that the phone cancelled, since the last send was queued.
     /// The user's own cancels do not count. See `lastFailure(_:)`.
@@ -57,7 +58,8 @@ public final class TransferEngine: SessionFeature {
     nonisolated static let chunkBytes = BulkLink.bufferBytes
     static let keptFinished = 20
     /// Any of these makes the Mac announce its bulk port; `files.*` messages serve all four.
-    public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1"]
+    public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1",
+                                                       "clipboard-image.v1"]
     private nonisolated static let log = Logger(subsystem: "io.github.anmirror.mac", category: "transfer")
 
     @ObservationIgnored private let bulk: any BulkGrants
@@ -199,12 +201,14 @@ public final class TransferEngine: SessionFeature {
     // MARK: API
 
     /// Queues `files` for the phone in session, into `target` (a browse root) when given, else
-    /// its Downloads. With no phone connected, or one that does not share `files.v1` (`browse.v1`
-    /// for a target), each file
+    /// its Downloads; as `kind` `.clipboardImage`, onto its clipboard. With no phone connected, or
+    /// one that does not share `files.v1` (`browse.v1` for a target, `clipboard-image.v1` for an
+    /// image), each file
     /// fails `INTERRUPTED` at once; a folder or an unreadable file fails `IO` at once. Returns
     /// the transfer IDs.
     @discardableResult
-    public func send(files: [URL], target: AMBrowseTarget? = nil) -> [String] {
+    public func send(files: [URL], target: AMBrowseTarget? = nil, kind: AMTransferKind = .file) -> [String] {
+        let capability = kind == .clipboardImage ? "clipboard-image.v1" : target == nil ? "files.v1" : "browse.v1"
         var ids: [String] = []
         if !files.isEmpty { lastSendFailure = nil }
         for url in files {
@@ -215,17 +219,17 @@ public final class TransferEngine: SessionFeature {
             var offer = AMTransferOffer()
             offer.transferID = id
             offer.name = FileNameSanitizer.sanitize(url.lastPathComponent)
-            offer.kind = .file
+            offer.kind = kind
             if let target { offer.target = target }
-            guard isConnected, shared.contains(target == nil ? "files.v1" : "browse.v1") else {
-                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
+            guard isConnected, shared.contains(capability) else {
+                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: kind,
                                         state: .failed(.interrupted), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: no phone takes files")
                 record(item, offer: offer, url: nil, deferred: true)
                 continue
             }
             guard let source = Self.source(url) else {
-                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
+                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: kind,
                                         state: .failed(.io), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: IO")
                 record(item, offer: offer, url: nil, deferred: true)
@@ -234,7 +238,7 @@ public final class TransferEngine: SessionFeature {
             offer.size = source.size
             offer.mime = source.mime
             offer.modifiedMs = source.modifiedMs
-            let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: .file,
+            let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: kind,
                                     state: .queued, targeted: target != nil)
             jobs.append(Job(item: item, offer: offer, source: url, now: now))
         }
@@ -429,6 +433,8 @@ public final class TransferEngine: SessionFeature {
         } else if o.kind == .file, !shared.contains("files.v1") {
             // A file the user shared on the phone needs `files.v1`; another bulk capability
             // (screenshots, photos, browse) is not enough.
+            job.destination = .refuse(.disabled)
+        } else if o.kind == .clipboardImage, !shared.contains("clipboard-image.v1") {
             job.destination = .refuse(.disabled)
         } else {
             job.destination = destination(o)
@@ -690,7 +696,7 @@ public final class TransferEngine: SessionFeature {
     /// when `deferred` (inside `send(files:)`, whose caller must get the ID first).
     private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?, deferred: Bool = false,
                         listed: Bool = true, byUser: Bool = false) {
-        if listed {
+        if listed, item.kind != .clipboardImage {
             finished.insert(item, at: 0)
             if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
             let failed: Bool
@@ -713,7 +719,7 @@ public final class TransferEngine: SessionFeature {
     }
 
     private func publish() {
-        transfers = jobs.map(\.item) + finished
+        transfers = jobs.map(\.item).filter { $0.kind != .clipboardImage } + finished
     }
 
     // MARK: part files a crash leaves

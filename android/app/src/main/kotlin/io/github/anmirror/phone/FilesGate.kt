@@ -7,7 +7,7 @@ import io.github.anmirror.transfer.TransferState
 import io.github.anmirror.transfer.TransferStatus
 
 /** The features whose transfers travel as `files.*` over bulk connections (SPEC 13, 16). */
-val BULK_CAPABILITIES = setOf("files.v1", "browse.v1", "screenshots.v1", "photos.v1")
+val BULK_CAPABILITIES = setOf("files.v1", "browse.v1", "screenshots.v1", "photos.v1", "clipboard-image.v1")
 
 /** `files.*` messages may flow while the Mac shares any feature they carry. */
 fun bulkShared(shared: Set<String>): Boolean = BULK_CAPABILITIES.any { it in shared }
@@ -28,7 +28,8 @@ fun offerRefusal(hasTarget: Boolean, shared: Set<String>, browseOpen: Boolean): 
  * feature is open (the Mac shares screenshots.v1, the switch is on, all photos are readable), a
  * photo only while photos is (photos.v1, the switch, some photos readable), a file answering a
  * browse.read ([requestId] set) only while browse is, and a file the user shared (no request) only
- * while the Mac shares files.v1 ([filesShared]); any other bulk capability is not enough.
+ * while the Mac shares files.v1 ([filesShared]); any other bulk capability is not enough. A
+ * clipboard image goes only while clipboard images are open ([clipboardImagesOpen]: SPEC 14).
  */
 fun phoneOfferAllowed(
     kind: TransferKind,
@@ -37,8 +38,10 @@ fun phoneOfferAllowed(
     photosOpen: Boolean,
     browseOpen: Boolean,
     filesShared: Boolean,
+    clipboardImagesOpen: Boolean = false,
 ): Boolean = when (kind) {
     TransferKind.TRANSFER_KIND_SCREENSHOT -> screenshotsOpen
+    TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE -> clipboardImagesOpen
     TransferKind.TRANSFER_KIND_PHOTO -> photosOpen
     else -> if (requestId == 0L) filesShared else browseOpen
 }

@@ -12,6 +12,7 @@ enum TransferKind {
   TRANSFER_KIND_FILE = 1;
   TRANSFER_KIND_SCREENSHOT = 2;
   TRANSFER_KIND_PHOTO = 3;
+  TRANSFER_KIND_CLIPBOARD_IMAGE = 4;  // clipboard-image.v1: lands on the clipboard (SPEC 14)
 }
 
 enum TransferError {

@@ -16,6 +16,8 @@ private final class FakePasteboard: PasteboardAccess {
     var writes: [String] = []
 
     func readString() -> String? { string }
+    func readImagePNG() -> Data? { nil }
+    func writeImage(_ data: Data) -> Bool { false }
 
     func writeString(_ s: String) {
         writes.append(s)

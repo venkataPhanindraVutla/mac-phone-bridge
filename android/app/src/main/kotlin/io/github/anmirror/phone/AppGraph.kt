@@ -47,6 +47,8 @@ import io.github.anmirror.feature.mirror.MirrorSession
 import io.github.anmirror.feature.mirror.connectFailureReason
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.feature.mirror.SetupStore
+import io.github.anmirror.feature.clipboard.ClipImage
+import io.github.anmirror.feature.clipboard.ClipImageInbox
 import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
 import io.github.anmirror.feature.contacts.ContactsSync
@@ -831,8 +833,24 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendClipboard(type: String, payload: MessageLite): Boolean =
         clipboardOpen() && manager.send(ProtoChannel.CHANNEL_CLIPBOARD, type, payload)
 
-    /** Writes the Mac's text; sends the phone's on an explicit trigger ([io.github.anmirror.phone.share.ClipboardSendActivity]). */
-    val clipboard = ClipboardBridge(AndroidClipboard(app), ::sendClipboard)
+    /** Clipboard images flow while the clipboard is open and the Mac shares clipboard-image.v1 (SPEC 14). */
+    fun clipboardImagesOpen(): Boolean = clipboardOpen() && shares(ClipboardBridge.IMAGE_CAPABILITY)
+
+    /**
+     * Writes the Mac's text and images; sends the phone's on an explicit trigger
+     * ([io.github.anmirror.phone.share.ClipboardSendActivity]). An image goes as a clipboard-image
+     * transfer, from memory.
+     */
+    val clipboard = ClipboardBridge(
+        AndroidClipboard(app), ::sendClipboard,
+        sendImage = { image ->
+            clipboardImagesOpen() && transfers.send(listOf(ClipImageFile(image)), TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE).isNotEmpty()
+        },
+        imagesShared = { shares(ClipboardBridge.IMAGE_CAPABILITY) },
+    )
+
+    /** Where clipboard images from the Mac land: only the newest stays. */
+    private val clipImageInbox = ClipImageInbox(File(app.cacheDir, "clip-in"), clipboard)
 
     /** The connected Mac's name, for "Sent to %1$s"; null when not connected. */
     fun connectedMacName(): String? = (manager.state.value as? PhoneConnectionState.Connected)?.mac?.name
@@ -876,7 +894,7 @@ class AppGraph private constructor(context: Context) {
             !phoneOfferAllowed(
                 payload.kind, payload.requestId,
                 screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen(), browseOpen = browseOpen(),
-                filesShared = filesShared(),
+                filesShared = filesShared(), clipboardImagesOpen = clipboardImagesOpen(),
             )
         ) {
             return false
@@ -905,9 +923,23 @@ class AppGraph private constructor(context: Context) {
         ),
         send = ::sendTransfer,
         bulk = BulkOpener(::openBulk),
-        // A Mac offer with a browse target is a write into a browse root; the rest go to Downloads.
-        sinks = IncomingSinks { offer -> if (offer.hasTarget()) browseSink(offer) else downloads.open(offer) },
-        freeBytes = { offer -> if (offer.hasTarget()) browse.freeBytes(offer) else downloads.freeBytes() },
+        // A Mac offer with a browse target is a write into a browse root; a clipboard image goes onto
+        // the clipboard (while clipboard images are open); the rest go to Downloads.
+        sinks = IncomingSinks { offer ->
+            when {
+                offer.kind == TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE ->
+                    if (clipboardImagesOpen()) clipImageInbox.open(offer) else SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED)
+                offer.hasTarget() -> browseSink(offer)
+                else -> downloads.open(offer)
+            }
+        },
+        freeBytes = { offer ->
+            when {
+                offer.kind == TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE -> app.cacheDir.usableSpace
+                offer.hasTarget() -> browse.freeBytes(offer)
+                else -> downloads.freeBytes()
+            }
+        },
     )
 
     /** Shared files, screenshots and photos whose descriptors stay open until their transfer ends. */
@@ -1341,7 +1373,7 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY)
         const val MIRROR_CAPABILITY = "mirror.v1"
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
@@ -1522,3 +1554,12 @@ class DelegatingCallNotifications(context: Context) {
 /** The highest-[rank] candidate; the first of equals. Null for none. */
 internal fun <T> pickCallNotification(candidates: List<T>, rank: (T) -> Int): T? =
     candidates.withIndex().maxWithOrNull(compareBy<IndexedValue<T>> { rank(it.value) }.thenByDescending { it.index })?.value
+
+/** A clipboard image the phone sends, from memory; its name and extension follow its type. */
+private class ClipImageFile(private val image: ClipImage) : OutgoingFile {
+    override val name = "clipboard." + (MimeTypeMap.getSingleton().getExtensionFromMimeType(image.mime) ?: "png")
+    override val size = image.bytes.size.toLong()
+    override val mime = image.mime
+    override val modifiedMs = 0L
+    override fun open(): java.io.InputStream = java.io.ByteArrayInputStream(image.bytes)
+}

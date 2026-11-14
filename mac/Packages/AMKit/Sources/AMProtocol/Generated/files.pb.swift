@@ -33,6 +33,9 @@ public nonisolated enum AMTransferKind: SwiftProtobuf.Enum, Swift.CaseIterable {
   case file // = 1
   case screenshot // = 2
   case photo // = 3
+
+  /// clipboard-image.v1: lands on the clipboard (SPEC 14)
+  case clipboardImage // = 4
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -45,6 +48,7 @@ public nonisolated enum AMTransferKind: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 1: self = .file
     case 2: self = .screenshot
     case 3: self = .photo
+    case 4: self = .clipboardImage
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -55,6 +59,7 @@ public nonisolated enum AMTransferKind: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .file: return 1
     case .screenshot: return 2
     case .photo: return 3
+    case .clipboardImage: return 4
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -65,6 +70,7 @@ public nonisolated enum AMTransferKind: SwiftProtobuf.Enum, Swift.CaseIterable {
     .file,
     .screenshot,
     .photo,
+    .clipboardImage,
   ]
 
 }
@@ -379,7 +385,7 @@ public nonisolated struct AMTransferFailed: Sendable {
 fileprivate nonisolated let _protobuf_package = "anmirror.v1"
 
 nonisolated extension AMTransferKind: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TRANSFER_KIND_UNSPECIFIED\0\u{1}TRANSFER_KIND_FILE\0\u{1}TRANSFER_KIND_SCREENSHOT\0\u{1}TRANSFER_KIND_PHOTO\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TRANSFER_KIND_UNSPECIFIED\0\u{1}TRANSFER_KIND_FILE\0\u{1}TRANSFER_KIND_SCREENSHOT\0\u{1}TRANSFER_KIND_PHOTO\0\u{1}TRANSFER_KIND_CLIPBOARD_IMAGE\0")
 }
 
 nonisolated extension AMTransferError: SwiftProtobuf._ProtoNameProviding {
