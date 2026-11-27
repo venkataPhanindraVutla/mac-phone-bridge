@@ -27,12 +27,36 @@ private final class FakePasteboard: PasteboardAccess {
     func writeString(_ s: String) {
         writes.append(s)
         string = s
+        image = nil
         types = ["public.utf8-plain-text"]
+        changeCount += 1
+    }
+
+    var image: Data?
+    var imageWrites: [Data] = []
+
+    func readImagePNG() -> Data? { image }
+
+    func writeImage(_ data: Data) -> Bool {
+        imageWrites.append(data)
+        image = data
+        string = nil
+        types = ["public.tiff"]
+        changeCount += 1
+        return true
+    }
+
+    /// What another app copying an image looks like.
+    func copyImage(_ data: Data, types: [String] = ["public.png"]) {
+        image = data
+        string = nil
+        self.types = types
         changeCount += 1
     }
 
     /// What another app copying `text` looks like.
     func copy(_ text: String, types extra: [String] = []) {
+        image = nil
         string = text
         types = ["public.utf8-plain-text"] + extra
         changeCount += 1
@@ -497,4 +521,117 @@ private func connectOn(_ model: ClipboardModel, phoneID: String = "P1", phoneNam
     await connectOn(model)
     model.acceptFromHelper("one", explicit: false)
     #expect(board.writes == ["one"])
+}
+
+// MARK: images (clipboard-image.v1)
+
+@MainActor
+private func imageRig() async -> (ClipboardModel, FakePasteboard, Sent, ImagesSent) {
+    let board = FakePasteboard()
+    let sent = Sent()
+    let images = ImagesSent()
+    let model = ClipboardModel(
+        pasteboard: board, sendEnabled: true,
+        send: { type, message in sent.messages.append((type, (message as? AMClipboardText)?.text ?? "?")) },
+        sendImage: { images.data.append($0) },
+        interval: .seconds(3600))
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared.union([ClipboardModel.imageCapability]))
+    await model.message(availability(true))
+    return (model, board, sent, images)
+}
+
+@MainActor
+private final class ImagesSent { var data: [Data] = [] }
+
+private let png1 = Data([0x89, 0x50, 0x4E, 0x47, 1])
+private let png2 = Data([0x89, 0x50, 0x4E, 0x47, 2])
+
+@MainActor @Test func copiedImageIsSentOnce() async {
+    let (model, board, sent, images) = await imageRig()
+    board.copyImage(png1)
+    await model.poll()
+    #expect(images.data == [png1])
+    #expect(sent.messages.isEmpty)
+    // The same image again is not sent; another one is.
+    board.copyImage(png1)
+    await model.poll()
+    board.copyImage(png2, types: ["public.tiff"])
+    await model.poll()
+    #expect(images.data == [png1, png2])
+}
+
+@MainActor @Test func imageNeedsTheCapabilityAndTheSwitches() async {
+    let (model, board, _) = rig()
+    await connectOn(model) // clipboard.v1 only
+    board.copyImage(png1)
+    await model.poll()
+    #expect(model.takesImages == false)
+    #expect(model.acceptImageFromPhone(png1) == false)
+    #expect(board.imageWrites.isEmpty)
+
+    let (m2, b2, _, sent2) = await imageRig()
+    m2.sendEnabled = false
+    b2.copyImage(png1)
+    await m2.poll()
+    await m2.message(availability(false))
+    m2.sendEnabled = true
+    b2.copyImage(png2)
+    await m2.poll()
+    #expect(sent2.data.isEmpty)
+}
+
+@MainActor @Test func textWinsAndFinderCopiesAndConcealedImagesStay() async {
+    let (model, board, sent, images) = await imageRig()
+    board.copy("caption")
+    board.image = png1
+    board.types += ["public.png"]
+    await model.poll()
+    #expect(sent.messages.map(\.text) == ["caption"])
+    // A Finder copy: file URL and the file's icon, no text read here.
+    board.copyImage(png1, types: ["public.file-url", "public.tiff"])
+    await model.poll()
+    board.copyImage(png2, types: ["public.png", "org.nspasteboard.ConcealedType"])
+    await model.poll()
+    #expect(images.data.isEmpty)
+}
+
+@MainActor @Test func oversizedImageIsNotSent() async {
+    let (model, board, _, images) = await imageRig()
+    board.copyImage(Data(count: ClipboardModel.maxImageBytes + 1))
+    await model.poll()
+    #expect(images.data.isEmpty)
+    #expect(model.sendImageNow() == .tooLarge)
+}
+
+@MainActor @Test func imageFromPhoneIsWrittenAndNotEchoed() async {
+    let (model, board, _, images) = await imageRig()
+    #expect(model.acceptImageFromPhone(png1))
+    #expect(board.imageWrites == [png1])
+    await model.poll() // the write moved the count
+    // The same image copied again on the Mac is still the phone's.
+    board.copyImage(png1)
+    await model.poll()
+    #expect(images.data.isEmpty)
+}
+
+@MainActor @Test func explicitImageSendGoesEvenWhenThePhoneHasIt() async {
+    let (model, board, _, images) = await imageRig()
+    #expect(model.sendImageNow() == .empty)
+    board.copyImage(png1, types: ["public.png", "org.nspasteboard.ConcealedType"])
+    model.sendEnabled = false
+    #expect(model.sendImageNow() == .sent)
+    #expect(model.sendImageNow() == .sent)
+    #expect(images.data == [png1, png1])
+}
+
+@MainActor @Test func disconnectForgetsTheImage() async {
+    let (model, board, _, images) = await imageRig()
+    board.copyImage(png1)
+    await model.poll()
+    model.disconnected()
+    await model.connected(phoneID: "P1", phoneName: "Pixel", shared: shared.union([ClipboardModel.imageCapability]))
+    await model.message(availability(true))
+    board.copyImage(png1)
+    await model.poll()
+    #expect(images.data == [png1, png1])
 }

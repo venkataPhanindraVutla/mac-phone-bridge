@@ -10,6 +10,7 @@ import FeatureContacts
 import FeatureFiles
 import FeatureFind
 import FeatureFocus
+import FeatureHotspot
 import FeatureInput
 import FeatureMedia
 import FeatureMirror
@@ -32,7 +33,8 @@ final class AppModel {
     static let capabilities: Set<String> = [
         "status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "files.v1", "share.v1",
         "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1",
-        "proximity.v1", "input.v1", "keyboard.v1", "liveness.v1", "mirror.v1",
+        "proximity.v1", "input.v1", "keyboard.v1", "liveness.v1", "mirror.v1", "clipboard-image.v1",
+        "files.resume.v1", "hotspot.v1",
     ]
     /// A pairing code (and its QR) stays valid for this long. Matches the Mac server's lifetime.
     static let pairingLifetime: TimeInterval = 300
@@ -41,8 +43,14 @@ final class AppModel {
     let phoneStatus = PhoneStatusModel()
     let ring = RingModel()
     let notifications: NotificationsModel
+    /// Phone notifications kept after they are gone (Settings: "Keep notification history").
+    let notificationHistory: NotificationHistory
+    /// The Phone window's selected tab, so the menu can open it on Notifications.
+    var phoneTab: PhoneTab = .send
     let calls: CallModel
     let clipboard: ClipboardModel
+    /// One-click hotspot: the phone turns its hotspot on, this Mac joins it.
+    let hotspot: HotspotModel
     /// File transfers both ways; received files go to Downloads.
     let transfers: TransferEngine
     /// Links and text shared both ways.
@@ -202,6 +210,23 @@ final class AppModel {
             }
         )
         notifications = model
+        let historyFile = Self.notificationHistoryFile()
+        let history = NotificationHistory(
+            retentionDays: UserDefaults.standard.object(forKey: Self.historyDaysKey) as? Int ?? 7,
+            load: { historyFile.flatMap { try? $0.read() } },
+            save: { data in
+                guard let historyFile else { return }
+                do {
+                    if let data { try historyFile.write(data) } else { try historyFile.delete() }
+                } catch {
+                    Self.appLog.error("notification history not saved: \(String(describing: type(of: error)), privacy: .public)")
+                }
+            }
+        )
+        // A phone forgotten while the app was not running leaves nothing behind.
+        history.keepOnly(phoneIDs: Set(((try? store.all()) ?? []).map(\.id)))
+        model.history = history
+        notificationHistory = history
         let calls = CallModel(
             nameFor: { contacts.name(forNumber: $0) }, presenter: presenter,
             send: { type, message in
@@ -212,15 +237,37 @@ final class AppModel {
         )
         self.calls = calls
         notifyWork = NotifyWorkQueue(notifications: model, calls: calls, contacts: contacts)
+        // The engine is made below; a clipboard image waits for it only in theory (no session yet).
+        let transfersLater = Later<TransferEngine>()
+        try? FileManager.default.removeItem(at: Self.clipboardImageFolder)
         let clipboard = ClipboardModel(
             pasteboard: SystemPasteboard(), sendEnabled: Self.savedSendMacClipboard,
             send: { type, message in
                 // Only a phone that shares clipboard.v1 gets clipboard messages.
                 guard server.activePhone?.shared.contains("clipboard.v1") == true else { return }
                 try? await server.send(type, message, channel: .clipboard)
+            },
+            sendImage: { png in
+                guard let transfers = transfersLater.value else { return }
+                transfers.send(files: Self.clipboardImageFile(png).map { [$0] } ?? [], kind: .clipboardImage)
             }
         )
         self.clipboard = clipboard
+        hotspot = HotspotModel(
+            send: { type, message in
+                // Only a phone that shares hotspot.v1 gets hotspot messages.
+                guard server.activePhone?.shared.contains(HotspotModel.capability) == true else { return }
+                try? await server.send(type, message, channel: .hotspot)
+            },
+            joiner: LocationGatedJoiner(),
+            load: { id in
+                (try? Self.hotspotItem(phoneID: id).read()).flatMap { $0 }.flatMap { try? JSONDecoder().decode(HotspotNetwork.self, from: $0) }
+            },
+            store: { id, network in
+                let item = Self.hotspotItem(phoneID: id)
+                if let network, let data = try? JSONEncoder().encode(network) { try? item.write(data) } else { try? item.delete() }
+            }
+        )
         // Clipboard-mode files and thumbnail copies a previous run left behind.
         let folders = Self.makeScreenshotFolders()
         screenshotFolders = folders
@@ -247,11 +294,12 @@ final class AppModel {
                       !shared.isDisjoint(with: TransferEngine.bulkCapabilities) else { return }
                 try? await server.send(type, message, channel: .files)
             },
-            destination: { Self.destination(for: $0, screenshots: screenshots) },
+            destination: { Self.destination(for: $0, screenshots: screenshots, clipboard: clipboard) },
             // Part files a crash or force quit left in Downloads or Desktop go at launch.
             partsStore: .standard
         )
         self.transfers = transfers
+        transfersLater.value = transfers
         let browse = BrowseModel(
             engine: transfers,
             send: { type, message in
@@ -265,6 +313,11 @@ final class AppModel {
             // Every ending comes here; the inbox looks at the state (only a done one is saved and shown).
             // An upload from the Files tab reloads the folder it went into.
             browse.transferFinished(item)
+            if item.kind == .clipboardImage, item.direction == .receive, let url {
+                // Received whole: onto the pasteboard, and the file goes.
+                if case .done = item.state, let data = try? Data(contentsOf: url) { clipboard.acceptImageFromPhone(data) }
+                try? FileManager.default.removeItem(at: url)
+            }
             guard item.kind == .screenshot else { return }
             Task { await screenshots.finished(item, at: url) }
         }
@@ -360,6 +413,7 @@ final class AppModel {
         )
         self.input = input
         notifyWork.register(clipboard)
+        notifyWork.register(hotspot)
         notifyWork.register(transfers)
         notifyWork.register(share)
         notifyWork.register(screenshots)
@@ -774,6 +828,7 @@ final class AppModel {
         input.shutdown()
         server.stop()
         transfers.shutdown()
+        notificationHistory.flush()
         bulk.stop()
     }
 
@@ -806,7 +861,8 @@ final class AppModel {
     /// Phone files go to Downloads; screenshots where the inbox says (it refuses them unless the
     /// phone shares `screenshots.v1`). Other kinds belong to features this Mac does not have yet,
     /// and are refused.
-    private static func destination(for offer: AMTransferOffer, screenshots: ScreenshotInbox) -> IncomingDestination {
+    private static func destination(for offer: AMTransferOffer, screenshots: ScreenshotInbox,
+                                    clipboard: ClipboardModel) -> IncomingDestination {
         switch offer.kind {
         case .file:
             guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -814,8 +870,36 @@ final class AppModel {
             return .folder(downloads)
         case .screenshot:
             return screenshots.incomingDestination(for: offer)
+        case .clipboardImage:
+            guard clipboard.takesImages else { return .refuse(.disabled) }
+            guard offer.size <= ClipboardModel.maxImageBytes else { return .refuse(.denied) }
+            let folder = clipboardImageFolder.appendingPathComponent("in", isDirectory: true)
+            do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) } catch {
+                return .refuse(.io)
+            }
+            return .folder(folder)
         default:
             return .refuse(.disabled)
+        }
+    }
+
+    /// Where clipboard images wait: Mac copies on their way out (`out/`), phone images on their way in (`in/`).
+    private static let clipboardImageFolder = FileManager.default.temporaryDirectory
+        .appendingPathComponent("io.github.anmirror.mac/clipboard", isDirectory: true)
+
+    /// `png` as a file to send, in a folder of its own. Earlier copies are deleted: one still
+    /// queued then fails, superseded; one being sent keeps its open file.
+    private static func clipboardImageFile(_ png: Data) -> URL? {
+        let out = clipboardImageFolder.appendingPathComponent("out", isDirectory: true)
+        try? FileManager.default.removeItem(at: out)
+        let url = out.appendingPathComponent(UUID().uuidString, isDirectory: true).appendingPathComponent("clipboard.png")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: url)
+            return url
+        } catch {
+            appLog.error("clipboard image not written: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
         }
     }
 
@@ -920,12 +1004,46 @@ final class AppModel {
     // MARK: contacts
 
     /// Deletes a phone's store file and its key.
+    /// The phone's hotspot network, kept in the Keychain (it holds the passphrase).
+    private static func hotspotItem(phoneID: String) -> KeychainItem {
+        KeychainItem(service: KeychainPairedPhoneStore.defaultService, account: "hotspot-" + phoneID)
+    }
+
     private static func removeContacts(phoneID: String) {
         try? FileManager.default.removeItem(at: ContactsStore.fileURL(phoneID: phoneID, in: ContactsStore.defaultDirectory))
         try? ContactsKey.delete(phoneID: phoneID)
     }
 
     private static func notifySettingsKey(phoneID: String) -> String { "notifySettings." + phoneID }
+
+    private static let historyDaysKey = "notificationHistoryDays"
+
+    /// "Keep notification history" in Settings: days, 0 = off (which deletes it).
+    var notificationHistoryDays: Int { notificationHistory.retentionDays }
+
+    func setNotificationHistoryDays(_ days: Int) {
+        notificationHistory.retentionDays = days
+        UserDefaults.standard.set(days, forKey: Self.historyDaysKey)
+    }
+
+    /// The history file, sealed with its own Keychain key (made on first use); nil when the
+    /// Keychain refuses, and the history then lives in memory only.
+    private static func notificationHistoryFile() -> EncryptedFile? {
+        let item = KeychainItem(service: KeychainPairedPhoneStore.defaultService, account: "notify-history-key")
+        do {
+            let key: SymmetricKey
+            if let data = try item.read(), data.count == 32 {
+                key = SymmetricKey(data: data)
+            } else {
+                key = SymmetricKey(size: .bits256)
+                try item.write(key.withUnsafeBytes { Data($0) })
+            }
+            return EncryptedFile(url: ContactsStore.defaultDirectory.appendingPathComponent("notification-history.sealed"), key: key)
+        } catch {
+            appLog.error("no key for notification history: \(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+    }
 
     private static func loadNotifySettings(phoneID: String) -> NotifySettings {
         guard let data = UserDefaults.standard.data(forKey: notifySettingsKey(phoneID: phoneID)),
@@ -976,4 +1094,15 @@ enum SendNote: Equatable {
         case .notConnected: "Your phone isn't connected. Nothing was sent."
         }
     }
+}
+
+/// A value set after it is captured (a closure made before the object it needs).
+@MainActor
+private final class Later<T: AnyObject> {
+    var value: T?
+}
+
+/// The Phone window's tabs.
+enum PhoneTab: Hashable {
+    case send, notifications, photos, files, nowPlaying
 }

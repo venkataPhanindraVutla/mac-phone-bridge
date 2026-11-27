@@ -27,6 +27,7 @@ enum Channel {
   CHANNEL_PROXIMITY = 16;
   CHANNEL_INPUT = 17;
   CHANNEL_MIRROR = 18;
+  CHANNEL_HOTSPOT = 19;
 }
 
 message Envelope {

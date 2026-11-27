@@ -139,6 +139,9 @@ message Envelope {
 | `mirror.state` | phone to Mac | `MirrorState` | MIRROR |
 | `mirror.stop` | both | `MirrorStop` | MIRROR |
 | `mirror.test_pattern` | Mac to phone | `MirrorTestPattern` | MIRROR |
+| `hotspot.availability` | phone to Mac | `FeatureAvailability` | HOTSPOT |
+| `hotspot.request` | Mac to phone | `HotspotRequest` | HOTSPOT |
+| `hotspot.state` | phone to Mac (`reply_to` = request id) | `HotspotState` | HOTSPOT |
 
 `status.update.signal_level` is `0..4`, or `-1` for unknown / no service; the phone always
 sets it. proto3 omits `0` on the wire, and a missing field decodes as `0`; `-1` is always
@@ -151,7 +154,9 @@ encoded, so `0` and `-1` stay distinct.
 (sections 10 to 12). Version 0.3 adds `clipboard.v1`, `share.v1`, `files.v1`,
 `screenshots.v1`, `photos.v1` and `browse.v1` (sections 13 to 19).
 Version 0.4 adds `media.v1`, `dnd.v1`, `proximity.v1` and `input.v1` (sections 20 to 23).
-Version 0.5 adds `mirror.v1` (section 24). A side MUST NOT send messages of a feature the peer did not list.
+Version 0.5 adds `mirror.v1` (section 24). Version 1.1 adds `clipboard-image.v1` (section 14), `files.resume.v1` (section 16) and
+`hotspot.v1` (section 25). A side MUST
+NOT send messages of a feature the peer did not list.
 The 0.1 keep-alive patch adds `liveness.v1` (section 7). It is a property of the connection, not a
 feature channel: it carries no messages of its own and changes who sends `system.ping`.
 
@@ -421,7 +426,7 @@ File bytes never travel in control frames. They use separate bulk connections.
 - The Mac runs a second TLS 1.3 listener on an ephemeral port, with the same pinning as
   section 1. It accepts only the certificate of the connected, paired phone.
 - The Mac announces the port with `files.endpoint` right after connect, whenever any of
-  `files.v1`, `screenshots.v1`, `photos.v1` or `browse.v1` is shared.
+  `files.v1`, `screenshots.v1`, `photos.v1`, `browse.v1` or `clipboard-image.v1` is shared.
 - The phone always dials. Its first frame is a normal section 2 frame whose envelope is
   `{channel FILES, id 1, type "bulk.hello"}` carrying `BulkHello`.
 - Tokens are issued by the Mac only: in `files.offer` when the Mac sends, in `files.accept`
@@ -429,7 +434,8 @@ File bytes never travel in control frames. They use separate bulk connections.
   expires after 60 s.
 - An unknown, expired or reused token, or a role that does not match the token, closes the
   connection without a reply.
-- After the hello, the sender writes exactly `size` raw bytes. The receiver reads exactly
+- After the hello, the sender writes exactly `size` raw bytes (`size - offset` when the accept
+  carried an `offset`, section 16). The receiver reads exactly
   `size` bytes and never waits for EOF; extra bytes fail the transfer. The sender closes after
   `files.received` or `files.failed`, or after 30 s.
 - A control disconnect revokes every token and ends every bulk connection.
@@ -447,6 +453,21 @@ transient and auto-generated pasteboard items are never sent. Neither side sends
 SHA-256 equals the last text it received from the peer. `clipboard.availability` is as in
 section 10.
 
+**Images (`clipboard-image.v1`).** When both sides list `clipboard-image.v1` (and `clipboard.v1`), an
+image on the clipboard travels as a section 16 transfer with `kind = TRANSFER_KIND_CLIPBOARD_IMAGE`,
+over a bulk connection (section 13; `clipboard-image.v1` alone makes the Mac send `files.endpoint`).
+
+- The receiver puts the image on its clipboard instead of saving a file, and shows no "file
+  received" notice. `name` is a plain file name such as `clipboard.png`; `mime` is an `image/*` type.
+- At most 20,971,520 bytes. A larger image is not sent; a larger offer is rejected `DENIED`.
+- The rules for text apply: concealed, transient and auto-generated items are never sent, the
+  same switches and `clipboard.availability` gate it, and neither side sends back an image whose
+  SHA-256 (the `files.complete` hash) equals the last image it received from the peer.
+- When the clipboard holds both text and an image, the text is sent and the image is not. A Mac
+  pasteboard holding file URLs (a Finder copy) sends no image.
+- A receiver that does not share the capability, or whose clipboard switch is off, rejects the
+  offer `DISABLED`.
+
 ## 15. Share (`share.v1`)
 
 Channel `SHARE`.
@@ -460,7 +481,8 @@ Channel `SHARE`.
 ## 16. Files (`files.v1`)
 
 Channel `FILES`. `files.*` messages are the transport for `files.v1`, `browse.v1` (reads and writes),
-`screenshots.v1` and `photos.v1`; a side may send them when the feature the transfer serves is shared.
+`screenshots.v1`, `photos.v1` and `clipboard-image.v1`; a side may send them when the feature the
+transfer serves is shared.
 
 - **Steps.** `files.offer`, then `files.accept` or `files.reject`, then the bulk bytes
   (section 13). During the bytes the receiver sends `files.progress` (at most every 500 ms).
@@ -473,7 +495,28 @@ Channel `FILES`. `files.*` messages are the transport for `files.v1`, `browse.v1
   to the same user.
 - **Free space.** The receiver rejects an offer with `NO_SPACE` when `size + 64 MiB` exceeds
   the free space.
-- **No resume.** An interrupted transfer starts again from the offer.
+- **Resume (`files.resume.v1`).** Without it, an interrupted transfer starts again from the offer.
+  When both sides list it:
+  - The sender sets `TransferOffer.resumable` on offers of plain files the user sent
+    (`TRANSFER_KIND_FILE`, no `request_id`, no `target`). Other offers are never resumable.
+  - A resumable receive that ends `INTERRUPTED` or `TIMED_OUT` (the link broke, the control
+    connection closed, or a `files.failed` with one of those reasons), after some bytes were
+    written, is **paused**: the receiver keeps the bytes it wrote, by `transfer_id`, for **24 hours**.
+    Any other ending (cancel, hash mismatch, IO, no space) deletes them.
+  - The sender pauses the send on the same endings and offers it again with the **same
+    `transfer_id`**, `name`, `size` and `modified_ms`: when the same peer connects again, and while
+    still connected after a delay (5 s, doubling to at most 60 s). It gives up after 24 hours.
+  - An offer whose `transfer_id` matches kept bytes with the same `size` and (sanitized) `name`
+    is accepted with `TransferAccept.offset` = the number of bytes kept (less than `size`). The
+    sender then writes only the bytes from `offset` to `size` on the bulk connection;
+    `files.progress.bytes_done` still counts from the start of the file, and `files.complete`
+    carries the SHA-256 of the **whole** file, which the receiver checks over its kept bytes plus
+    the new ones. Any other offer is accepted with `offset = 0`, and stale kept bytes for that
+    `transfer_id` are dropped.
+  - `files.cancel` from either side ends a paused transfer for good; the receiver deletes what it
+    kept (a cancel for a `transfer_id` it only has kept bytes for counts).
+  - A receiver that does not list the capability ignores `resumable` and sends `offset = 0`, so
+    the sender starts from the first byte.
 - **File-name rule**, applied by the receiver to `TransferOffer.name`:
   1. Take the text after the last `/` or `\`.
   2. Remove C0 controls, DEL (U+007F) and the bidi controls U+202A to U+202E and U+2066 to
@@ -692,3 +735,27 @@ Channel `MIRROR`.
 Vectors: `framing.json` `mirror_start_minimal`; `scrcpy.json` `control`, `device` and `stream`.
 The canned stream `testdata/mirror/sample-h264-320x640.scrcpy` holds the video socket bytes after
 the dummy byte (made by `scripts/make-mirror-sample.swift`).
+
+## 25. Hotspot (`hotspot.v1`)
+
+Channel `HOTSPOT`. The Mac turns the phone's Wi-Fi hotspot on (or off) and joins it.
+
+- The phone sends `hotspot.availability` on connect and on change. Turning the hotspot on needs
+  the Full-mode shell helper (section 24), so it is enabled only while Full mode is set up, with
+  the reasons of `mirror.availability`: `NEEDS_SETUP` or `UNAVAILABLE` (Android 10).
+- The Mac sends `hotspot.request{on}` only when the user asks, and `on = true` only while the
+  last `hotspot.availability` is enabled. Each request is answered by one `hotspot.state` with
+  `reply_to` set to the request's `id`.
+- After `on = true` succeeds, the state carries `on = true`, the hotspot's `ssid`, its
+  `passphrase` (empty for `OPEN`) and its `security`. The phone uses the hotspot settings the
+  user set on the phone; it never changes them. On failure `on = false` and `failure` says why:
+  `NEEDS_SETUP` (Full mode is not ready), `REFUSED` (the phone did not allow tethering: its maker,
+  no mobile data, a policy) or `FAILED`.
+- The Mac keeps the last `ssid`, `passphrase` and `security` per phone, in the Keychain, so it can
+  join the hotspot later when the two share no network (the user turned the hotspot on at the
+  phone). It deletes them when the phone is forgotten.
+- Joining moves the Mac to the phone's network, so the control connection usually drops and comes
+  back over the hotspot (section 6). A request that was answered before the drop needs nothing more.
+- `on = false` turns the hotspot off; the answer has `on = false` and no credentials.
+- The passphrase is never logged on either side.
+

@@ -30,6 +30,10 @@
 	<string>Mac Phone Bridge saves phone screenshots to your Desktop.</string>
 	<key>NSFocusStatusUsageDescription</key>
 	<string>Mac Phone Bridge reads whether a Focus is on, to turn on Do Not Disturb on your phone.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Mac Phone Bridge needs this to see your phone's hotspot by name and join it. Your location is not used.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Mac Phone Bridge needs this to see your phone's hotspot by name and join it. Your location is not used.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Mac Phone Bridge uses Bluetooth to notice when your phone is away, so it can lock this Mac.</string>
 	<key>NSBonjourServices</key>

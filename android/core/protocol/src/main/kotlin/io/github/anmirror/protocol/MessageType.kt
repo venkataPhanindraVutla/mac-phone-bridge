@@ -84,6 +84,9 @@ object MessageType {
     const val MIRROR_STATE = "mirror.state"
     const val MIRROR_STOP = "mirror.stop"
     const val MIRROR_TEST_PATTERN = "mirror.test_pattern"
+    const val HOTSPOT_AVAILABILITY = "hotspot.availability"
+    const val HOTSPOT_REQUEST = "hotspot.request"
+    const val HOTSPOT_STATE = "hotspot.state"
 
     val ALL: List<String> = listOf(
         HELLO, PING, PONG, ERROR, GOODBYE, PAIR_REQUEST, PAIR_VERIFIED, PAIR_CONFIRM,
@@ -102,5 +105,6 @@ object MessageType {
         PROXIMITY_AVAILABILITY, INPUT_MOVE, INPUT_BUTTON, INPUT_CLICK, INPUT_SCROLL, INPUT_KEY,
         INPUT_LASER, INPUT_KEYCODE, INPUT_AVAILABILITY,
         MIRROR_AVAILABILITY, MIRROR_START, MIRROR_STATE, MIRROR_STOP, MIRROR_TEST_PATTERN,
+        HOTSPOT_AVAILABILITY, HOTSPOT_REQUEST, HOTSPOT_STATE,
     )
 }

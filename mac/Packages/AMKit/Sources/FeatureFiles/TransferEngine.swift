@@ -32,7 +32,10 @@ public struct TransferTiming: Sendable {
 /// time per direction; the bytes go over bulk connections, read and written off the main actor.
 /// Every transfer uses its own bulk connection, an empty file too (it carries no bytes).
 /// Transfers live for one session only: nothing is queued while no phone is connected, and
-/// nothing queued in one session reaches the next.
+/// nothing queued in one session reaches the next, except with `files.resume.v1` (SPEC 16): a
+/// plain file send that breaks is paused and offered again (same ID) when the same phone is back,
+/// or after a delay while it stays connected; a resumable receive that breaks keeps its part file
+/// for 24 hours, and the sender's next offer of it goes on from there.
 @MainActor
 @Observable
 public final class TransferEngine: SessionFeature {
@@ -40,7 +43,8 @@ public final class TransferEngine: SessionFeature {
 
     /// Active and queued transfers first, in arrival order, then the last 20 finished, newest first.
     /// Transfers the Mac refused on its own (a feature off, an answer to no request) are not
-    /// listed: the user did not start them and cannot act on them.
+    /// listed: the user did not start them and cannot act on them. Nor are clipboard images:
+    /// they are the clipboard's, not files.
     public private(set) var transfers: [TransferItem] = []
     /// Listed sends that failed, or that the phone cancelled, since the last send was queued.
     /// The user's own cancels do not count. See `lastFailure(_:)`.
@@ -57,7 +61,17 @@ public final class TransferEngine: SessionFeature {
     nonisolated static let chunkBytes = BulkLink.bufferBytes
     static let keptFinished = 20
     /// Any of these makes the Mac announce its bulk port; `files.*` messages serve all four.
-    public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1"]
+    public static let bulkCapabilities: Set<String> = ["files.v1", "screenshots.v1", "photos.v1", "browse.v1",
+                                                       "clipboard-image.v1"]
+    /// Resumable transfers (SPEC 16).
+    public static let resumeCapability = "files.resume.v1"
+    /// How long a paused send is retried, and a kept part waits for its offer.
+    public static let keepPaused: TimeInterval = 24 * 3600
+    /// The first retry of a paused send while connected; each next one waits twice as long, up to `maxRetryDelay`.
+    static let firstRetryDelay: Duration = .seconds(5)
+    static let maxRetryDelay: Duration = .seconds(60)
+    /// The `partsStore` key of the kept parts (resumable receives that broke).
+    public nonisolated static let keptPartsKey = "keptParts"
     private nonisolated static let log = Logger(subsystem: "io.github.anmirror.mac", category: "transfer")
 
     @ObservationIgnored private let bulk: any BulkGrants
@@ -69,6 +83,12 @@ public final class TransferEngine: SessionFeature {
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
     /// How a request's deadline waits (a test hook).
     @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Wall time, for the 24 hours of a pause (internal, so tests can move it).
+    @ObservationIgnored var wallNow: () -> Date = Date.init
+    /// Parts of resumable receives that broke, by transfer ID (mirrored to `partsStore`).
+    @ObservationIgnored private var kept: [String: KeptPart] = [:]
+    /// Wakes `pump()` when the next paused send is due.
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private let outbox: AsyncStream<Outgoing>.Continuation
     /// Where the paths of live part files are kept (`openPartsKey`), so a crash or a force quit
@@ -109,7 +129,13 @@ public final class TransferEngine: SessionFeature {
         self.timing = timing
         self.newID = newID
         self.partsStore = partsStore
-        if let partsStore { Self.removeLeftoverParts(partsStore) }
+        if let partsStore {
+            Self.removeLeftoverParts(partsStore)
+            if let data = partsStore.data(forKey: Self.keptPartsKey),
+               let saved = try? JSONDecoder().decode([String: KeptPart].self, from: data) {
+                kept = saved
+            }
+        }
         // One sender, so messages leave in the order they were queued.
         let (stream, continuation) = AsyncStream.makeStream(of: Outgoing.self)
         outbox = continuation
@@ -117,6 +143,7 @@ public final class TransferEngine: SessionFeature {
         Task {
             for await o in stream where o.session == session.value { await send(o.type, o.message) }
         }
+        expireKept()
     }
 
     deinit { outbox.finish() }
@@ -125,13 +152,23 @@ public final class TransferEngine: SessionFeature {
 
     public func connected(phoneID: String, phoneName: String, shared: Set<String>) async {
         session.value += 1
-        isConnected = true
         self.phoneID = phoneID
         self.shared = shared
+        // Paused sends go on with the same phone, if it still takes them; else they end. Before
+        // `isConnected`, so no pump offers one meant for another phone meanwhile.
+        for job in jobs where job.item.state == .paused {
+            if job.phoneID == phoneID, shared.contains(Self.resumeCapability), shared.contains("files.v1") {
+                job.retryAt = nil
+            } else {
+                finish(job, .failed(.interrupted), notice: .none, mayPause: false)
+            }
+        }
+        isConnected = true
         // Before any token: changing the allowed phone revokes every outstanding one.
         bulk.allow(peerFingerprint: Self.bytes(hex: phoneID))
         announcedPort = nil
         announcePort()
+        expireKept()
         pump()
     }
 
@@ -161,12 +198,22 @@ public final class TransferEngine: SessionFeature {
     public func disconnected() {
         session.value += 1
         isConnected = false
+        retryTask?.cancel()
+        retryTask = nil
+        // With resume shared, the user's plain file sends wait for the phone, queued ones too.
+        let resumes = shared.contains(Self.resumeCapability)
+        for job in jobs {
+            if resumes, job.item.direction == .send, job.item.kind == .file, !job.item.targeted, job.source != nil {
+                pause(job, notice: .none)
+            } else {
+                finish(job, .failed(.interrupted), notice: .none)
+            }
+        }
         phoneID = nil
         shared = []
         announcedPort = nil
         bulk.revokeAll()
         bulk.allow(peerFingerprint: nil)
-        for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
         for timer in deadlines.values { timer.cancel() }
         deadlines = [:]
         let waiting = expected
@@ -192,19 +239,25 @@ public final class TransferEngine: SessionFeature {
     /// Nothing is kept per phone. Forgetting the phone in session ends whatever it still has
     /// queued or under way.
     public func forget(phoneID: String) async {
+        for (id, part) in kept where part.phoneID == phoneID { dropKept(id, as: .failed(.interrupted)) }
+        for job in jobs where job.item.state == .paused && job.phoneID == phoneID {
+            finish(job, .failed(.interrupted), notice: .none, mayPause: false)
+        }
         guard phoneID == self.phoneID || self.phoneID == nil else { return }
-        for job in jobs { finish(job, .failed(.interrupted), notice: .none) }
+        for job in jobs { finish(job, .failed(.interrupted), notice: .none, mayPause: false) }
     }
 
     // MARK: API
 
     /// Queues `files` for the phone in session, into `target` (a browse root) when given, else
-    /// its Downloads. With no phone connected, or one that does not share `files.v1` (`browse.v1`
-    /// for a target), each file
+    /// its Downloads; as `kind` `.clipboardImage`, onto its clipboard. With no phone connected, or
+    /// one that does not share `files.v1` (`browse.v1` for a target, `clipboard-image.v1` for an
+    /// image), each file
     /// fails `INTERRUPTED` at once; a folder or an unreadable file fails `IO` at once. Returns
     /// the transfer IDs.
     @discardableResult
-    public func send(files: [URL], target: AMBrowseTarget? = nil) -> [String] {
+    public func send(files: [URL], target: AMBrowseTarget? = nil, kind: AMTransferKind = .file) -> [String] {
+        let capability = kind == .clipboardImage ? "clipboard-image.v1" : target == nil ? "files.v1" : "browse.v1"
         var ids: [String] = []
         if !files.isEmpty { lastSendFailure = nil }
         for url in files {
@@ -215,17 +268,17 @@ public final class TransferEngine: SessionFeature {
             var offer = AMTransferOffer()
             offer.transferID = id
             offer.name = FileNameSanitizer.sanitize(url.lastPathComponent)
-            offer.kind = .file
+            offer.kind = kind
             if let target { offer.target = target }
-            guard isConnected, shared.contains(target == nil ? "files.v1" : "browse.v1") else {
-                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
+            guard isConnected, shared.contains(capability) else {
+                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: kind,
                                         state: .failed(.interrupted), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: no phone takes files")
                 record(item, offer: offer, url: nil, deferred: true)
                 continue
             }
             guard let source = Self.source(url) else {
-                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: .file,
+                let item = TransferItem(id: id, direction: .send, name: offer.name, size: 0, kind: kind,
                                         state: .failed(.io), targeted: target != nil)
                 Self.log.info("\(id, privacy: .public) not sent: IO")
                 record(item, offer: offer, url: nil, deferred: true)
@@ -234,7 +287,7 @@ public final class TransferEngine: SessionFeature {
             offer.size = source.size
             offer.mime = source.mime
             offer.modifiedMs = source.modifiedMs
-            let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: .file,
+            let item = TransferItem(id: id, direction: .send, name: offer.name, size: source.size, kind: kind,
                                     state: .queued, targeted: target != nil)
             jobs.append(Job(item: item, offer: offer, source: url, now: now))
         }
@@ -287,7 +340,14 @@ public final class TransferEngine: SessionFeature {
 
     /// Stops a transfer; the phone is told unless it never heard of it.
     public func cancel(_ id: String) {
-        guard let job = jobs.first(where: { $0.item.id == id }) else { return }
+        guard let job = jobs.first(where: { $0.item.id == id }) else {
+            // A paused receive: the part goes, and the phone stops offering it.
+            if kept[id] != nil {
+                dropKept(id, as: .cancelled)
+                tell(id, .cancel)
+            }
+            return
+        }
         let offered = job.item.direction == .receive || job.item.state != .queued
         finish(job, .cancelled, notice: offered ? .cancel : .none, byUser: true)
     }
@@ -324,9 +384,27 @@ public final class TransferEngine: SessionFeature {
     }
 
     private func pumpSends() {
-        guard !jobs.contains(where: { $0.item.direction == .send && $0.item.state != .queued }),
-              let job = jobs.first(where: { $0.item.direction == .send })
+        guard !jobs.contains(where: { $0.item.direction == .send && ($0.item.state == .waiting || $0.item.state == .active) })
         else { return }
+        // Paused past their time: they end.
+        let oldest = wallNow().addingTimeInterval(-Self.keepPaused)
+        for job in jobs where job.item.state == .paused && (job.pausedSince ?? .distantFuture) < oldest {
+            finish(job, .failed(.interrupted), notice: .none, mayPause: false)
+        }
+        let at = now()
+        guard let job = jobs.first(where: {
+            $0.item.direction == .send
+                && ($0.item.state == .queued || ($0.item.state == .paused && ($0.retryAt.map { $0 <= at } ?? true)))
+        }) else {
+            scheduleRetry()
+            return
+        }
+        // Only the user's plain files, and only when the phone resumes too.
+        job.offer.resumable = job.item.kind == .file && !job.item.targeted && shared.contains(Self.resumeCapability)
+        job.phoneID = phoneID
+        job.accepted = false
+        job.completeSent = false
+        job.offset = 0
         job.offer.token = bulk.issue(role: .phoneReceives, context: job.item.id)
         job.item.state = .waiting
         job.limit = timing.acceptTimeout
@@ -338,6 +416,8 @@ public final class TransferEngine: SessionFeature {
     private func accepted(_ a: AMTransferAccept) {
         guard let job = live(a.transferID, .send), job.item.state == .waiting, !job.accepted else { return }
         job.accepted = true
+        // A resumable send goes on from what the phone kept.
+        job.offset = job.offer.resumable ? min(a.offset, job.item.size) : 0
         job.limit = timing.stallTimeout
         job.meter.touch()
         startSending(job)
@@ -354,14 +434,15 @@ public final class TransferEngine: SessionFeature {
             return
         }
         job.item.state = .active
+        job.item.done = job.offset
         job.started = .now
         job.meter.touch()
         publish()
-        let size = job.item.size, meter = job.meter
+        let size = job.item.size, meter = job.meter, offset = job.offset
         job.worker = Task.detached { [weak self] in
             let result: Result<Data, Stop>
             do {
-                result = .success(try await Self.write(handle, size: size, to: pipe, meter: meter))
+                result = .success(try await Self.write(handle, from: offset, size: size, to: pipe, meter: meter))
             } catch {
                 result = .failure(error as? Stop ?? .interrupted)
             }
@@ -415,6 +496,22 @@ public final class TransferEngine: SessionFeature {
         let item = TransferItem(id: o.transferID, direction: .receive, name: FileNameSanitizer.sanitize(o.name),
                                 size: o.size, kind: o.kind, state: .queued, requested: o.requestID != 0)
         let job = Job(item: item, offer: o, source: nil, now: now)
+        job.phoneID = phoneID
+        // A paused receive offered again: its row is this one now.
+        finished.removeAll { $0.id == o.transferID }
+        expireKept()
+        if let k = kept.removeValue(forKey: o.transferID) {
+            saveKept()
+            let part = URL(fileURLWithPath: k.path)
+            let have = (try? FileManager.default.attributesOfItem(atPath: k.path)[.size] as? NSNumber)?.uint64Value
+            if o.resumable, shared.contains(Self.resumeCapability), o.kind == .file, o.requestID == 0, !o.hasTarget,
+               k.size == o.size, k.name == item.name, let have, have < o.size {
+                job.resumePart = part
+                job.offset = have
+            } else {
+                try? FileManager.default.removeItem(at: part)
+            }
+        }
         jobs.append(job)
         // A receive is live: requests wait behind it without counting down.
         pauseDeadlines()
@@ -430,11 +527,14 @@ public final class TransferEngine: SessionFeature {
             // A file the user shared on the phone needs `files.v1`; another bulk capability
             // (screenshots, photos, browse) is not enough.
             job.destination = .refuse(.disabled)
+        } else if o.kind == .clipboardImage, !shared.contains("clipboard-image.v1") {
+            job.destination = .refuse(.disabled)
         } else {
             job.destination = destination(o)
         }
         // The Mac's own refusal (a feature that is off): not listed, see `transfers`.
         if case let .refuse(reason) = job.destination {
+            if let part = job.resumePart { try? FileManager.default.removeItem(at: part) }
             finish(job, .failed(reason), notice: .reject(reason), listed: false)
             return
         }
@@ -450,7 +550,7 @@ public final class TransferEngine: SessionFeature {
               let folder = job.folder
         else { return }
         if let free = freeBytes(folder) {
-            let (need, overflow) = job.item.size.addingReportingOverflow(UInt64(max(timing.freeMargin, 0)))
+            let (need, overflow) = (job.item.size - job.offset).addingReportingOverflow(UInt64(max(timing.freeMargin, 0)))
             if overflow || need > UInt64(max(free, 0)) {
                 finish(job, .failed(.noSpace), notice: .reject(.noSpace))
                 return
@@ -459,6 +559,7 @@ public final class TransferEngine: SessionFeature {
         var a = AMTransferAccept()
         a.transferID = job.item.id
         a.token = bulk.issue(role: .phoneSends, context: job.item.id)
+        a.offset = job.offset
         job.item.state = .waiting
         job.limit = timing.stallTimeout
         watch(job)
@@ -470,10 +571,19 @@ public final class TransferEngine: SessionFeature {
         job.pipe = pipe
         // Created here, on the main actor, so a failure can never leave one behind.
         guard let folder = job.folder else { return }
-        let part = folder.appendingPathComponent(".\(UUID().uuidString).part")
-        guard FileManager.default.createFile(atPath: part.path, contents: nil),
-              let handle = try? FileHandle(forWritingTo: part)
-        else {
+        let part = job.resumePart ?? folder.appendingPathComponent(".\(UUID().uuidString).part")
+        let handle: FileHandle
+        do {
+            if job.resumePart != nil {
+                // Exactly the bytes kept, then on from there.
+                handle = try FileHandle(forUpdating: part)
+                try handle.truncate(atOffset: job.offset)
+                try handle.seekToEnd()
+            } else {
+                guard FileManager.default.createFile(atPath: part.path, contents: nil) else { throw Stop.io }
+                handle = try FileHandle(forWritingTo: part)
+            }
+        } catch {
             try? FileManager.default.removeItem(at: part)
             finish(job, .failed(.io), notice: .failed(.io))
             return
@@ -484,13 +594,14 @@ public final class TransferEngine: SessionFeature {
         job.started = .now
         job.meter.touch()
         publish()
-        let size = job.item.size, meter = job.meter, interval = timing.progressInterval
+        let size = job.item.size, meter = job.meter, interval = timing.progressInterval, offset = job.offset
+        let prefix = job.resumePart
         let report: @Sendable (UInt64) async -> Void = { [weak self] done in await self?.receiving(job, done: done) }
         job.worker = Task.detached { [weak self] in
             let result: Result<Data, Stop>
             do {
-                result = .success(try await Self.read(pipe, size: size, into: handle, meter: meter,
-                                                      interval: interval, progress: report))
+                result = .success(try await Self.read(pipe, size: size, into: handle, prefix: prefix, offset: offset,
+                                                      meter: meter, interval: interval, progress: report))
             } catch {
                 result = .failure(error as? Stop ?? .interrupted)
             }
@@ -584,7 +695,10 @@ public final class TransferEngine: SessionFeature {
     // MARK: either direction
 
     private func cancelledByPhone(_ c: AMTransferCancel) {
-        guard let job = jobs.first(where: { $0.item.id == c.transferID }) else { return }
+        guard let job = jobs.first(where: { $0.item.id == c.transferID }) else {
+            if kept[c.transferID] != nil { dropKept(c.transferID, as: .cancelled) }
+            return
+        }
         finish(job, .cancelled, notice: .none)
     }
 
@@ -594,6 +708,7 @@ public final class TransferEngine: SessionFeature {
     private func failedOnPhone(_ f: AMTransferFailed) {
         let reason: AMTransferError = f.reason == .unspecified ? .io : f.reason
         if !f.transferID.isEmpty, let job = jobs.first(where: { $0.item.id == f.transferID }) {
+            guard job.item.state != .paused else { return } // about an earlier try
             finish(job, .failed(reason), notice: .none)
         } else if f.requestID != 0 {
             failRequest(f.requestID, .transfer(reason))
@@ -627,8 +742,29 @@ public final class TransferEngine: SessionFeature {
     /// as `notice` says, answers its request, and starts the next transfer. An ending that is
     /// not `listed` stays out of `transfers`; one `byUser` is not a `lastFailure`.
     private func finish(_ job: Job, _ state: TransferItem.State, notice: Notice,
-                        listed: Bool = true, byUser: Bool = false) {
+                        listed: Bool = true, byUser: Bool = false, mayPause: Bool = true) {
         guard let index = jobs.firstIndex(where: { $0 === job }) else { return }
+        // A broken resumable transfer (SPEC 16): a send pauses, a receive keeps what it wrote.
+        let broke: Bool
+        if case let .failed(reason) = state { broke = reason == .interrupted || reason == .timedOut } else { broke = false }
+        if mayPause, broke, !byUser, job.offer.resumable {
+            if job.item.direction == .send, job.source != nil {
+                pause(job, notice: notice)
+                return
+            }
+            if job.item.direction == .receive, let part = job.part, let phoneID = job.phoneID,
+               let size = (try? FileManager.default.attributesOfItem(atPath: part.path)[.size] as? NSNumber)?.uint64Value,
+               size > 0 {
+                job.part = nil
+                forgetPart(part)
+                kept[job.item.id] = KeptPart(path: part.path, name: job.item.name, size: job.item.size,
+                                             phoneID: phoneID, keptAt: wallNow())
+                saveKept()
+                job.item.done = min(size, job.item.size)
+                finish(job, .paused, notice: notice, listed: listed, mayPause: false)
+                return
+            }
+        }
         jobs.remove(at: index)
         // The last live receive ended: every waiting request starts its full deadline again.
         if job.item.direction == .receive, !hasLiveReceive {
@@ -645,6 +781,30 @@ public final class TransferEngine: SessionFeature {
         job.item.state = state
 
         let id = job.item.id
+        tell(id, notice)
+
+        var url: URL?
+        switch state {
+        case let .done(saved):
+            url = saved
+            job.item.done = job.item.size
+            logThroughput(job)
+            if let saved { job.completion?(.success(saved)) }
+        case let .failed(reason):
+            Self.log.info("\(id, privacy: .public) failed: \(reason.rawValue, privacy: .public)")
+            job.completion?(.failure(.transfer(reason)))
+        case .cancelled:
+            Self.log.info("\(id, privacy: .public) cancelled")
+            job.completion?(.failure(.transfer(.cancelled)))
+        case .queued, .waiting, .active, .paused:
+            break
+        }
+        record(job.item, offer: job.offer, url: url, listed: listed, byUser: byUser)
+        pump()
+    }
+
+    /// Tells the phone how a transfer ended.
+    private func tell(_ id: String, _ notice: Notice) {
         switch notice {
         case .none:
             break
@@ -663,25 +823,69 @@ public final class TransferEngine: SessionFeature {
             r.reason = reason
             post(.filesReject, r)
         }
+    }
 
-        var url: URL?
-        switch state {
-        case let .done(saved):
-            url = saved
-            job.item.done = job.item.size
-            logThroughput(job)
-            if let saved { job.completion?(.success(saved)) }
-        case let .failed(reason):
-            Self.log.info("\(id, privacy: .public) failed: \(reason.rawValue, privacy: .public)")
-            job.completion?(.failure(.transfer(reason)))
-        case .cancelled:
-            Self.log.info("\(id, privacy: .public) cancelled")
-            job.completion?(.failure(.transfer(.cancelled)))
-        case .queued, .waiting, .active:
-            break
-        }
-        record(job.item, offer: job.offer, url: url, listed: listed, byUser: byUser)
+    // MARK: resume
+
+    /// A send that broke waits to be offered again: at once on the next connect of the same
+    /// phone, or after a growing delay while connected. Its progress stays.
+    private func pause(_ job: Job, notice: Notice) {
+        job.watchdog?.cancel()
+        job.watchdog = nil
+        job.worker?.cancel()
+        job.worker = nil
+        job.pipe?.close()
+        job.pipe = nil
+        bulk.revoke(context: job.item.id)
+        tell(job.item.id, notice)
+        if job.pausedSince == nil { job.pausedSince = wallNow() }
+        job.retryDelay = job.retryDelay.map { min($0 * 2, Self.maxRetryDelay) } ?? Self.firstRetryDelay
+        job.retryAt = isConnected ? now() + job.retryDelay! : nil
+        job.phoneID = job.phoneID ?? phoneID
+        job.item.state = .paused
+        Self.log.info("\(job.item.id, privacy: .public) paused")
+        publish()
         pump()
+    }
+
+    /// Wakes `pump()` when the next paused send is due, while connected.
+    private func scheduleRetry() {
+        retryTask?.cancel()
+        retryTask = nil
+        guard isConnected, let due = jobs.compactMap({ $0.item.state == .paused ? $0.retryAt : nil }).min() else { return }
+        let wait = max(due - now(), .zero), sleep = sleep
+        retryTask = Task { [weak self] in
+            try? await sleep(wait)
+            guard !Task.isCancelled, let self else { return }
+            self.retryTask = nil
+            self.pump()
+        }
+    }
+
+    /// Deletes kept parts older than `keepPaused`; their rows say they failed.
+    private func expireKept() {
+        let oldest = wallNow().addingTimeInterval(-Self.keepPaused)
+        for (id, part) in kept where part.keptAt < oldest { dropKept(id, as: .failed(.interrupted)) }
+    }
+
+    /// Deletes kept part `id`; its paused row (if listed) ends as `state`.
+    private func dropKept(_ id: String, as state: TransferItem.State) {
+        guard let part = kept.removeValue(forKey: id) else { return }
+        try? FileManager.default.removeItem(atPath: part.path)
+        saveKept()
+        if let i = finished.firstIndex(where: { $0.id == id && $0.state == .paused }) {
+            finished[i].state = state
+            publish()
+        }
+    }
+
+    private func saveKept() {
+        guard let partsStore else { return }
+        if kept.isEmpty {
+            partsStore.removeObject(forKey: Self.keptPartsKey)
+        } else if let data = try? JSONEncoder().encode(kept) {
+            partsStore.set(data, forKey: Self.keptPartsKey)
+        }
     }
 
     // MARK: helpers
@@ -690,13 +894,13 @@ public final class TransferEngine: SessionFeature {
     /// when `deferred` (inside `send(files:)`, whose caller must get the ID first).
     private func record(_ item: TransferItem, offer: AMTransferOffer, url: URL?, deferred: Bool = false,
                         listed: Bool = true, byUser: Bool = false) {
-        if listed {
+        if listed, item.kind != .clipboardImage {
             finished.insert(item, at: 0)
             if finished.count > Self.keptFinished { finished.removeLast(finished.count - Self.keptFinished) }
             let failed: Bool
             switch item.state {
             case .failed, .cancelled: failed = !byUser
-            case .queued, .waiting, .active, .done: failed = false
+            case .queued, .waiting, .active, .paused, .done: failed = false
             }
             if failed, item.direction == .send {
                 lastSendFailure = lastSendFailure?.adding(item) ?? TransferFailureSummary(newest: item)
@@ -705,6 +909,8 @@ public final class TransferEngine: SessionFeature {
             }
         }
         publish()
+        // A paused receive has not ended: its row waits for the sender's next offer.
+        guard item.state != .paused else { return }
         if deferred {
             Task { [weak self] in self?.onFinished?(item, offer, url) }
         } else {
@@ -713,7 +919,7 @@ public final class TransferEngine: SessionFeature {
     }
 
     private func publish() {
-        transfers = jobs.map(\.item) + finished
+        transfers = jobs.map(\.item).filter { $0.kind != .clipboardImage } + finished
     }
 
     // MARK: part files a crash leaves
@@ -849,12 +1055,21 @@ public final class TransferEngine: SessionFeature {
 
     // MARK: byte loops (off the main actor)
 
-    /// Writes exactly `size` bytes of `handle` to `pipe` in 256 KiB chunks; returns their SHA-256.
-    private nonisolated static func write(_ handle: FileHandle, size: UInt64, to pipe: any BulkPipe,
-                                          meter: Meter) async throws -> Data {
+    /// Writes bytes `offset..<size` of `handle` to `pipe` in 256 KiB chunks; returns the SHA-256
+    /// of all `size` bytes (the first `offset` are read and hashed, not sent).
+    private nonisolated static func write(_ handle: FileHandle, from offset: UInt64 = 0, size: UInt64,
+                                          to pipe: any BulkPipe, meter: Meter) async throws -> Data {
         defer { try? handle.close() }
         var hasher = SHA256()
-        var left = size
+        var skip = offset
+        while skip > 0 {
+            try Task.checkCancellation()
+            guard let read = try? handle.read(upToCount: Int(min(UInt64(chunkBytes), skip))), !read.isEmpty
+            else { throw Stop.io }
+            hasher.update(data: read)
+            skip -= UInt64(read.count)
+        }
+        var left = size - offset
         while left > 0 {
             try Task.checkCancellation()
             let want = Int(min(UInt64(chunkBytes), left))
@@ -874,14 +1089,27 @@ public final class TransferEngine: SessionFeature {
         return Data(hasher.finalize())
     }
 
-    /// Reads exactly `size` bytes from `pipe` into `handle`, reporting progress at most every
-    /// `interval`; returns their SHA-256.
+    /// Reads bytes `offset..<size` from `pipe` into `handle`, reporting progress (from the start
+    /// of the file) at most every `interval`; returns the SHA-256 of all `size` bytes, the first
+    /// `offset` read back from `prefix` (the kept part).
     private nonisolated static func read(_ pipe: any BulkPipe, size: UInt64, into handle: FileHandle,
+                                         prefix: URL? = nil, offset: UInt64 = 0,
                                          meter: Meter, interval: Duration,
                                          progress: @escaping @Sendable (UInt64) async -> Void) async throws -> Data {
         defer { try? handle.close() }
         var hasher = SHA256()
-        var done: UInt64 = 0
+        if offset > 0 {
+            guard let prefix, let kept = try? FileHandle(forReadingFrom: prefix) else { throw Stop.io }
+            defer { try? kept.close() }
+            var left = offset
+            while left > 0 {
+                guard let read = try? kept.read(upToCount: Int(min(UInt64(chunkBytes), left))), !read.isEmpty
+                else { throw Stop.io }
+                hasher.update(data: read)
+                left -= UInt64(read.count)
+            }
+        }
+        var done: UInt64 = offset
         var lastReport: ContinuousClock.Instant?
         while done < size {
             try Task.checkCancellation()
@@ -935,6 +1163,16 @@ private struct Expectation {
     let completion: @MainActor (Result<URL, TransferFailure>) -> Void
 }
 
+/// The part file of a resumable receive that broke, waiting for the sender's next offer.
+private struct KeptPart: Codable {
+    let path: String
+    /// The sanitized name and size the offer must have again.
+    let name: String
+    let size: UInt64
+    let phoneID: String
+    let keptAt: Date
+}
+
 @MainActor
 private final class SessionCounter {
     var value: UInt64 = 0
@@ -978,6 +1216,17 @@ private final class Job {
     var limit: Duration = .seconds(30)
     let meter: Meter
     var started: ContinuousClock.Instant?
+    /// The phone this transfer is with (a paused send waits for this one).
+    var phoneID: String?
+    /// Bytes the receiver already had: a send starts there, a receive appends from there.
+    var offset: UInt64 = 0
+    /// A resumed receive's kept part file.
+    var resumePart: URL?
+    /// Paused: since when (wall time), when it is next offered (nil: on the next pump), and the
+    /// delay that set it.
+    var pausedSince: Date?
+    var retryAt: ContinuousClock.Instant?
+    var retryDelay: Duration?
 
     init(item: TransferItem, offer: AMTransferOffer, source: URL?, now: @escaping @Sendable () -> ContinuousClock.Instant) {
         self.item = item

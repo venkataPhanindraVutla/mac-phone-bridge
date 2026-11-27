@@ -105,7 +105,11 @@ public final class ShareModel: SessionFeature {
     @discardableResult
     public func sendClipboard() async -> ClipboardSendOutcome {
         guard phone != nil else { return .notConnected }
-        return await sendText(clipboard.currentText() ?? "")
+        guard let text = clipboard.currentText() else {
+            // No text: the image, if there is one (clipboard-image.v1).
+            return clipboard.sendImageNow()
+        }
+        return await sendText(text)
     }
 
     // MARK: from the phone

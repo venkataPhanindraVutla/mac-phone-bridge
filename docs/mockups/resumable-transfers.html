@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resumable Transfers Demo</title>
+<style>
+  :root { --bg: #0b0b0b; --line: #262626; --text: #f2f2f2; --muted: #8a8a8a; --accent: #d4ff3f; --amber: #ffb340;
+          --win: #f6f6f8; --win-text: #1d1d1f; --win-muted: #6e6e73; --win-line: #dedee3; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; }
+  body { padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 16px; max-width: 72ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .controls button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  .controls button.primary { background: var(--accent); color: #0b0b0b; border-color: var(--accent); }
+  .controls button:disabled { opacity: .35; cursor: default; }
+  .stage { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .label { color: var(--muted); font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+
+  /* Mac */
+  .mac { width: 440px; max-width: 100%; }
+  .menu { background: rgba(246,246,248,.97); color: var(--win-text); border-radius: 10px; padding: 6px; font-size: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+  .menu .item { padding: 4px 10px; border-radius: 5px; }
+  .menu .sep { height: 1px; background: var(--win-line); margin: 5px 8px; }
+  .menu .muted { color: var(--win-muted); }
+  .win { margin-top: 18px; background: var(--win); color: var(--win-text); border-radius: 11px; overflow: hidden; box-shadow: 0 16px 44px rgba(0,0,0,.5); }
+  .win .tb { height: 34px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--win-line); font-size: 12.5px; font-weight: 600; color: #3a3a3c; }
+  .win .tb i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .row { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 12px 14px; }
+  .fileglyph { width: 30px; height: 36px; }
+  .name { font-weight: 600; font-size: 13px; }
+  .status { font-size: 12px; color: var(--win-muted); margin-top: 2px; }
+  .status.paused { color: #b26a00; }
+  .bar { height: 5px; border-radius: 3px; background: #e3e3e8; margin-top: 6px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: #0a63e0; transition: width .25s linear; }
+  .bar.paused > div { background: #e2a03f; }
+  .bar.done > div { background: #34c759; }
+  .xbtn { border: 1px solid var(--win-line); background: #fff; border-radius: 6px; font: inherit; font-size: 12px; padding: 3px 8px; cursor: pointer; }
+
+  /* Phone */
+  .phone { width: 300px; height: 330px; background: #000; border: 9px solid #222; border-radius: 38px; overflow: hidden; position: relative; }
+  .shade { position: absolute; inset: 0; background: linear-gradient(#20242c, #15171c); padding: 28px 10px 10px; }
+  .clock { color: #e9e9ef; font-size: 30px; font-weight: 300; margin: 0 8px 14px; }
+  .note { background: #2a2e37; border-radius: 18px; padding: 10px 12px; color: #e9e9ef; }
+  .note .app { font-size: 11px; color: #a8adb8; display: flex; gap: 6px; align-items: center; }
+  .note .app svg { flex: none; }
+  .note .t { font-size: 13.5px; font-weight: 600; margin-top: 4px; }
+  .note .s { font-size: 12.5px; color: #c3c7d0; }
+  .pbar { height: 4px; background: #40454f; border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .pbar > div { height: 100%; width: 0; background: #8ab4ff; transition: width .25s linear; }
+  .pbar.paused > div { background: var(--amber); }
+  .note .acts { margin-top: 8px; display: flex; gap: 18px; font-size: 12.5px; color: #8ab4ff; font-weight: 600; }
+  .net { position: absolute; top: 8px; right: 16px; font-size: 11px; color: #c3c7d0; }
+
+  .log { margin-top: 18px; font: 12px/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; height: 132px; overflow: hidden; width: 440px; max-width: 100%; }
+  .log div:first-child { color: var(--text); }
+  .notes { max-width: 440px; color: var(--muted); font-size: 13px; }
+  .notes b { color: var(--text); font-weight: 600; }
+  .notes li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <h1>Resumable transfers</h1>
+  <p class="sub">Send a 2.4 GB video from the Mac to the phone, then break the link. The transfer pauses and picks up where it stopped when the two find each other again, instead of starting over.</p>
+
+  <div class="controls">
+    <button class="primary" id="start">Send 2.4 GB video</button>
+    <button id="wifi" disabled>Phone Wi-Fi drops</button>
+    <button id="sleep" disabled>Mac goes to sleep</button>
+    <button id="back" disabled>Reconnect</button>
+    <button id="reset">Reset</button>
+  </div>
+
+  <div class="stage">
+    <div>
+      <p class="label">Mac · menu bar and Phone window</p>
+      <div class="mac">
+        <div class="menu">
+          <div class="item muted" id="mHead">Pixel · Connected</div>
+          <div class="sep"></div>
+          <div class="item">Show Phone Window</div>
+          <div class="item">Send File to Phone…</div>
+          <div class="item" id="mLine" style="display:none"></div>
+        </div>
+        <div class="win">
+          <div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i>&nbsp;Pixel · Send</div>
+          <div class="row" id="row" style="display:none">
+            <svg class="fileglyph" viewBox="0 0 30 36" aria-hidden="true"><path d="M3 2h16l8 8v24H3z" fill="#fff" stroke="#c7c7cc"/><path d="M19 2v8h8" fill="#f2f2f4" stroke="#c7c7cc"/><path d="M11 17v10l8-5z" fill="#0a63e0"/></svg>
+            <div><div class="name">Trip to the hills.mov</div><div class="status" id="status"></div><div class="bar" id="bar"><div></div></div></div>
+            <button class="xbtn" id="cancel">Cancel</button>
+          </div>
+          <div class="row" id="empty"><span></span><div class="status">Nothing sent yet.</div><span></span></div>
+        </div>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div>
+      <p class="label">Phone · notification</p>
+      <div class="phone"><div class="shade">
+        <div class="net" id="net">Wi-Fi ▾</div>
+        <div class="clock">20:41</div>
+        <div class="note" id="note" style="display:none">
+          <div class="app"><svg width="14" height="14" viewBox="0 0 14 14"><rect x="3" y="1" width="8" height="12" rx="2" fill="none" stroke="#a8adb8" stroke-width="1.3"/></svg>Mac Phone Bridge</div>
+          <div class="t" id="nTitle">Receiving Trip to the hills.mov</div>
+          <div class="s" id="nSub"></div>
+          <div class="pbar" id="pbar"><div></div></div>
+          <div class="acts"><span id="nCancel">Cancel</span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="notes">
+      <p class="label">What changes</p>
+      <ul>
+        <li>A transfer that breaks (Wi-Fi drop, Mac sleep, the phone out of range) shows <b>Paused</b> on both devices, keeping its progress.</li>
+        <li>When they reconnect it <b>resumes on its own</b> from the last byte saved. Nothing to tap.</li>
+        <li>The half-received file waits <b>24 hours</b>. After that it is deleted and the next try starts over.</li>
+        <li><b>Cancel</b> on either side ends it for good and deletes the half-received file.</li>
+        <li>The whole file is still checked (SHA-256) at the end, so a resumed file is the same as one sent in one go.</li>
+        <li>Works for files you send either way (drag, Share menu, Send to Mac). Photos, screenshots and Finder browsing keep restarting: they are small or re-asked anyway.</li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+const SIZE = 2.4e9;
+let done = 0, state = 'idle', timer = null, pausedAt = 0;
+const $ = id => document.getElementById(id);
+const gb = b => (b / 1e9).toFixed(2) + ' GB';
+const pct = () => Math.floor(done / SIZE * 100);
+
+function log(msg) { const l = $('log'); const d = document.createElement('div'); d.textContent = msg; l.prepend(d); }
+
+function render() {
+  const on = state !== 'idle';
+  $('row').style.display = on ? '' : 'none';
+  $('empty').style.display = on ? 'none' : '';
+  $('note').style.display = on && state !== 'cancelled' ? '' : 'none';
+  const bar = $('bar'), pb = $('pbar'), st = $('status');
+  bar.firstElementChild.style.width = pb.firstElementChild.style.width = pct() + '%';
+  bar.className = 'bar' + (state === 'paused' ? ' paused' : state === 'done' ? ' done' : '');
+  pb.className = 'pbar' + (state === 'paused' ? ' paused' : '');
+  st.className = 'status' + (state === 'paused' ? ' paused' : '');
+  const line = $('mLine');
+  line.style.display = state === 'active' || state === 'paused' ? '' : 'none';
+  if (state === 'active') {
+    st.textContent = `${gb(done)} of ${gb(SIZE)} · ${pausedAt ? 'resumed' : 'sending'}`;
+    line.textContent = `Sending Trip to the hills.mov — ${pct()}%`;
+    $('nTitle').textContent = 'Receiving Trip to the hills.mov'; $('nSub').textContent = `${pct()}%`;
+  } else if (state === 'paused') {
+    st.textContent = `Paused at ${pct()}% · resumes when the phone is back`;
+    line.textContent = `Paused: Trip to the hills.mov — ${pct()}%`;
+    $('nTitle').textContent = 'Paused: Trip to the hills.mov'; $('nSub').textContent = `${pct()}% · resumes when your Mac is back`;
+  } else if (state === 'done') {
+    st.textContent = 'Sent';
+    $('nTitle').textContent = 'Saved to Download/Mac Phone Bridge'; $('nSub').textContent = 'Trip to the hills.mov';
+  } else if (state === 'cancelled') {
+    st.textContent = 'Cancelled · the phone deleted the part it had';
+  }
+  $('cancel').style.display = state === 'active' || state === 'paused' ? '' : 'none';
+  $('nCancel').style.display = state === 'active' || state === 'paused' ? '' : 'none';
+  $('wifi').disabled = $('sleep').disabled = state !== 'active';
+  $('back').disabled = state !== 'paused';
+  $('start').disabled = state === 'active' || state === 'paused';
+  $('mHead').textContent = state === 'paused' ? 'Pixel · Not connected' : 'Pixel · Connected';
+  $('net').textContent = state === 'paused' && $('net').dataset.off ? 'No Wi-Fi' : 'Wi-Fi ▾';
+}
+
+function run() {
+  clearInterval(timer);
+  timer = setInterval(() => {
+    done = Math.min(SIZE, done + 0.045e9);
+    if (done >= SIZE) { clearInterval(timer); state = 'done'; log('files.complete → files.received · hash matches'); }
+    render();
+  }, 120);
+}
+
+$('start').onclick = () => { done = 0; pausedAt = 0; state = 'active'; $('log').innerHTML = ''; log('files.offer (resumable) → files.accept offset 0'); run(); render(); };
+function breakLink(why) {
+  clearInterval(timer); state = 'paused'; pausedAt = done;
+  log(`${why}: link lost at ${gb(done)}. Phone keeps the part (24 h).`);
+  render();
+}
+$('wifi').onclick = () => { $('net').dataset.off = '1'; breakLink('Phone Wi-Fi off'); };
+$('sleep').onclick = () => { delete $('net').dataset.off; breakLink('Mac asleep'); };
+$('back').onclick = () => {
+  delete $('net').dataset.off;
+  log(`Reconnected → same offer again → files.accept offset ${gb(pausedAt)}`);
+  state = 'active'; run(); render();
+};
+function cancel() { clearInterval(timer); state = 'cancelled'; log('files.cancel → part deleted'); render(); }
+$('cancel').onclick = cancel; $('nCancel').onclick = cancel;
+$('reset').onclick = () => { clearInterval(timer); state = 'idle'; done = 0; pausedAt = 0; $('log').innerHTML = ''; render(); };
+render();
+</script>
+</body>
+</html>

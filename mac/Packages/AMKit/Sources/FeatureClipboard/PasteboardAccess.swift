@@ -10,6 +10,10 @@ public protocol PasteboardAccess: AnyObject {
     func readString() -> String?
     /// Replaces the contents with `s` as plain text, with no other types.
     func writeString(_ s: String)
+    /// The image on the pasteboard as PNG bytes (PNG kept as is, TIFF or JPEG converted); nil when none.
+    func readImagePNG() -> Data?
+    /// Replaces the contents with the image in `data`; false when it is not an image.
+    func writeImage(_ data: Data) -> Bool
 }
 
 /// `NSPasteboard.general`.
@@ -28,5 +32,21 @@ public final class SystemPasteboard: PasteboardAccess {
     public func writeString(_ s: String) {
         board.clearContents()
         board.setString(s, forType: .string)
+    }
+
+    public func readImagePNG() -> Data? {
+        if let png = board.data(forType: .png) { return png }
+        for type in [NSPasteboard.PasteboardType.tiff, NSPasteboard.PasteboardType("public.jpeg")] {
+            if let data = board.data(forType: type), let rep = NSBitmapImageRep(data: data) {
+                return rep.representation(using: .png, properties: [:])
+            }
+        }
+        return nil
+    }
+
+    public func writeImage(_ data: Data) -> Bool {
+        guard let image = NSImage(data: data) else { return false }
+        board.clearContents()
+        return board.writeObjects([image])
     }
 }

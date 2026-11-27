@@ -150,6 +150,10 @@
     <string name="clipboard_too_long">Text is too long to send</string>
     <string name="clipboard_already_on_mac">Your Mac already has this text</string>
     <string name="clipboard_off">Clipboard sharing is off</string>
+    <string name="clipboard_image_too_large">Image is too large to send</string>
+    <string name="clipboard_image_already_on_mac">Your Mac already has this image</string>
+    <!-- The Mac app is older and takes text only. -->
+    <string name="clipboard_image_not_supported">Update Mac Phone Bridge on your Mac to send images</string>
     <!-- "Sent to %1$s" when the Mac's name is not known. -->
     <string name="clipboard_mac_unnamed">your Mac</string>
 
@@ -179,6 +183,10 @@
     <string name="transfer_send_failed">Couldn\'t send %1$s</string>
     <string name="transfer_receive_failed">Couldn\'t receive %1$s</string>
     <string name="transfer_cancel">Cancel</string>
+    <!-- A transfer that broke off and goes on later from where it stopped. -->
+    <string name="transfer_paused">Paused: %1$s</string>
+    <string name="transfer_paused_send">Goes on when your Mac is back</string>
+    <string name="transfer_paused_receive">Goes on when your Mac sends it again</string>
     <plurals name="transfer_more_waiting">
         <item quantity="one">%1$d more waiting</item>
         <item quantity="other">%1$d more waiting</item>

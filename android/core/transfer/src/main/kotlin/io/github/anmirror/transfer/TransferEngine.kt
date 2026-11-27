@@ -49,6 +49,14 @@ import kotlin.coroutines.cancellation.CancellationException
  * Phone side of SPEC 16 transfers: runs `files.*` control messages and the bulk bytes behind
  * them. One SEND and one RECEIVE run at a time; more wait in order. File I/O runs on [io].
  * Logs carry IDs, sizes, durations and error codes only, never names or content.
+ *
+ * Resume (files.resume.v1, SPEC 16; [resumes] says whether the Mac in session shares it): a
+ * send of a file that [OutgoingFile.canResume] which breaks (INTERRUPTED, TIMED_OUT) is
+ * [TransferState.PAUSED] and offered again with the same ID, at once when the same Mac
+ * connects again ([onConnected]) or after a growing delay while connected; a resumable receive
+ * that breaks keeps its bytes ([IncomingFile.keep]) and the Mac's next offer of it goes on
+ * from there ([IncomingSinks.resume]). Both give up after [TransferTiming.keepPausedMs].
+ * Paused sends live in this process only.
  */
 class TransferEngine(
     private val scope: CoroutineScope,
@@ -60,9 +68,10 @@ class TransferEngine(
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val timing: TransferTiming = TransferTiming(),
+    private val resumes: () -> Boolean = { false },
 ) {
     private sealed interface Reply {
-        class Accepted(val token: ByteString) : Reply
+        class Accepted(val token: ByteString, val offset: Long) : Reply
         class Rejected(val reason: TransferError) : Reply
         object Received : Reply
         object Aborted : Reply
@@ -83,8 +92,22 @@ class TransferEngine(
     /** The bulk stream ended before the announced size. */
     private class EarlyEnd : IOException()
 
-    private class Xfer(val id: String, val direction: Direction, initial: TransferStatus, val requestId: Long) {
+    private class Xfer(
+        val id: String,
+        val direction: Direction,
+        initial: TransferStatus,
+        val requestId: Long,
+        /** What a send reads, kept to offer it again after a pause. */
+        val file: OutgoingFile? = null,
+        /** When this transfer first paused (wall clock), and the retry delay last used. */
+        val pausedSince: Long = 0,
+        val retryMs: Long = 0,
+    ) {
         @Volatile var status = initial
+        /** Offered as resumable (send), or received from a resumable offer with resume shared (receive). */
+        @Volatile var resumable = false
+        /** Bytes the receiver already had. */
+        @Volatile var offset = 0L
         @Volatile var started = false
         @Volatile var final = false
         @Volatile var peerKnows = direction == Direction.RECEIVE
@@ -106,6 +129,21 @@ class TransferEngine(
 
     private val lock = Any()
     private val live = LinkedHashMap<String, Xfer>()
+
+    /** A send waiting to be offered again, and the Mac it is for. */
+    private class Paused(val x: Xfer, val kind: TransferKind, val peer: String?)
+
+    private val paused = LinkedHashMap<String, Paused>()
+
+    /** A receive whose bytes the sink kept, waiting for the Mac's next offer. */
+    private class Kept(val name: String, val size: Long, val at: Long)
+
+    private val kept = HashMap<String, Kept>()
+
+    /** The Mac in session (its ID), and whether it shared files.resume.v1 when it connected. */
+    @Volatile private var peer: String? = null
+    @Volatile private var connected = false
+    @Volatile private var peerResumes = false
     private val finished = ArrayDeque<TransferStatus>() // most recent first
     private val state = MutableStateFlow<List<TransferStatus>>(emptyList())
 
@@ -142,7 +180,7 @@ class TransferEngine(
         val x = Xfer(
             id, Direction.SEND,
             TransferStatus(id, Direction.SEND, f.name, f.size, 0, kind, TransferState.QUEUED, requestId = requestId),
-            requestId,
+            requestId, file = f,
         )
         register(x)
         sendJobs.trySend(QueuedWork(x) { runSend(x, f, kind) })
@@ -150,8 +188,32 @@ class TransferEngine(
     }
 
     fun cancel(id: String) {
-        val x = synchronized(lock) { live[id] } ?: return
-        stop(x, TransferError.TRANSFER_ERROR_CANCELLED, Notify.CANCEL)
+        val x = synchronized(lock) { live[id] }
+        if (x != null) return stop(x, TransferError.TRANSFER_ERROR_CANCELLED, Notify.CANCEL)
+        // Paused, either way: it ends for good, and the Mac drops what it kept.
+        if (endPaused(id, TransferState.CANCELLED, TransferError.TRANSFER_ERROR_CANCELLED) && connected) {
+            scope.launch { send(MessageType.FILES_CANCEL, TransferCancel.newBuilder().setTransferId(id).build()) }
+        }
+    }
+
+    /**
+     * A session with Mac [peerId] began; [resumesNow] is whether it shares files.resume.v1.
+     * Paused sends for it go again now; those for another Mac, or with resume no longer shared, end.
+     */
+    fun onConnected(peerId: String, resumesNow: Boolean) {
+        peer = peerId
+        peerResumes = resumesNow
+        connected = true
+        expire()
+        val ids = synchronized(lock) { paused.keys.toList() }
+        for (id in ids) {
+            val p = synchronized(lock) { paused[id] } ?: continue
+            if (p.peer == peerId && resumesNow) {
+                requeue(id)
+            } else {
+                endPaused(id, TransferState.FAILED, TransferError.TRANSFER_ERROR_INTERRUPTED)
+            }
+        }
     }
 
     /** Handles `files.*` control messages. False for every other type. */
@@ -160,7 +222,7 @@ class TransferEngine(
             when (env.type) {
                 MessageType.FILES_OFFER -> onOffer(TransferOffer.parseFrom(env.payload))
                 MessageType.FILES_ACCEPT -> TransferAccept.parseFrom(env.payload).let { m ->
-                    peer(m.transferId, Direction.SEND)?.reply?.complete(Reply.Accepted(m.token))
+                    peer(m.transferId, Direction.SEND)?.reply?.complete(Reply.Accepted(m.token, m.offset))
                 }
                 MessageType.FILES_REJECT -> TransferReject.parseFrom(env.payload).let { m ->
                     peer(m.transferId, Direction.SEND)?.reply?.complete(Reply.Rejected(m.reason.orInterrupted()))
@@ -174,6 +236,7 @@ class TransferEngine(
                 }
                 MessageType.FILES_CANCEL -> TransferCancel.parseFrom(env.payload).let { m ->
                     peer(m.transferId, null)?.let { stop(it, TransferError.TRANSFER_ERROR_CANCELLED, Notify.NONE) }
+                        ?: endPaused(m.transferId, TransferState.CANCELLED, TransferError.TRANSFER_ERROR_CANCELLED)
                 }
                 MessageType.FILES_FAILED -> TransferFailed.parseFrom(env.payload).let { m ->
                     peer(m.transferId, null)?.let { stop(it, m.reason.orInterrupted(), Notify.NONE) }
@@ -186,10 +249,91 @@ class TransferEngine(
         return true
     }
 
-    /** The control connection is gone: every unfinished transfer fails INTERRUPTED. Nothing is sent. */
+    /**
+     * The control connection is gone: every unfinished transfer fails INTERRUPTED, or pauses
+     * (see the class doc). Nothing is sent.
+     */
     fun onDisconnected() {
+        connected = false
         val all = synchronized(lock) { live.values.toList() }
         for (x in all) stop(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.NONE)
+    }
+
+    // ---- resume ------------------------------------------------------------------------------
+
+    private fun pausable(reason: TransferError?) =
+        reason == TransferError.TRANSFER_ERROR_INTERRUPTED || reason == TransferError.TRANSFER_ERROR_TIMED_OUT
+
+    /** A send that may pause: offered resumable, or queued and never offered while the Mac resumes. */
+    private fun mayPause(x: Xfer): Boolean {
+        val f = x.file ?: return false
+        return x.direction == Direction.SEND && f.canResume && x.requestId == 0L &&
+            x.status.kind == TransferKind.TRANSFER_KIND_FILE && (x.resumable || (!x.started && peerResumes))
+    }
+
+    /** Under [lock]: [x] ended broken; it waits to be offered again. */
+    private fun pauseLocked(x: Xfer) {
+        val since = if (x.pausedSince != 0L) x.pausedSince else clock()
+        val delay = if (x.retryMs == 0L) timing.firstRetryMs else minOf(x.retryMs * 2, timing.maxRetryMs)
+        val waiting = Xfer(
+            x.id, Direction.SEND, x.status.copy(state = TransferState.PAUSED), 0,
+            file = x.file, pausedSince = since, retryMs = delay,
+        )
+        waiting.resumable = true
+        paused[x.id] = Paused(waiting, x.status.kind, peer)
+        log("${x.id} paused after ${x.moved.get()} bytes")
+        if (connected) {
+            scope.launch {
+                delay(delay)
+                if (connected) requeue(x.id)
+            }
+        }
+    }
+
+    /** Offers paused send [id] again (same ID), unless it is past [TransferTiming.keepPausedMs]. */
+    private fun requeue(id: String) {
+        val p = synchronized(lock) { paused[id] } ?: return
+        if (clock() - p.x.pausedSince > timing.keepPausedMs) {
+            endPaused(id, TransferState.FAILED, TransferError.TRANSFER_ERROR_INTERRUPTED)
+            return
+        }
+        val x = Xfer(
+            id, Direction.SEND, p.x.status.copy(state = TransferState.QUEUED), 0,
+            file = p.x.file, pausedSince = p.x.pausedSince, retryMs = p.x.retryMs,
+        )
+        synchronized(lock) {
+            if (paused.remove(id) == null || live.containsKey(id)) return
+            live[id] = x
+            publish()
+        }
+        sendJobs.trySend(QueuedWork(x) { runSend(x, x.file!!, p.kind) })
+    }
+
+    /** Ends a paused send, or a kept receive, as [st]. False when [id] is neither. */
+    private fun endPaused(id: String, st: TransferState, error: TransferError): Boolean {
+        val wasKept = synchronized(lock) {
+            val p = paused.remove(id)
+            if (p != null) {
+                finished.addFirst(p.x.status.copy(state = st, error = error))
+                while (finished.size > KEEP_FINISHED) finished.removeLast()
+                publish()
+                return true
+            }
+            val k = kept.remove(id) ?: return false
+            val i = finished.indexOfFirst { it.id == id && it.state == TransferState.PAUSED }
+            if (i >= 0) finished[i] = finished[i].copy(state = st, error = error)
+            publish()
+            k
+        }
+        scope.launch(io) { runCatching { sinks.discard(id) } }
+        log("$id ended paused (${wasKept.size} bytes kept) $st")
+        return true
+    }
+
+    /** Kept receives past [TransferTiming.keepPausedMs] go. */
+    private fun expire() {
+        val old = synchronized(lock) { kept.filterValues { clock() - it.at > timing.keepPausedMs }.keys.toList() }
+        for (id in old) endPaused(id, TransferState.FAILED, TransferError.TRANSFER_ERROR_INTERRUPTED)
     }
 
     // ---- bookkeeping -------------------------------------------------------------------------
@@ -203,7 +347,7 @@ class TransferEngine(
     }
 
     private fun publish() {
-        state.value = live.values.map { it.status } + finished
+        state.value = live.values.map { it.status } + paused.values.map { it.x.status } + finished
     }
 
     private fun update(x: Xfer, f: (TransferStatus) -> TransferStatus) = synchronized(lock) {
@@ -215,6 +359,12 @@ class TransferEngine(
     private fun finish(x: Xfer, st: TransferState, error: TransferError?, savedAs: String? = null) = synchronized(lock) {
         if (x.final) return@synchronized
         x.final = true
+        if (st == TransferState.FAILED && pausable(error) && mayPause(x)) {
+            live.remove(x.id)
+            pauseLocked(x)
+            publish()
+            return@synchronized
+        }
         x.status = x.status.copy(
             state = st, error = error, savedAs = savedAs,
             done = if (st == TransferState.DONE) x.status.size else x.status.done,
@@ -274,6 +424,16 @@ class TransferEngine(
         }
     }
 
+    /** A resumable receive that broke after writing bytes keeps them, when its sink can. */
+    private suspend fun keepSink(x: Xfer, reason: TransferError): Boolean {
+        val s = x.sink ?: return false
+        if (x.direction != Direction.RECEIVE || !x.resumable || !pausable(reason) || x.offset + x.moved.get() == 0L) return false
+        if (!x.sinkClaimed.compareAndSet(false, true)) return false
+        val ok = withContext(io) { runCatching { s.keep() }.getOrDefault(false) }
+        if (!ok) withContext(io) { runCatching { s.abort() } }
+        return ok
+    }
+
     private suspend fun abortSink(x: Xfer) {
         val s = x.sink ?: return
         if (!x.sinkClaimed.compareAndSet(false, true)) return
@@ -291,8 +451,15 @@ class TransferEngine(
                 finish(x, TransferState.DONE, null, outcome.savedAs)
             }
             is Outcome.Fail -> {
-                abortSink(x)
+                val keptPart = keepSink(x, outcome.reason)
+                if (!keptPart) abortSink(x)
                 if (x.peerKnows) notifyPeer(x, outcome.notify, outcome.reason)
+                if (keptPart) {
+                    log("${x.id} paused after ${x.offset + x.moved.get()} bytes, $ms ms")
+                    synchronized(lock) { kept[x.id] = Kept(x.status.name, x.status.size, clock()) }
+                    finish(x, TransferState.PAUSED, outcome.reason)
+                    return@withContext
+                }
                 log("${x.id} ${stateFor(outcome.reason)} ${outcome.reason} after ${x.moved.get()} bytes, $ms ms")
                 finish(x, stateFor(outcome.reason), outcome.reason)
             }
@@ -401,9 +568,11 @@ class TransferEngine(
     // ---- phone sends -------------------------------------------------------------------------
 
     private suspend fun runSend(x: Xfer, f: OutgoingFile, kind: TransferKind) = run(x) {
+        x.resumable = kind == TransferKind.TRANSFER_KIND_FILE && x.requestId == 0L && f.canResume && resumes()
         val offer = TransferOffer.newBuilder()
             .setTransferId(x.id).setName(f.name).setSize(f.size).setMime(f.mime)
             .setKind(kind).setRequestId(x.requestId).setModifiedMs(f.modifiedMs)
+            .setResumable(x.resumable)
             .build()
         x.peerKnows = true
         if (!send(MessageType.FILES_OFFER, offer)) return@run fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.NONE)
@@ -412,7 +581,11 @@ class TransferEngine(
         val token = when (val r = withTimeoutOrNull(timing.acceptTimeoutMs) { x.reply.await() }) {
             null -> return@run fail(x, TransferError.TRANSFER_ERROR_TIMED_OUT, Notify.CANCEL)
             is Reply.Rejected -> return@run Outcome.Fail(r.reason, Notify.NONE)
-            is Reply.Accepted -> r.token
+            is Reply.Accepted -> {
+                // The Mac kept this many bytes of an earlier try.
+                x.offset = if (x.resumable) r.offset.coerceIn(0, f.size) else 0
+                r.token
+            }
             else -> return@run fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.NONE)
         }
         update(x) { it.copy(state = TransferState.ACTIVE) }
@@ -447,7 +620,10 @@ class TransferEngine(
     private fun checkAbortOutcome(x: Xfer): Outcome.Fail? =
         x.abort.get()?.let { Outcome.Fail(it.reason, it.notify) }
 
-    /** Copies exactly the announced size, hashing as it goes. Blocking: run on [io]. */
+    /**
+     * Copies the announced size from [Xfer.offset] on, hashing the whole file (the bytes before
+     * the offset are read and hashed, not sent). Blocking: run on [io].
+     */
     private fun copyOut(x: Xfer, f: OutgoingFile, stream: BulkStream): ByteArray {
         val md = MessageDigest.getInstance("SHA-256")
         val buf = ByteArray(BULK_BUFFER_BYTES)
@@ -457,9 +633,14 @@ class TransferEngine(
             x.lastTick = clock()
             while (done < f.size) {
                 checkAbort(x)
-                val want = minOf(buf.size.toLong(), f.size - done).toInt()
+                val want = minOf(buf.size.toLong(), (if (done < x.offset) x.offset else f.size) - done).toInt()
                 val n = try { src.read(buf, 0, want) } catch (e: IOException) { throw LocalFault(e) }
                 if (n < 0) throw LocalFault(null) // the file shrank
+                if (done < x.offset) {
+                    md.update(buf, 0, n)
+                    done += n
+                    continue
+                }
                 stream.output.write(buf, 0, n)
                 md.update(buf, 0, n)
                 done += n
@@ -486,9 +667,14 @@ class TransferEngine(
             ),
             offer.requestId,
         )
+        x.resumable = offer.resumable && resumes() && offer.kind == TransferKind.TRANSFER_KIND_FILE &&
+            offer.requestId == 0L && !offer.hasTarget()
+        expire()
         synchronized(lock) {
             if (live.containsKey(x.id)) return
             live[x.id] = x
+            // A paused receive offered again: this is its row now.
+            finished.removeAll { it.id == x.id }
             publish()
         }
         val clean = offer.toBuilder().setName(name).build()
@@ -502,6 +688,25 @@ class TransferEngine(
             send(MessageType.FILES_REJECT, TransferReject.newBuilder().setTransferId(x.id).setReason(reason).build())
         }
 
+        // Bytes kept from an earlier try of this transfer: go on from there when the offer still matches.
+        val k = synchronized(lock) { kept.remove(x.id) }
+        val resumed = if (k != null && x.resumable && k.size == size && k.name == offer.name) {
+            try {
+                withContext(io) {
+                    sinks.resume(offer)?.let { r ->
+                        if (r.offset in 1 until size) r else null.also { runCatching { r.file.abort() } }
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                null
+            }
+        } else {
+            null
+        }
+        if (k != null && resumed == null) withContext(io) { runCatching { sinks.discard(x.id) } }
+        x.offset = resumed?.offset ?: 0
+
         val free = try {
             withContext(io) { freeBytes(offer) }
         } catch (e: Exception) {
@@ -509,12 +714,13 @@ class TransferEngine(
             sendReject(TransferError.TRANSFER_ERROR_IO)
             return@run reject(TransferError.TRANSFER_ERROR_IO)
         }
-        if (size < 0 || (free != null && size > free - timing.freeMarginBytes)) {
+        if (size < 0 || (free != null && size - x.offset > free - timing.freeMarginBytes)) {
+            resumed?.let { withContext(io) { runCatching { it.file.abort() } } }
             sendReject(TransferError.TRANSFER_ERROR_NO_SPACE)
             return@run reject(TransferError.TRANSFER_ERROR_NO_SPACE)
         }
         val opened = try {
-            withContext(io) { sinks.open(offer) }
+            resumed?.let { SinkResult.Ready(it.file) } ?: withContext(io) { sinks.open(offer) }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             sendReject(TransferError.TRANSFER_ERROR_IO)
@@ -530,7 +736,7 @@ class TransferEngine(
         x.sink = sink
         checkAbortOutcome(x)?.let { return@run it }
 
-        val accept = TransferAccept.newBuilder().setTransferId(x.id).build()
+        val accept = TransferAccept.newBuilder().setTransferId(x.id).setOffset(x.offset).build()
         if (!send(MessageType.FILES_ACCEPT, accept)) return@run fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.NONE)
         update(x) { it.copy(state = TransferState.ACTIVE) }
 
@@ -548,7 +754,7 @@ class TransferEngine(
         val dog = watchdog(x)
         var copied = false
         val sha = try {
-            withContext(io) { copyIn(x, stream, sink.output, size) { progress.trySend(it) } }.also { copied = true }
+            withContext(io) { copyIn(x, stream, sink.output, size, resumed?.existing) { progress.trySend(it) } }.also { copied = true }
         } catch (e: EarlyEnd) {
             return@run fail(x, TransferError.TRANSFER_ERROR_INTERRUPTED, Notify.FAILED)
         } catch (e: IOException) {
@@ -591,12 +797,34 @@ class TransferEngine(
     private fun hasExtraBytes(stream: BulkStream): Boolean =
         try { stream.input.available() > 0 } catch (e: IOException) { false }
 
-    /** Reads exactly [size] bytes into [out], hashing as it goes. Blocking: run on [io]. */
-    private fun copyIn(x: Xfer, stream: BulkStream, out: OutputStream, size: Long, progress: (Long) -> Unit): ByteArray {
+    /**
+     * Reads the bytes from [Xfer.offset] to [size] into [out], hashing the whole file: the first
+     * [Xfer.offset] bytes come from [existing] (the kept part). Blocking: run on [io].
+     */
+    private fun copyIn(
+        x: Xfer,
+        stream: BulkStream,
+        out: OutputStream,
+        size: Long,
+        existing: (() -> InputStream)?,
+        progress: (Long) -> Unit,
+    ): ByteArray {
         val input: InputStream = stream.input
         val md = MessageDigest.getInstance("SHA-256")
         val buf = ByteArray(BULK_BUFFER_BYTES)
-        var done = 0L
+        if (x.offset > 0) {
+            val kept = try { existing!!() } catch (e: Exception) { throw LocalFault(e) }
+            kept.use {
+                var left = x.offset
+                while (left > 0) {
+                    val n = try { it.read(buf, 0, minOf(buf.size.toLong(), left).toInt()) } catch (e: IOException) { throw LocalFault(e) }
+                    if (n < 0) throw LocalFault(null)
+                    md.update(buf, 0, n)
+                    left -= n
+                }
+            }
+        }
+        var done = x.offset
         x.lastTick = clock()
         while (done < size) {
             checkAbort(x)

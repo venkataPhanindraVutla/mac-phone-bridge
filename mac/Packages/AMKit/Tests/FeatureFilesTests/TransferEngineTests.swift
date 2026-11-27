@@ -1210,3 +1210,190 @@ private func item(_ id: String, _ direction: TransferItem.Direction, _ state: Tr
     #expect(lines.map(\.item.id) == ["s1", "r1"])
     #expect(lines.map(\.waiting) == [0, 0])
 }
+
+// MARK: clipboard images (clipboard-image.v1)
+
+@MainActor @Test func clipboardImageNeedsItsCapabilityAndIsNotListed() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["files.v1"])
+    let refused = r.engine.send(files: [try r.write(randomBytes(10), as: "clipboard.png")], kind: .clipboardImage)
+    // Not listed, so not in `transfers` either.
+    #expect(r.item(refused[0]) == nil)
+    await r.connect(shared: ["clipboard-image.v1"])
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "clipboard.png")], kind: .clipboardImage)
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).map(\.kind) == [.clipboardImage])
+    _ = try await r.phoneTakes(ids[0], size: 10)
+    try await until("finished") { r.finished.contains { $0.item.id == ids[0] } }
+    #expect(r.engine.transfers.isEmpty)
+}
+
+@MainActor @Test func clipboardImageOfferWithoutCapabilityIsRefused() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: ["files.v1"])
+    var o = r.offer("p1", name: "clipboard.png", size: 4)
+    o.kind = .clipboardImage
+    await r.deliver(.filesOffer, o)
+    try await until("reject") { r.sent.of(.filesReject, AMTransferReject.self).map(\.reason) == [.disabled] }
+    #expect(r.destinationCalls == 0)
+}
+
+// MARK: resume (files.resume.v1)
+
+private let resumeShared: Set<String> = ["files.v1", "files.resume.v1"]
+
+@MainActor private func resumableOffer(_ r: Rig, _ id: String, size: UInt64, name: String = "movie.mov") -> AMTransferOffer {
+    var o = r.offer(id, name: name, size: size)
+    o.resumable = true
+    return o
+}
+
+@MainActor @Test func brokenSendPausesAndResumesFromThePhonesOffset() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let bytes = randomBytes(900 * 1024 + 5)
+    let ids = r.engine.send(files: [try r.write(bytes, as: "movie.mov")])
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).first?.resumable == true)
+    await r.accept(ids[0])
+    let (mac, phone) = MemoryPipe.pair()
+    r.engine.link(mac, grant: BulkGrant(role: .phoneReceives, context: ids[0]))
+    _ = try await readAll(phone, 300_000)
+    var p = AMTransferProgress(); p.transferID = ids[0]; p.bytesDone = 300_000
+    await r.deliver(.filesProgress, p)
+    // The link breaks: the phone says so.
+    phone.close()
+    var f = AMTransferFailed(); f.transferID = ids[0]; f.reason = .interrupted
+    await r.deliver(.filesFailed, f)
+    #expect(r.item(ids[0])?.state == .paused)
+    #expect(r.item(ids[0])?.done == 300_000)
+    #expect(r.finished.isEmpty) // not ended
+    // Offered again (same ID) after the retry delay; the phone kept 300,000 bytes.
+    try await until("second offer", timeout: .seconds(20)) { r.sent.of(.filesOffer, AMTransferOffer.self).count == 2 }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).map(\.transferID) == [ids[0], ids[0]])
+    var a = AMTransferAccept(); a.transferID = ids[0]; a.offset = 300_000
+    await r.deliver(.filesAccept, a)
+    let (mac2, phone2) = MemoryPipe.pair()
+    r.engine.link(mac2, grant: BulkGrant(role: .phoneReceives, context: ids[0]))
+    let rest = try await readAll(phone2, bytes.count - 300_000)
+    #expect(rest == bytes.dropFirst(300_000))
+    try await until("complete") { !r.sent.of(.filesComplete, AMTransferComplete.self).isEmpty }
+    // The hash is the whole file's.
+    #expect(r.sent.of(.filesComplete, AMTransferComplete.self).first?.sha256 == sha(bytes))
+    await r.received(ids[0])
+    #expect(r.item(ids[0])?.state == .done(nil))
+}
+
+@MainActor @Test func disconnectPausesSendsUntilTheSamePhoneIsBack() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt"), try r.write(randomBytes(10), as: "b.txt")])
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    r.engine.disconnected()
+    #expect(ids.map { r.item($0)?.state } == [.paused, .paused])
+    // Back: offered again at once, in order.
+    await r.connect(shared: resumeShared)
+    try await until("re-offer") { r.sent.of(.filesOffer, AMTransferOffer.self).count == 2 }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).last?.transferID == ids[0])
+    #expect(r.item(ids[1])?.state == .queued || r.item(ids[1])?.state == .paused)
+    // Another phone: they end.
+    r.engine.disconnected()
+    await r.engine.connected(phoneID: "ff" + phoneHex.dropFirst(2), phoneName: "Other", shared: resumeShared)
+    #expect(ids.map { r.item($0)?.state } == [.failed(.interrupted), .failed(.interrupted)])
+}
+
+@MainActor @Test func withoutResumeABrokenSendStillFails() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect()
+    let ids = r.engine.send(files: [try r.write(randomBytes(10), as: "a.txt")])
+    try await until("offer") { !r.sent.of(.filesOffer, AMTransferOffer.self).isEmpty }
+    #expect(r.sent.of(.filesOffer, AMTransferOffer.self).first?.resumable == false)
+    r.engine.disconnected()
+    #expect(r.item(ids[0])?.state == .failed(.interrupted))
+}
+
+@MainActor @Test func brokenReceiveKeepsItsPartAndTheNextOfferGoesOn() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let bytes = randomBytes(500_000)
+    let phone = try await r.startReceive(resumableOffer(r, "t1", size: UInt64(bytes.count)))
+    try await phone.send(bytes.prefix(200_000))
+    try await until("partial") { r.item("t1")?.done == 200_000 }
+    r.engine.disconnected()
+    #expect(r.item("t1")?.state == .paused)
+    #expect(r.files().count == 1) // the part stays
+    #expect(r.finished.isEmpty)
+
+    await r.connect(shared: resumeShared)
+    await r.deliver(.filesOffer, resumableOffer(r, "t1", size: UInt64(bytes.count)))
+    try await until("second accept") { r.sent.of(.filesAccept, AMTransferAccept.self).count == 2 }
+    #expect(r.sent.of(.filesAccept, AMTransferAccept.self).last?.offset == 200_000)
+    let (mac2, phone2) = MemoryPipe.pair()
+    r.engine.link(mac2, grant: BulkGrant(role: .phoneSends, context: "t1"))
+    // One row for it, not two.
+    #expect(r.engine.transfers.filter { $0.id == "t1" }.count == 1)
+    try await phone2.send(bytes.dropFirst(200_000))
+    await r.complete("t1", sha(bytes))
+    let saved = r.dir.appendingPathComponent("movie.mov")
+    try await until("done") { r.item("t1")?.state == .done(saved) }
+    #expect(try Data(contentsOf: saved) == bytes)
+    #expect(r.files() == ["movie.mov"])
+}
+
+@MainActor @Test func keptPartIsDroppedWhenTheOfferDiffersOrIsOld() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let phone = try await r.startReceive(resumableOffer(r, "t1", size: 1000))
+    try await phone.send(randomBytes(400))
+    try await until("partial") { r.item("t1")?.done == 400 }
+    r.engine.disconnected()
+    await r.connect(shared: resumeShared)
+    // Another size: from the start, and the old part is gone.
+    await r.deliver(.filesOffer, resumableOffer(r, "t1", size: 2000))
+    try await until("second accept") { r.sent.of(.filesAccept, AMTransferAccept.self).count == 2 }
+    #expect(r.sent.of(.filesAccept, AMTransferAccept.self).last?.offset == 0)
+    #expect(r.files().isEmpty)
+
+    let r2 = Rig(); defer { r2.cleanUp() }
+    await r2.connect(shared: resumeShared)
+    let p2 = try await r2.startReceive(resumableOffer(r2, "t2", size: 1000))
+    try await p2.send(randomBytes(400))
+    try await until("partial") { r2.item("t2")?.done == 400 }
+    r2.engine.disconnected()
+    let later = Date().addingTimeInterval(TransferEngine.keepPaused + 60)
+    r2.engine.wallNow = { later }
+    await r2.connect(shared: resumeShared)
+    #expect(r2.item("t2")?.state == .failed(.interrupted))
+    #expect(r2.files().isEmpty)
+}
+
+@MainActor @Test func cancellingAPausedReceiveDeletesItsPart() async throws {
+    let r = Rig(); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let phone = try await r.startReceive(resumableOffer(r, "t1", size: 1000))
+    try await phone.send(randomBytes(400))
+    try await until("partial") { r.item("t1")?.done == 400 }
+    var f = AMTransferFailed(); f.transferID = "t1"; f.reason = .interrupted
+    await r.deliver(.filesFailed, f)
+    #expect(r.item("t1")?.state == .paused)
+    r.engine.cancel("t1")
+    #expect(r.item("t1")?.state == .cancelled)
+    #expect(r.files().isEmpty)
+    try await until("cancel sent") { r.sent.of(.filesCancel, AMTransferCancel.self).map(\.transferID) == ["t1"] }
+}
+
+@MainActor @Test func keptPartsSurviveARelaunch() async throws {
+    let defaults = try #require(UserDefaults(suiteName: "am-resume-\(UUID().uuidString)"))
+    let r = Rig(parts: defaults); defer { r.cleanUp() }
+    await r.connect(shared: resumeShared)
+    let phone = try await r.startReceive(resumableOffer(r, "t1", size: 1000))
+    try await phone.send(randomBytes(400))
+    try await until("partial") { r.item("t1")?.done == 400 }
+    r.engine.disconnected()
+    // A new engine (the app started again) keeps the part and resumes it.
+    let again = TransferEngine(bulk: FakeBulk(), send: { _, _ in }, destination: { _ in .folder(r.dir) },
+                               partsStore: defaults)
+    _ = again
+    #expect(r.files().count == 1)
+    #expect(defaults.data(forKey: TransferEngine.keptPartsKey) != nil)
+}

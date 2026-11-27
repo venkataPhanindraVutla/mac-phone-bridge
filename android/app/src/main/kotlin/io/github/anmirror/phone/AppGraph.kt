@@ -47,6 +47,14 @@ import io.github.anmirror.feature.mirror.MirrorSession
 import io.github.anmirror.feature.mirror.connectFailureReason
 import io.github.anmirror.feature.mirror.SetupState
 import io.github.anmirror.feature.mirror.SetupStore
+import io.github.anmirror.feature.clipboard.ClipImage
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
+import io.github.anmirror.protocol.v1.HotspotFailure
+import io.github.anmirror.protocol.v1.HotspotState
+import io.github.anmirror.protocol.v1.HotspotRequest
+import io.github.anmirror.feature.mirror.HotspotRunner
+import io.github.anmirror.feature.clipboard.ClipImageInbox
 import io.github.anmirror.feature.clipboard.ClipboardBridge
 import io.github.anmirror.feature.contacts.AndroidContactsSource
 import io.github.anmirror.feature.contacts.ContactsSync
@@ -642,6 +650,53 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendMirror(type: String, payload: MessageLite): Boolean =
         mirrorShared() && manager.send(ProtoChannel.CHANNEL_MIRROR, type, payload)
 
+    /** The connected Mac shares hotspot.v1 (SPEC 25). */
+    fun hotspotShared(): Boolean = shares(HOTSPOT_CAPABILITY)
+
+    /** The hotspot needs Full mode only (not the mirroring switch): its setup and Wireless debugging. */
+    fun hotspotAvailabilityNow(): FeatureAvailability {
+        val setup = mirrorSetup.snapshot.value
+        return mirrorAvailability(Build.VERSION.SDK_INT, true, setup.paired, _wirelessDebugging.value, setup.lastConnectFailed)
+    }
+
+    /** [hotspotAvailabilityNow] as it changes, for `hotspot.availability`. */
+    val hotspotAvailabilities: Flow<FeatureAvailability> =
+        combine(mirrorSetup.snapshot, wirelessDebugging) { setup, wd ->
+            mirrorAvailability(Build.VERSION.SDK_INT, true, setup.paired, wd, setup.lastConnectFailed)
+        }.distinctUntilChanged()
+
+    /** Sends a `hotspot.*` message while the Mac shares hotspot.v1. */
+    suspend fun sendHotspot(type: String, payload: MessageLite, replyTo: Long = 0): Boolean =
+        hotspotShared() && manager.send(ProtoChannel.CHANNEL_HOTSPOT, type, payload, replyTo)
+
+    private val hotspotMutex = Mutex()
+
+    /**
+     * A `hotspot.request` from the Mac: turns the hotspot on or off through the helper (one at a
+     * time) and answers with `hotspot.state`. Logs the outcome only, never the name or passphrase.
+     */
+    suspend fun onHotspotRequest(env: Envelope) {
+        if (!hotspotShared()) return
+        val on = HotspotRequest.parseFrom(env.payload).on
+        val state = hotspotMutex.withLock { runHotspot(on) }
+        Log.i(MIRROR_TAG, "hotspot: on=$on -> on=${state.on} failure=${state.failure}")
+        sendHotspot(MessageType.HOTSPOT_STATE, state, env.id)
+    }
+
+    private suspend fun runHotspot(on: Boolean): HotspotState {
+        val needsSetup = HotspotRunner.failed(HotspotFailure.HOTSPOT_FAILURE_NEEDS_SETUP)
+        if (!hotspotAvailabilityNow().enabled) return needsSetup
+        return try {
+            if (!fullModeSetup.ensureConnected()) return needsSetup
+            val adb = adbClient()
+            HotspotRunner(adb, HelperInstaller(adb, { app.assets.open(HELPER_ASSET) }, BuildConfig.HELPER_SHA256)).run(on)
+        } catch (e: IOException) {
+            needsSetup // no ADB identity
+        } finally {
+            adbIdle.connected() // the link closes after the idle time unless a mirror session holds it
+        }
+    }
+
     /** The phone's ADB link closes 10 min after the last mirror session (or a setup connect), and at disconnect. */
     private val adbIdle = AdbIdleClose(scope, close = ::closeAdb)
 
@@ -831,8 +886,24 @@ class AppGraph private constructor(context: Context) {
     suspend fun sendClipboard(type: String, payload: MessageLite): Boolean =
         clipboardOpen() && manager.send(ProtoChannel.CHANNEL_CLIPBOARD, type, payload)
 
-    /** Writes the Mac's text; sends the phone's on an explicit trigger ([io.github.anmirror.phone.share.ClipboardSendActivity]). */
-    val clipboard = ClipboardBridge(AndroidClipboard(app), ::sendClipboard)
+    /** Clipboard images flow while the clipboard is open and the Mac shares clipboard-image.v1 (SPEC 14). */
+    fun clipboardImagesOpen(): Boolean = clipboardOpen() && shares(ClipboardBridge.IMAGE_CAPABILITY)
+
+    /**
+     * Writes the Mac's text and images; sends the phone's on an explicit trigger
+     * ([io.github.anmirror.phone.share.ClipboardSendActivity]). An image goes as a clipboard-image
+     * transfer, from memory.
+     */
+    val clipboard = ClipboardBridge(
+        AndroidClipboard(app), ::sendClipboard,
+        sendImage = { image ->
+            clipboardImagesOpen() && transfers.send(listOf(ClipImageFile(image)), TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE).isNotEmpty()
+        },
+        imagesShared = { shares(ClipboardBridge.IMAGE_CAPABILITY) },
+    )
+
+    /** Where clipboard images from the Mac land: only the newest stays. */
+    private val clipImageInbox = ClipImageInbox(File(app.cacheDir, "clip-in"), clipboard)
 
     /** The connected Mac's name, for "Sent to %1$s"; null when not connected. */
     fun connectedMacName(): String? = (manager.state.value as? PhoneConnectionState.Connected)?.mac?.name
@@ -876,7 +947,7 @@ class AppGraph private constructor(context: Context) {
             !phoneOfferAllowed(
                 payload.kind, payload.requestId,
                 screenshotsOpen = screenshotsOpen(), photosOpen = photosOpen(), browseOpen = browseOpen(),
-                filesShared = filesShared(),
+                filesShared = filesShared(), clipboardImagesOpen = clipboardImagesOpen(),
             )
         ) {
             return false
@@ -905,9 +976,29 @@ class AppGraph private constructor(context: Context) {
         ),
         send = ::sendTransfer,
         bulk = BulkOpener(::openBulk),
-        // A Mac offer with a browse target is a write into a browse root; the rest go to Downloads.
-        sinks = IncomingSinks { offer -> if (offer.hasTarget()) browseSink(offer) else downloads.open(offer) },
-        freeBytes = { offer -> if (offer.hasTarget()) browse.freeBytes(offer) else downloads.freeBytes() },
+        // A Mac offer with a browse target is a write into a browse root; a clipboard image goes onto
+        // the clipboard (while clipboard images are open); the rest go to Downloads.
+        sinks = object : IncomingSinks {
+            override fun open(offer: TransferOffer): SinkResult = when {
+                offer.kind == TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE ->
+                    if (clipboardImagesOpen()) clipImageInbox.open(offer) else SinkResult.Refused(TransferError.TRANSFER_ERROR_DISABLED)
+                offer.hasTarget() -> browseSink(offer)
+                else -> downloads.open(offer)
+            }
+
+            // Only Downloads keeps and resumes (the engine resumes plain files only).
+            override fun resume(offer: TransferOffer) = downloads.resume(offer)
+
+            override fun discard(transferId: String) = downloads.discard(transferId)
+        },
+        freeBytes = { offer ->
+            when {
+                offer.kind == TransferKind.TRANSFER_KIND_CLIPBOARD_IMAGE -> app.cacheDir.usableSpace
+                offer.hasTarget() -> browse.freeBytes(offer)
+                else -> downloads.freeBytes()
+            }
+        },
+        resumes = { shares(RESUME_CAPABILITY) },
     )
 
     /** Shared files, screenshots and photos whose descriptors stay open until their transfer ends. */
@@ -1225,6 +1316,11 @@ class AppGraph private constructor(context: Context) {
      * [ended] is over: fail its unfinished transfers and forget its endpoint (an endpoint a newer
      * session already announced stays).
      */
+    /** [started] began: paused sends for this Mac go on (files.resume.v1). */
+    fun onSessionStarted(started: PhoneConnectionState.Connected) {
+        transfers.onConnected(started.mac.fingerprintHex, RESUME_CAPABILITY in started.shared)
+    }
+
     fun onSessionEnded(ended: PhoneConnectionState.Connected) {
         // The Mac is gone: its mirror session ends without a message, and the ADB link closes.
         if (mirrorConnection === ended) {
@@ -1341,7 +1437,13 @@ class AppGraph private constructor(context: Context) {
 
     companion object {
         /** Features this phone offers in `system.hello` (SPEC 3). */
-        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY)
+        val CAPABILITIES = listOf("status.v1", "find.v1", "notify.v1", "contacts.v1", "calls.v1", "clipboard.v1", "share.v1", "files.v1", "screenshots.v1", "photos.v1", "browse.v1", "media.v1", "dnd.v1", "proximity.v1", "input.v1", "keyboard.v1", LIVENESS_CAPABILITY, MIRROR_CAPABILITY, ClipboardBridge.IMAGE_CAPABILITY, RESUME_CAPABILITY, HOTSPOT_CAPABILITY)
+
+        /** The Mac turns the hotspot on and joins it (SPEC 25). */
+        const val HOTSPOT_CAPABILITY = "hotspot.v1"
+
+        /** Resumable transfers (SPEC 16). */
+        const val RESUME_CAPABILITY = "files.resume.v1"
         const val MIRROR_CAPABILITY = "mirror.v1"
         private const val KEY_NOTIFY_ON = "show_on_mac"
         private const val KEY_CONTACTS_ON = "share_with_mac"
@@ -1522,3 +1624,12 @@ class DelegatingCallNotifications(context: Context) {
 /** The highest-[rank] candidate; the first of equals. Null for none. */
 internal fun <T> pickCallNotification(candidates: List<T>, rank: (T) -> Int): T? =
     candidates.withIndex().maxWithOrNull(compareBy<IndexedValue<T>> { rank(it.value) }.thenByDescending { it.index })?.value
+
+/** A clipboard image the phone sends, from memory; its name and extension follow its type. */
+private class ClipImageFile(private val image: ClipImage) : OutgoingFile {
+    override val name = "clipboard." + (MimeTypeMap.getSingleton().getExtensionFromMimeType(image.mime) ?: "png")
+    override val size = image.bytes.size.toLong()
+    override val mime = image.mime
+    override val modifiedMs = 0L
+    override fun open(): java.io.InputStream = java.io.ByteArrayInputStream(image.bytes)
+}

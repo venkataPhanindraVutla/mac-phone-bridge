@@ -293,8 +293,8 @@ class VectorTest {
     fun messageTypesAndEnvelopeHelper() {
         assertEquals("system.hello", MessageType.HELLO)
         assertEquals("find.state", MessageType.FIND_STATE)
-        assertEquals(82, MessageType.ALL.size)
-        assertEquals(82, MessageType.ALL.toSet().size)
+        assertEquals(85, MessageType.ALL.size)
+        assertEquals(85, MessageType.ALL.toSet().size)
         val expected = mapOf(
             MessageType.NOTIFY_POSTED to "notify.posted", MessageType.NOTIFY_REMOVED to "notify.removed",
             MessageType.NOTIFY_SNAPSHOT to "notify.snapshot", MessageType.NOTIFY_DISMISS to "notify.dismiss",

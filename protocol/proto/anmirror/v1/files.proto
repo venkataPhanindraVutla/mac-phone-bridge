@@ -12,6 +12,7 @@ enum TransferKind {
   TRANSFER_KIND_FILE = 1;
   TRANSFER_KIND_SCREENSHOT = 2;
   TRANSFER_KIND_PHOTO = 3;
+  TRANSFER_KIND_CLIPBOARD_IMAGE = 4;  // clipboard-image.v1: lands on the clipboard (SPEC 14)
 }
 
 enum TransferError {
@@ -63,11 +64,13 @@ message TransferOffer {
   uint64 request_id = 7;    // the photos.fetch / browse.read this answers, else 0
   BrowseTarget target = 8;  // Mac to phone only: write into a browse root instead of Downloads
   int64 modified_ms = 9;
+  bool resumable = 10;      // files.resume.v1: the receiver keeps what it got if the transfer breaks (SPEC 16)
 }
 
 message TransferAccept {
   string transfer_id = 1;
   bytes token = 2;  // set when the Mac is the receiver
+  uint64 offset = 3;  // files.resume.v1: bytes the receiver already has; the sender starts there
 }
 
 message TransferReject {

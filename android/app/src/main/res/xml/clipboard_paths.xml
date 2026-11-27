@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the newest clipboard image from the Mac (feature/clipboard ClipImageInbox). -->
+<paths>
+    <cache-path name="clip" path="clip-in/" />
+</paths>

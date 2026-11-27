@@ -24,7 +24,7 @@ conscrypt = "2.5.3"
 bouncycastle = "1.86"
 gson = "2.13.2"
 # The helper (android/helper): scrcpy-server 5.0.1 with our patches. Server refuses any other client version.
-helperVersion = "5.0.1-am1"
+helperVersion = "5.0.1-am2"
 
 [libraries]
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }

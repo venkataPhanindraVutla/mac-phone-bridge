@@ -1,0 +1,35 @@
+// Hotspot channel: the Mac turns the phone's hotspot on and joins it. See protocol/SPEC.md section 25.
+syntax = "proto3";
+
+package anmirror.v1;
+
+option java_package = "io.github.anmirror.protocol.v1";
+option java_multiple_files = true;
+option swift_prefix = "AM";
+
+message HotspotRequest {
+  bool on = 1;   // true: turn the hotspot on; false: turn it off
+}
+
+enum HotspotSecurity {
+  HOTSPOT_SECURITY_UNSPECIFIED = 0;
+  HOTSPOT_SECURITY_OPEN = 1;
+  HOTSPOT_SECURITY_WPA2 = 2;
+  HOTSPOT_SECURITY_WPA3 = 3;             // SAE only
+  HOTSPOT_SECURITY_WPA3_TRANSITION = 4;  // WPA2 and WPA3 both
+}
+
+enum HotspotFailure {
+  HOTSPOT_FAILURE_UNSPECIFIED = 0;  // no failure
+  HOTSPOT_FAILURE_NEEDS_SETUP = 1;  // Full mode is not ready (as mirror.availability NEEDS_SETUP)
+  HOTSPOT_FAILURE_REFUSED = 2;      // the phone would not turn it on (its maker, no SIM, policy)
+  HOTSPOT_FAILURE_FAILED = 3;       // anything else
+}
+
+message HotspotState {
+  bool on = 1;
+  string ssid = 2;            // set when on
+  string passphrase = 3;      // set when on and not open
+  HotspotSecurity security = 4;
+  HotspotFailure failure = 5;
+}

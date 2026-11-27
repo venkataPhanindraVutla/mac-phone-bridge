@@ -186,6 +186,7 @@ class ConnectionService : LifecycleService() {
         setUpProximity()
         setUpInput()
         setUpMirror()
+        setUpHotspot()
         lifecycleScope.launch {
             combine(graph.manager.state, graph.store.macs, graph.pairing.state) { state, macs, pairing ->
                 Triple(state, macs, pairing.isUnderWay())
@@ -516,6 +517,7 @@ class ConnectionService : LifecycleService() {
             graph.manager.state.collect { state ->
                 val ended = session.getAndSet(state as? Connected)
                 if (ended != null && state !== ended) graph.onSessionEnded(ended)
+                if (state is Connected && state !== ended) graph.onSessionStarted(state)
             }
         }
     }
@@ -873,6 +875,24 @@ class ConnectionService : LifecycleService() {
      * Wireless debugging going off (NEEDS_SETUP); a disconnect ends it quietly
      * ([AppGraph.onSessionEnded]). While it runs, the "Your screen is shown on" notification shows.
      */
+    /** Hotspot (SPEC 25): requests from the Mac, and `hotspot.availability` on connect and on change. */
+    private fun setUpHotspot() {
+        // Off the message loop: the helper may take seconds, and other messages must not wait.
+        graph.manager.on(MessageType.HOTSPOT_REQUEST) { env -> graph.scope.launch { graph.onHotspotRequest(env) } }
+        lifecycleScope.launch {
+            combine(
+                graph.manager.state
+                    .map { s -> (s as? Connected)?.takeIf { AppGraph.HOTSPOT_CAPABILITY in it.shared } }
+                    .distinctUntilChanged { a, b -> a === b },
+                graph.hotspotAvailabilities,
+            ) { session, availability -> session to availability }
+                .distinctUntilChanged { a, b -> a.first === b.first && a.second == b.second }
+                .collect { (session, availability) ->
+                    if (session != null) graph.sendHotspot(MessageType.HOTSPOT_AVAILABILITY, availability)
+                }
+        }
+    }
+
     private fun setUpMirror() {
         graph.manager.on(MessageType.MIRROR_START) { env ->
             if (graph.mirrorShared()) graph.mirrorController.onStart(MirrorStart.parseFrom(env.payload))

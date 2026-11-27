@@ -151,13 +151,19 @@ class TransferNotifier(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = base()
-            .setContentTitle(app.getString(ongoingTitleRes(view.direction), view.name))
+            .setContentTitle(
+                app.getString(if (view.paused) R.string.transfer_paused else ongoingTitleRes(view.direction), view.name),
+            )
             .setProgress(100, view.percent, false)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
             .addAction(0, app.getString(R.string.transfer_cancel), cancel)
-        if (view.waiting > 0) {
+        if (view.paused) {
+            builder.setContentText(
+                app.getString(if (view.direction == Direction.SEND) R.string.transfer_paused_send else R.string.transfer_paused_receive),
+            )
+        } else if (view.waiting > 0) {
             builder.setContentText(app.resources.getQuantityString(R.plurals.transfer_more_waiting, view.waiting, view.waiting))
         }
         post(ongoingId(view.direction), builder.build())

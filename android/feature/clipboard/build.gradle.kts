@@ -24,6 +24,8 @@ android {
 
 dependencies {
     api(project(":core:protocol"))
+    api(project(":core:transfer"))
+    implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.kotlin.test.junit)

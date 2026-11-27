@@ -95,6 +95,17 @@ struct SettingsView: View {
                 Section("Notifications") {
                     Toggle("Show phone notifications", isOn: binding(\.enabled, phone: phone))
                         .accessibilityLabel(Text("Show phone notifications"))
+                    Picker("Keep notification history", selection: Binding(
+                        get: { model.notificationHistoryDays },
+                        set: { model.setNotificationHistoryDays($0) }
+                    )) {
+                        ForEach(NotificationHistory.retentionChoices, id: \.self) { days in
+                            Text(HistoryText.retention(days)).tag(days)
+                        }
+                    }
+                    Text("Kept on this Mac only, encrypted. Forgetting the phone deletes it. Pictures are not kept.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     if notify.enabled {
                         ForEach(apps, id: \.package) { app in
                             HStack {

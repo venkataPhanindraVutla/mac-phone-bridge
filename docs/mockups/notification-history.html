@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notification History Demo</title>
+<style>
+  :root {
+    --bg: #0b0b0b; --line: #262626; --text: #f2f2f2; --muted: #8a8a8a; --accent: #d4ff3f;
+    --win: #f6f6f8; --win-text: #1d1d1f; --win-muted: #6e6e73; --win-line: #dedee3; --sel: #0a63e0;
+    --row-hover: #ececf0; --chip: #e4e4e9;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; }
+  body { padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 16px; max-width: 72ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .controls button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  .controls button:hover { border-color: #444; }
+  .controls button.primary { background: var(--accent); color: #0b0b0b; border-color: var(--accent); }
+  .stage { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+
+  /* Desktop with menu bar */
+  .desk { position: relative; width: 760px; max-width: 100%; height: 560px; border-radius: 14px; overflow: hidden; border: 1px solid #2a2a2e;
+          background: radial-gradient(120% 90% at 20% 10%, #2b3a2a 0%, #1a1d24 55%, #121317 100%); }
+  .menubar { height: 26px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 12px; background: rgba(30,30,34,.72); backdrop-filter: blur(12px); color: #eee; font-size: 12.5px; }
+  .menubar .glyph { width: 22px; height: 18px; display: grid; place-items: center; border-radius: 5px; cursor: pointer; }
+  .menubar .glyph.open { background: rgba(255,255,255,.18); }
+  .dropdown { position: absolute; top: 30px; right: 70px; width: 248px; background: rgba(246,246,248,.96); color: var(--win-text); border-radius: 10px; padding: 5px; box-shadow: 0 12px 40px rgba(0,0,0,.45), 0 0 0 .5px rgba(0,0,0,.2); font-size: 13px; z-index: 20; display: none; }
+  .dropdown.show { display: block; }
+  .dropdown .hdr { padding: 6px 10px 4px; color: var(--win-muted); font-size: 12px; }
+  .dropdown .item { padding: 4px 10px; border-radius: 5px; cursor: default; display: flex; justify-content: space-between; }
+  .dropdown .item:hover { background: var(--sel); color: #fff; }
+  .dropdown .item.new { font-weight: 600; }
+  .dropdown .sep { height: 1px; background: var(--win-line); margin: 5px 8px; }
+
+  /* Window */
+  .win { position: absolute; left: 40px; top: 52px; width: 640px; height: 470px; background: var(--win); color: var(--win-text); border-radius: 11px; box-shadow: 0 22px 60px rgba(0,0,0,.55), 0 0 0 .5px rgba(0,0,0,.3); display: flex; flex-direction: column; overflow: hidden; }
+  .titlebar { height: 38px; display: flex; align-items: center; padding: 0 12px; gap: 8px; border-bottom: 1px solid var(--win-line); }
+  .lights i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
+  .titlebar .t { flex: 1; text-align: center; font-size: 13px; font-weight: 600; color: #3a3a3c; margin-right: 54px; }
+  .tabs { display: flex; justify-content: center; padding: 10px 0 6px; }
+  .tabs .seg { display: inline-flex; background: var(--chip); border-radius: 7px; padding: 2px; }
+  .tabs button { border: 0; background: transparent; font: inherit; font-size: 12.5px; padding: 3px 12px; border-radius: 5px; color: #333; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: #fff; box-shadow: 0 .5px 2px rgba(0,0,0,.18); }
+  .pane { flex: 1; display: none; flex-direction: column; min-height: 0; padding: 4px 16px 14px; }
+  .pane.show { display: flex; }
+  .pane.empty { align-items: center; justify-content: center; color: var(--win-muted); }
+
+  .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .search { flex: 1; display: flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--win-line); border-radius: 7px; padding: 4px 8px; }
+  .search input { border: 0; outline: 0; font: inherit; font-size: 13px; flex: 1; background: transparent; color: var(--win-text); }
+  select, .wbtn { font: inherit; font-size: 12.5px; border: 1px solid var(--win-line); background: #fff; border-radius: 7px; padding: 4px 8px; color: var(--win-text); }
+  .wbtn { cursor: pointer; }
+  .wbtn:active { background: #eee; }
+  .list { flex: 1; overflow: auto; border: 1px solid var(--win-line); border-radius: 8px; background: #fff; }
+  .day { position: sticky; top: 0; background: rgba(255,255,255,.94); backdrop-filter: blur(6px); font-size: 11.5px; font-weight: 600; color: var(--win-muted); padding: 6px 12px 4px; text-transform: none; border-bottom: 1px solid #f0f0f2; z-index: 1; }
+  .row { display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #f1f1f3; cursor: default; }
+  .row:hover { background: #f7f7fa; }
+  .row.sel { background: #e8f0fe; }
+  .row .meta { font-size: 11.5px; color: var(--win-muted); display: flex; gap: 6px; align-items: center; }
+  .row .title { font-weight: 600; font-size: 13px; }
+  .row .text { font-size: 12.5px; color: #3a3a3c; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .row.sel .text { -webkit-line-clamp: unset; display: block; white-space: pre-wrap; }
+  .row .time { font-size: 11.5px; color: var(--win-muted); white-space: nowrap; }
+  .row .acts { display: none; gap: 6px; margin-top: 6px; }
+  .row.sel .acts { display: flex; }
+  .live { width: 6px; height: 6px; border-radius: 50%; background: #34c759; display: inline-block; }
+  .row.fresh { animation: fresh 1.4s ease-out; }
+  @keyframes fresh { from { background: #fff7c2; } to { background: transparent; } }
+  .nothing { padding: 40px 20px; text-align: center; color: var(--win-muted); font-size: 13px; }
+  .foot { font-size: 11.5px; color: var(--win-muted); margin-top: 6px; display: flex; justify-content: space-between; }
+
+  /* Settings sheet */
+  .settings { position: absolute; inset: 0; background: rgba(0,0,0,.25); display: none; align-items: flex-start; justify-content: center; padding-top: 60px; z-index: 10; }
+  .settings.show { display: flex; }
+  .sheet { width: 420px; background: var(--win); color: var(--win-text); border-radius: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.45); padding: 16px 18px; font-size: 13px; }
+  .sheet h3 { margin: 0 0 10px; font-size: 13px; }
+  .form { display: grid; grid-template-columns: 1fr auto; gap: 10px 12px; align-items: center; background: #fff; border: 1px solid var(--win-line); border-radius: 8px; padding: 10px 12px; }
+  .form .hint { grid-column: 1 / -1; color: var(--win-muted); font-size: 11.5px; margin-top: -4px; }
+  .sheet .end { display: flex; justify-content: flex-end; margin-top: 12px; gap: 8px; }
+  .toast { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); background: rgba(30,30,32,.92); color: #fff; border-radius: 10px; padding: 8px 14px; font-size: 12.5px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
+  .toast.show { opacity: 1; }
+
+  .notes { max-width: 420px; color: var(--muted); font-size: 13px; }
+  .notes h2 { color: var(--text); font-size: 14px; margin: 0 0 8px; }
+  .notes li { margin-bottom: 6px; }
+  .notes b { color: var(--text); font-weight: 600; }
+  @media (max-width: 800px) { .desk { height: 620px; } .win { left: 8px; right: 8px; width: auto; } .dropdown { right: 8px; } }
+</style>
+</head>
+<body>
+  <h1>Notification history on the Mac</h1>
+  <p class="sub">A clickable demo of the new Notifications tab in the Phone window. Click a row to see all of it, search, filter by app, or post a new phone notification and watch it land. The menu bar icon (top right) has a shortcut to it.</p>
+
+  <div class="controls">
+    <button class="primary" id="post">Post a phone notification</button>
+    <button id="dismiss">Dismiss the newest on the phone</button>
+    <button id="openSettings">Open Settings</button>
+  </div>
+
+  <div class="stage">
+    <div class="desk" id="desk">
+      <div class="menubar">
+        <span>Fri 14 Nov 20:41</span>
+        <span class="glyph" id="glyph" title="Mac Phone Bridge">
+          <svg width="14" height="16" viewBox="0 0 14 16" fill="none" stroke="#eee" stroke-width="1.4"><rect x="2.2" y="1" width="9.6" height="14" rx="2.2"/><path d="M5.5 12.6h3"/></svg>
+        </span>
+      </div>
+      <div class="dropdown" id="dropdown">
+        <div class="hdr">Pixel · 82% · Wi-Fi</div>
+        <div class="item">Ring Phone</div>
+        <div class="sep"></div>
+        <div class="item">Show Phone Window</div>
+        <div class="item new" id="menuHistory">Notification History</div>
+        <div class="item">Send File to Phone…</div>
+        <div class="item">Send Clipboard to Phone</div>
+        <div class="sep"></div>
+        <div class="item">Settings…</div>
+        <div class="item">Quit</div>
+      </div>
+
+      <div class="win">
+        <div class="titlebar">
+          <span class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+          <span class="t">Pixel</span>
+        </div>
+        <div class="tabs"><div class="seg" role="tablist">
+          <button role="tab" data-tab="send" aria-selected="false">Send</button>
+          <button role="tab" data-tab="notes" aria-selected="true">Notifications</button>
+          <button role="tab" data-tab="photos" aria-selected="false">Photos</button>
+          <button role="tab" data-tab="files" aria-selected="false">Files</button>
+          <button role="tab" data-tab="playing" aria-selected="false">Now Playing</button>
+        </div></div>
+
+        <div class="pane show" data-pane="notes">
+          <div class="bar">
+            <label class="search">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8e8e93" stroke-width="1.5"><circle cx="5" cy="5" r="3.8"/><path d="M8 8l3 3"/></svg>
+              <input id="q" placeholder="Search" aria-label="Search notifications">
+            </label>
+            <select id="app" aria-label="App"><option value="">All apps</option></select>
+            <button class="wbtn" id="clear">Clear History…</button>
+          </div>
+          <div class="list" id="list" role="list"></div>
+          <div class="foot"><span id="count"></span><span>Kept for 7 days · <span class="live"></span> still on the phone</span></div>
+        </div>
+        <div class="pane empty" data-pane="send">Send tab (unchanged)</div>
+        <div class="pane empty" data-pane="photos">Photos tab (unchanged)</div>
+        <div class="pane empty" data-pane="files">Files tab (unchanged)</div>
+        <div class="pane empty" data-pane="playing">Now Playing tab (unchanged)</div>
+      </div>
+
+      <div class="settings" id="settings">
+        <div class="sheet">
+          <h3>Settings › Notifications</h3>
+          <div class="form">
+            <span>Show phone notifications on this Mac</span><input type="checkbox" checked aria-label="Show phone notifications">
+            <span>Keep notification history</span>
+            <select id="keep" aria-label="Keep notification history">
+              <option value="0">Off</option><option value="1">For 1 day</option><option value="7" selected>For 7 days</option><option value="30">For 30 days</option>
+            </select>
+            <span class="hint">History stays on this Mac, encrypted. Forgetting the phone deletes it. Muted apps are never kept.</span>
+            <span>Clear history now</span><button class="wbtn" id="clear2">Clear…</button>
+          </div>
+          <div class="end"><button class="wbtn" id="closeSettings">Done</button></div>
+        </div>
+      </div>
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <div class="notes">
+      <h2>What this shows</h2>
+      <ul>
+        <li><b>Every phone notification</b> that reached the Mac is kept, newest first, grouped by day, even after you swipe it away on either device.</li>
+        <li>A green dot means it is <b>still on the phone</b>. Updates to the same notification (a chat that grows) replace its row instead of adding new ones.</li>
+        <li>Click a row to read all of it. <b>Copy Text</b> and, when there is a one-time code, <b>Copy Code</b>.</li>
+        <li><b>Search</b> looks in the app name, title and text. The menu lets you show one app.</li>
+        <li>Settings: keep it <b>off, 1, 7 or 30 days</b> (7 by default), and <b>Clear History…</b>. Pictures are not kept, only text.</li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+// Hand-drawn app glyphs: a tinted tile with a simple mark, so no real app art is used.
+const glyphs = {
+  chat:  ['#2f9e5b', '<path d="M8 10.5h14a3 3 0 013 3v6a3 3 0 01-3 3h-7l-4 3v-3H8a3 3 0 01-3-3v-6a3 3 0 013-3z" fill="#fff"/>'],
+  bank:  ['#2b4c9b', '<path d="M6 13l9-5 9 5" stroke="#fff" stroke-width="2" fill="none"/><path d="M9 14v7M15 14v7M21 14v7M6 23h18" stroke="#fff" stroke-width="2"/>'],
+  mail:  ['#d1453b', '<rect x="6" y="9" width="18" height="13" rx="2" fill="#fff"/><path d="M6.5 10l8.5 7 8.5-7" stroke="#d1453b" stroke-width="1.8" fill="none"/>'],
+  cal:   ['#f2f2f4', '<rect x="7" y="8" width="16" height="15" rx="2.5" fill="#fff" stroke="#d1453b" stroke-width="1.5"/><path d="M7 12.5h16" stroke="#d1453b" stroke-width="2.5"/><text x="15" y="21" font-size="7.5" text-anchor="middle" font-family="-apple-system" font-weight="700" fill="#1d1d1f">14</text>'],
+  box:   ['#b8761f', '<path d="M15 7l8 4v9l-8 4-8-4v-9z" fill="#fff"/><path d="M7 11l8 4 8-4M15 15v9" stroke="#b8761f" stroke-width="1.5" fill="none"/>'],
+  ride:  ['#1d1d1f', '<circle cx="10" cy="20" r="2.5" fill="#fff"/><circle cx="20" cy="20" r="2.5" fill="#fff"/><path d="M7 18l2-6h12l2 6z" fill="#fff"/>'],
+};
+function glyph(kind) {
+  const [bg, mark] = glyphs[kind];
+  return `<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="${bg}"/>${mark}</svg>`;
+}
+
+const now = Date.now(), H = 3600e3;
+let seq = 0;
+let items = [
+  { app: 'Messages', g: 'chat', title: 'Priya', text: 'Running 10 min late, save me a seat\nAlso: did you bring the charger?', at: now - 0.2*H, live: true },
+  { app: 'Bank', g: 'bank', title: 'Sign-in code', text: 'Your code is 482 913. It expires in 10 minutes. Never share it with anyone.', at: now - 0.6*H, live: false, code: '482913' },
+  { app: 'Parcels', g: 'box', title: 'Out for delivery', text: 'Your parcel will arrive between 18:00 and 20:00.', at: now - 2.4*H, live: true },
+  { app: 'Mail', g: 'mail', title: 'Invoice #2207 from the print shop', text: 'Hi, please find attached the invoice for the October order. Payment is due within 14 days.', at: now - 5*H, live: false },
+  { app: 'Calendar', g: 'cal', title: 'Dentist', text: 'Tomorrow, 09:30 · Clinic on Park Road', at: now - 23*H, live: false },
+  { app: 'Rides', g: 'ride', title: 'Your driver has arrived', text: 'Look for a grey hatchback, plate KA 05 MX 2211.', at: now - 27*H, live: false },
+  { app: 'Messages', g: 'chat', title: 'Sam', text: 'ok see you tomorrow 👋', at: now - 30*H, live: false },
+].map(i => ({ ...i, id: ++seq }));
+let selected = null;
+
+const list = document.getElementById('list');
+const q = document.getElementById('q');
+const appSel = document.getElementById('app');
+
+function dayLabel(t) {
+  const d = new Date(t), today = new Date(); today.setHours(0,0,0,0);
+  const diff = Math.round((today - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+  return diff <= 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
+}
+const clock = t => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function render(freshId) {
+  const apps = [...new Set(items.map(i => i.app))].sort();
+  const cur = appSel.value;
+  appSel.innerHTML = '<option value="">All apps</option>' + apps.map(a => `<option${a === cur ? ' selected' : ''}>${esc(a)}</option>`).join('');
+  const needle = q.value.trim().toLowerCase();
+  const shown = items.filter(i => (!cur || i.app === cur) &&
+    (!needle || (i.app + ' ' + i.title + ' ' + i.text).toLowerCase().includes(needle)))
+    .sort((a, b) => b.at - a.at);
+  let html = '', last = '';
+  for (const i of shown) {
+    const day = dayLabel(i.at);
+    if (day !== last) { html += `<div class="day">${day}</div>`; last = day; }
+    html += `<div class="row${i.id === selected ? ' sel' : ''}${i.id === freshId ? ' fresh' : ''}" role="listitem" tabindex="0" data-id="${i.id}">
+      ${glyph(i.g)}
+      <div><div class="meta">${esc(i.app)}${i.live ? ' <span class="live" title="Still on the phone"></span>' : ''}</div>
+        <div class="title">${esc(i.title)}</div><div class="text">${esc(i.text)}</div>
+        <div class="acts"><button class="wbtn" data-copy="text">Copy Text</button>${i.code ? '<button class="wbtn" data-copy="code">Copy Code</button>' : ''}</div></div>
+      <div class="time">${clock(i.at)}</div></div>`;
+  }
+  list.innerHTML = html || `<div class="nothing">${items.length ? 'No notifications match.' : 'No notifications yet. Phone notifications you get from now on show up here.'}</div>`;
+  document.getElementById('count').textContent = `${shown.length} of ${items.length}`;
+}
+
+list.addEventListener('click', e => {
+  const copy = e.target.closest('[data-copy]');
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const item = items.find(i => i.id === +row.dataset.id);
+  if (copy) { toast(copy.dataset.copy === 'code' ? `Copied ${item.code}` : 'Copied'); return; }
+  selected = selected === item.id ? null : item.id;
+  render();
+});
+list.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.target.click(); } });
+q.addEventListener('input', () => render());
+appSel.addEventListener('change', () => render());
+
+const samples = [
+  { app: 'Messages', g: 'chat', title: 'Priya', text: 'Found a seat by the window 🙂' },
+  { app: 'Parcels', g: 'box', title: 'Delivered', text: 'Left with the neighbour at number 12.' },
+  { app: 'Bank', g: 'bank', title: 'Payment received', text: '₹2,400.00 from A. Rao. Available balance updated.' },
+  { app: 'Mail', g: 'mail', title: 'Weekend plans?', text: 'Thinking of a short trip on Saturday, are you in?' },
+];
+let s = 0;
+document.getElementById('post').onclick = () => {
+  const n = samples[s++ % samples.length];
+  // A chat that grows replaces its row (same notification on the phone).
+  const same = n.app === 'Messages' && items.find(i => i.app === 'Messages' && i.title === n.title && i.live);
+  if (same) { same.text += '\n' + n.text; same.at = Date.now(); render(same.id); toast('Updated: same notification, one row'); return; }
+  const item = { ...n, at: Date.now(), live: true, id: ++seq };
+  items.push(item); render(item.id);
+};
+document.getElementById('dismiss').onclick = () => {
+  const newest = items.filter(i => i.live).sort((a, b) => b.at - a.at)[0];
+  if (!newest) return toast('Nothing left on the phone');
+  newest.live = false; render(); toast('Gone from the phone, kept in history');
+};
+function clearAll() { if (confirm('Clear notification history? This can\'t be undone.')) { items = []; selected = null; render(); } }
+document.getElementById('clear').onclick = clearAll;
+document.getElementById('clear2').onclick = clearAll;
+
+const settings = document.getElementById('settings');
+document.getElementById('openSettings').onclick = () => settings.classList.add('show');
+document.getElementById('closeSettings').onclick = () => settings.classList.remove('show');
+document.getElementById('keep').onchange = e => {
+  const v = +e.target.value;
+  document.querySelector('.foot span:last-child').innerHTML = v ? `Kept for ${v} day${v > 1 ? 's' : ''} · <span class="live"></span> still on the phone` : 'History is off';
+  if (!v) { items = []; render(); }
+};
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', x === b));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('show', p.dataset.pane === b.dataset.tab));
+});
+const glyphEl = document.getElementById('glyph'), dd = document.getElementById('dropdown');
+glyphEl.onclick = e => { e.stopPropagation(); dd.classList.toggle('show'); glyphEl.classList.toggle('open'); };
+document.getElementById('menuHistory').onclick = () => { document.querySelector('[data-tab="notes"]').click(); };
+document.addEventListener('click', () => { dd.classList.remove('show'); glyphEl.classList.remove('open'); });
+
+let tt;
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 1400); }
+render();
+</script>
+</body>
+</html>

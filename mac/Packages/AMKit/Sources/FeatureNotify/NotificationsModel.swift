@@ -6,7 +6,8 @@ import SwiftProtobuf
 import UserNotifications
 
 /// Turns phone notifications into macOS notifications and the user's clicks into messages for the phone.
-/// Notification content is never kept here: it lives in Notification Center only.
+/// Notification content is not kept here: it lives in Notification Center, and in `history` (the
+/// user's notification history, its own store) when set.
 @MainActor
 @Observable
 public final class NotificationsModel {
@@ -32,6 +33,8 @@ public final class NotificationsModel {
         try UNNotificationAttachment(identifier: "image", url: $0)
     }
     @ObservationIgnored private var requestedIcons: Set<String> = []
+    /// Where every received notification is also kept, when the app has one.
+    @ObservationIgnored public var history: NotificationHistory?
     /// The permission request of the last connect. It runs on its own, so a system prompt the user
     /// has not answered yet holds nothing else up.
     @ObservationIgnored private(set) var authorization: Task<Void, Never>?
@@ -72,6 +75,7 @@ public final class NotificationsModel {
     }
 
     public func disconnected() {
+        history?.disconnected()
         phoneID = nil
         phoneAvailability = nil
         requestedIcons = []
@@ -80,6 +84,7 @@ public final class NotificationsModel {
     /// The phone was forgotten: everything of it leaves Notification Center (its notifications,
     /// missed calls and notices).
     public func forget(phoneID: String) async {
+        history?.forget(phoneID: phoneID)
         let prefixes = ["n|", "m|", "i|"].map { $0 + phoneID + "|" }
         let ids = await presenter.deliveredIDs().filter { id in prefixes.contains { id.hasPrefix($0) } }
         if !ids.isEmpty { presenter.remove(ids: ids) }
@@ -90,6 +95,7 @@ public final class NotificationsModel {
     public func posted(_ n: AMPhoneNotification) async {
         guard let phoneID else { return }
         recordSeen(package: n.package, appName: n.appName, phoneID: phoneID)
+        history?.record(n, title: displayTitle(n), phoneID: phoneID)
 
         if authorized != false {
             let id = Self.macID(phoneID: phoneID, key: n.key)
@@ -109,11 +115,13 @@ public final class NotificationsModel {
 
     public func removed(_ r: AMNotificationRemoved) {
         guard let phoneID else { return }
+        history?.removed(key: r.key, phoneID: phoneID)
         presenter.remove(ids: [Self.macID(phoneID: phoneID, key: r.key)])
     }
 
     public func snapshot(_ s: AMActiveNotifications) async {
         guard let phoneID else { return }
+        history?.active(keys: Set(s.keys), phoneID: phoneID)
         let prefix = Self.macID(phoneID: phoneID, key: "")
         let active = Set(s.keys.map { Self.macID(phoneID: phoneID, key: $0) })
         let stale = await presenter.deliveredIDs().filter { $0.hasPrefix(prefix) && !active.contains($0) }
@@ -239,10 +247,15 @@ public final class NotificationsModel {
         return stripped.count >= 7 && stripped.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
+    /// The title shown: a caller's name from contacts in place of a phone number.
+    private func displayTitle(_ n: AMPhoneNotification) -> String {
+        if Self.looksLikePhoneNumber(n.title), let name = nameFor(Self.withoutFormatting(n.title)), !name.isEmpty { return name }
+        return n.title
+    }
+
     private func makeContent(_ n: AMPhoneNotification, phoneID: String) -> UNNotificationContent {
         let appName = n.appName.isEmpty ? n.package : n.appName
-        var title = n.title
-        if Self.looksLikePhoneNumber(title), let name = nameFor(Self.withoutFormatting(title)), !name.isEmpty { title = name }
+        let title = displayTitle(n)
 
         let content = UNMutableNotificationContent()
         if title.isEmpty {

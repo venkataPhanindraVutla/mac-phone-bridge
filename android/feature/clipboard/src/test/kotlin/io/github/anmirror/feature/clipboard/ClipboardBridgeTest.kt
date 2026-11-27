@@ -19,6 +19,11 @@ private class FakeClipboard : ClipboardAccess {
         current = text
     }
     override fun read(): String? = current
+    val images = mutableListOf<java.io.File>()
+    override fun writeImage(file: java.io.File) {
+        images += file
+    }
+    override fun readImage(limit: Int): ClipImage? = null
 }
 
 private fun macText(text: String) = ClipboardText.newBuilder().setText(text).build()
@@ -127,5 +132,88 @@ class ClipboardBridgeTest {
         assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendText("S"))
         assertTrue(sent.isEmpty())
         assertEquals(ClipSendResult.SENT, bridge.sendText("T"))
+    }
+
+    // ---- images (clipboard-image.v1) ----
+
+    private val imagesSent = mutableListOf<ByteArray>()
+    private var imagesShared = true
+
+    private fun imageBridge() = ClipboardBridge(
+        clipboard, send,
+        sendImage = { if (connected) imagesSent += it.bytes; connected },
+        imagesShared = { imagesShared },
+    )
+
+    private fun sha(b: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(b)
+
+    @Test fun imageIsSentOnceAndNotWhenTheMacHasIt() = runTest {
+        val bridge = imageBridge()
+        val png = byteArrayOf(1, 2, 3)
+        assertEquals(ClipSendResult.SENT, bridge.sendImage(ClipImage(png, "image/png")))
+        assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendImage(ClipImage(png, "image/png")))
+        val mac = byteArrayOf(9)
+        bridge.acceptImageFromMac(java.io.File("x.png"), sha(mac))
+        assertEquals(listOf(java.io.File("x.png")), clipboard.images)
+        assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendImage(ClipImage(mac, "image/png")))
+        assertEquals(1, imagesSent.size)
+        // After a disconnect the Mac may have anything.
+        bridge.onDisconnected()
+        assertEquals(ClipSendResult.SENT, bridge.sendImage(ClipImage(mac, "image/png")))
+    }
+
+    @Test fun imageLimitsAndAnOlderMac() = runTest {
+        val bridge = imageBridge()
+        assertEquals(ClipSendResult.EMPTY, bridge.sendImage(null))
+        assertEquals(
+            ClipSendResult.IMAGE_TOO_LARGE,
+            bridge.sendImage(ClipImage(ByteArray(ClipboardBridge.MAX_IMAGE_BYTES + 1), "image/png")),
+        )
+        assertEquals(
+            ClipSendResult.SENT,
+            bridge.sendImage(ClipImage(ByteArray(ClipboardBridge.MAX_IMAGE_BYTES), "image/png")),
+        )
+        imagesShared = false
+        assertEquals(ClipSendResult.IMAGE_NOT_SUPPORTED, bridge.sendImage(ClipImage(byteArrayOf(5), "image/png")))
+        imagesShared = true
+        connected = false
+        assertEquals(ClipSendResult.NOT_CONNECTED, bridge.sendImage(ClipImage(byteArrayOf(5), "image/png")))
+    }
+
+    @Test fun inboxKeepsTheNewestImageAndPutsItOnTheClipboard() = runTest {
+        val dir = kotlin.io.path.createTempDirectory("clip").toFile()
+        try {
+            val bridge = imageBridge()
+            val inbox = ClipImageInbox(dir, bridge)
+            fun receive(id: String, bytes: ByteArray, name: String = "clipboard.png"): String {
+                val offer = io.github.anmirror.protocol.v1.TransferOffer.newBuilder()
+                    .setTransferId(id).setName(name).setSize(bytes.size.toLong()).build()
+                val sink = (inbox.open(offer) as io.github.anmirror.transfer.SinkResult.Ready).file
+                sink.output.write(bytes)
+                return sink.commit()
+            }
+            val first = receive("a", byteArrayOf(1))
+            val second = receive("b", byteArrayOf(2), name = "photo.JPG")
+            assertTrue(second.endsWith(".jpg"))
+            assertEquals(listOf(second), dir.list()!!.toList())
+            assertEquals(listOf(first, second), clipboard.images.map { it.name })
+            // The Mac's image is not sent back.
+            assertEquals(ClipSendResult.ALREADY_ON_MAC, bridge.sendImage(ClipImage(byteArrayOf(2), "image/jpeg")))
+
+            // An aborted one leaves nothing; an oversized one is refused.
+            val offer = io.github.anmirror.protocol.v1.TransferOffer.newBuilder().setTransferId("c").setName("x.png").setSize(1).build()
+            val sink = (inbox.open(offer) as io.github.anmirror.transfer.SinkResult.Ready).file
+            sink.output.write(1)
+            sink.abort()
+            assertEquals(listOf(second), dir.list()!!.toList())
+            val big = offer.toBuilder().setSize(ClipboardBridge.MAX_IMAGE_BYTES + 1L).build()
+            assertEquals(
+                io.github.anmirror.transfer.SinkResult.Refused(io.github.anmirror.protocol.v1.TransferError.TRANSFER_ERROR_DENIED),
+                inbox.open(big),
+            )
+            assertEquals("png", inbox.extension("weird.name with space"))
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }
